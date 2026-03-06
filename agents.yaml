@@ -1,0 +1,40 @@
+claude_bin: claude
+
+agents:
+  - name: code-review
+    prompt: |
+      Review the Go code in the working directory.
+      Focus on: error handling, concurrency safety, and idiomatic Go patterns.
+      Output a brief summary of findings.
+    work_dir: .
+    schedule: "0 9 * * 1-5"
+    tags: [review, quality]
+
+  - name: test-generator
+    prompt: |
+      Analyze the Go source files and generate missing unit tests.
+      Use table-driven tests where appropriate.
+      Only output the test code, no explanations.
+    work_dir: .
+    schedule: "0 12 * * 1-5"
+    tags: [tests]
+
+  - name: on-save-lint
+    prompt: |
+      Review the recently changed file: {{.File}}
+      Check for common Go mistakes, suggest improvements.
+      Be concise - max 5 bullet points.
+    work_dir: .
+    watch:
+      paths: ["."]
+      extensions: [".go"]
+      debounce: "3s"
+    tags: [lint, realtime]
+
+  - name: todo-tracker
+    prompt: |
+      Find all TODO, FIXME, HACK comments in the codebase.
+      Categorize by priority and suggest an action plan.
+    work_dir: .
+    schedule: "0 */4 * * *"
+    tags: [tracking]
