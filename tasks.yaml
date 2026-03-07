@@ -1,0 +1,100 @@
+claude_bin: claude
+
+server:
+  addr: ":8080"
+  data_dir: "data"
+
+auth:
+  paseto_key: ""
+  bearer_tokens: []
+  users: []
+
+# mcp_servers:
+#   - name: filesystem
+#     command: npx
+#     args: ["-y", "@anthropic/mcp-filesystem"]
+#     env:
+#       MCP_ROOT: "/home/user/project"
+#   - name: github
+#     command: npx
+#     args: ["-y", "@anthropic/mcp-github"]
+#     env:
+#       GITHUB_TOKEN: "${GITHUB_TOKEN}"
+
+tasks:
+  - name: code-review
+    prompt: |
+      Review the Go code in the working directory.
+      Focus on: error handling, concurrency safety, and idiomatic Go patterns.
+      Output a brief summary of findings.
+
+      Rate each finding as High, Medium, or Low severity.
+
+      If there are no High or Medium severity findings remaining, output the
+      exact line "LGTM" at the end of your response to signal that the code
+      is in good shape.
+
+      {{if .PrevOutput}}
+      Previous review/fix context from the last iteration:
+      ---
+      {{.PrevOutput}}
+      ---
+      Focus on whether previous issues were fixed and look for any new issues
+      introduced by the fixes. Do not repeat issues that have already been fixed.
+      {{end}}
+    work_dir: .
+    schedule: "0 9 * * 1-5"  # weekdays at 9:00
+    tags: [review, quality]
+
+  - name: code-fixer
+    prompt: |
+      You are a code fixer. Apply the fixes described in the review below.
+      Only fix High and Medium severity issues. Leave Low severity issues alone.
+      Make minimal, targeted changes — do not refactor or restructure beyond
+      what is needed to fix the specific issues.
+
+      Review findings to fix:
+      ---
+      {{.PrevOutput}}
+      ---
+    work_dir: .
+    timeout: "10m"
+    tags: [fix, quality]
+
+  - name: test-generator
+    prompt: |
+      Analyze the Go source files and generate missing unit tests.
+      Use table-driven tests where appropriate.
+      Only output the test code, no explanations.
+    work_dir: .
+    schedule: "0 12 * * 1-5"  # weekdays at noon
+    tags: [tests]
+
+  - name: on-save-lint
+    prompt: |
+      Review the recently changed file: {{.File}}
+      Check for common Go mistakes, suggest improvements.
+      Be concise - max 5 bullet points.
+    work_dir: .
+    watch:
+      paths: ["."]
+      extensions: [".go"]
+      debounce: "3s"
+    tags: [lint, realtime]
+
+  - name: todo-tracker
+    prompt: |
+      Find all TODO, FIXME, HACK comments in the codebase.
+      Categorize by priority and suggest an action plan.
+    work_dir: .
+    schedule: "0 */4 * * *"  # every 4 hours
+    tags: [tracking]
+
+pipelines:
+  - name: review-fix
+    mode: sequential
+    steps:
+      - task: code-review
+      - task: code-fixer
+    max_iterations: 10
+    stop_signal: "LGTM"

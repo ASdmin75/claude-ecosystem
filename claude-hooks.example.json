@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "command": "claude-hook"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "command": "claude-hook"
+      },
+      {
+        "matcher": "Write",
+        "command": "claude-hook"
+      }
+    ],
+    "Notification": [
+      {
+        "command": "notify-send 'Claude Code' 'Task completed'"
+      }
+    ]
+  }
+}
