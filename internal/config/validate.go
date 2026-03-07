@@ -53,9 +53,10 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("pipeline %s: invalid mode %q (must be \"sequential\" or \"parallel\")", p.Name, mode)
 		}
 
-		// Sequential pipelines need a stop signal to know when to exit the loop.
-		if mode == "sequential" && p.StopSignal == "" {
-			return fmt.Errorf("pipeline %s: stop_signal is required for sequential pipelines", p.Name)
+		// Sequential pipelines that loop (max_iterations > 1) need a stop signal
+		// to know when to exit early. Single-pass pipelines don't need one.
+		if mode == "sequential" && p.StopSignal == "" && p.MaxIter() > 1 {
+			return fmt.Errorf("pipeline %s: stop_signal is required for sequential pipelines with max_iterations > 1", p.Name)
 		}
 
 		for _, step := range p.Steps {

@@ -32,12 +32,23 @@ func (r *Runner) RunParallel(ctx context.Context, p config.Pipeline) (string, er
 		go func(t config.Task) {
 			defer wg.Done()
 
+			opts, cleanup, err := task.ResolveRunOptions(t, r.subMgr, r.mcpMgr)
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("task %s: resolve options: %w", t.Name, err))
+				mu.Unlock()
+				return
+			}
+			if cleanup != nil {
+				defer cleanup()
+			}
+
 			timeout := t.ParsedTimeout()
 			stepCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
 			r.logger.Info("running parallel step", "pipeline", p.Name, "task", t.Name)
-			result := r.taskRunner.Run(stepCtx, t, task.RunOptions{}, nil)
+			result := r.taskRunner.Run(stepCtx, t, opts, nil)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -78,10 +89,18 @@ func (r *Runner) RunParallel(ctx context.Context, p config.Pipeline) (string, er
 	collectorCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	collectorOpts, cleanup, err := task.ResolveRunOptions(collectorTask, r.subMgr, r.mcpMgr)
+	if err != nil {
+		return string(resultsJSON), fmt.Errorf("pipeline %s, collector %s: resolve options: %w", p.Name, p.Collector, err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
 	vars := map[string]string{
 		"Results": string(resultsJSON),
 	}
-	result := r.taskRunner.Run(collectorCtx, collectorTask, task.RunOptions{}, vars)
+	result := r.taskRunner.Run(collectorCtx, collectorTask, collectorOpts, vars)
 
 	if result.Error != "" {
 		return string(resultsJSON), fmt.Errorf("pipeline %s, collector %s: %s", p.Name, p.Collector, result.Error)

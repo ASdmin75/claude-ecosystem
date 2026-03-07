@@ -20,6 +20,7 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
 	"github.com/asdmin/claude-ecosystem/internal/pipeline"
 	"github.com/asdmin/claude-ecosystem/internal/scheduler"
+	"github.com/asdmin/claude-ecosystem/internal/store"
 	"github.com/asdmin/claude-ecosystem/internal/store/sqlite"
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
 	"github.com/asdmin/claude-ecosystem/internal/task"
@@ -55,14 +56,27 @@ func main() {
 		outputMu.Unlock()
 	})
 
+	// Initialize sub-agent manager and MCP manager (needed for task resolution in all modes)
+	subagentMgr := subagent.NewManager(".claude/agents")
+	mcpMgr := mcpmanager.New(cfg.MCPServers, logger)
+	defer mcpMgr.StopAll()
+
 	// Run single task mode
 	if *runOnce != "" {
 		for _, t := range cfg.Tasks {
 			if t.Name == *runOnce {
+				opts, cleanup, resolveErr := task.ResolveRunOptions(t, subagentMgr, mcpMgr)
+				if resolveErr != nil {
+					logger.Error("failed to resolve run options", "error", resolveErr)
+					os.Exit(1)
+				}
+				if cleanup != nil {
+					defer cleanup()
+				}
 				timeout := t.ParsedTimeout()
 				ctx, cancel := context.WithTimeout(context.Background(), timeout)
 				defer cancel()
-				result := taskRunner.Run(ctx, t, task.RunOptions{}, nil)
+				result := taskRunner.Run(ctx, t, opts, nil)
 				if result.Error != "" {
 					logger.Error("task failed", "error", result.Error)
 					os.Exit(1)
@@ -77,7 +91,7 @@ func main() {
 
 	// Run pipeline mode
 	if *runPipeline != "" {
-		pr := pipeline.NewRunner(taskRunner, cfg.Tasks, logger)
+		pr := pipeline.NewRunner(taskRunner, cfg.Tasks, subagentMgr, mcpMgr, logger)
 		for _, p := range cfg.Pipelines {
 			if p.Name == *runPipeline {
 				output, err := pr.Run(context.Background(), p)
@@ -110,6 +124,29 @@ func main() {
 	}
 	defer db.Close()
 
+	// Clean up stale "running" executions from previous runs
+	if n, err := db.MarkStaleRunning(ctx); err != nil {
+		logger.Error("failed to mark stale executions", "error", err)
+	} else if n > 0 {
+		logger.Info("marked stale running executions as failed", "count", n)
+	}
+
+	// Seed users from config into database
+	for _, u := range cfg.Auth.Users {
+		existing, _ := db.GetUserByUsername(ctx, u.Username)
+		if existing == nil {
+			if err := db.CreateUser(ctx, &store.User{
+				ID:           u.Username,
+				Username:     u.Username,
+				PasswordHash: u.Password,
+			}); err != nil {
+				logger.Error("failed to seed user", "username", u.Username, "error", err)
+			} else {
+				logger.Info("seeded user from config", "username", u.Username)
+			}
+		}
+	}
+
 	// Initialize auth
 	var pasetoMgr *auth.PASETOManager
 	if cfg.Auth.PASETOKey != "" {
@@ -127,16 +164,9 @@ func main() {
 	bearerAuth := auth.NewBearerAuth(cfg.Auth.BearerTokens)
 	authMw := auth.NewMiddleware(pasetoMgr, bearerAuth)
 
-	// Initialize sub-agent manager
-	subagentMgr := subagent.NewManager(".claude/agents")
-
-	// Initialize MCP manager
-	mcpMgr := mcpmanager.New(cfg.MCPServers, logger)
-	defer mcpMgr.StopAll()
-
 	// Initialize scheduler and watcher
-	sched := scheduler.New(taskRunner, bus, logger)
-	w, err := watcher.New(taskRunner, bus, logger)
+	sched := scheduler.New(taskRunner, subagentMgr, mcpMgr, bus, logger)
+	w, err := watcher.New(taskRunner, subagentMgr, mcpMgr, bus, logger)
 	if err != nil {
 		logger.Error("failed to create watcher", "error", err)
 		os.Exit(1)

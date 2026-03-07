@@ -56,6 +56,29 @@
 - `cmd/orchestrator` → заменён на `cmd/server`
 - Пакеты верхнего уровня `agent/`, `config/`, `pipeline/`, `scheduler/`, `watcher/` → перенесены в `internal/`
 
+### 2026-03-07 — v3: Agents wiring + MCP реализация + Leads Pipeline
+
+**Исправление бага: wiring поля `agents`**
+- Создан `internal/task/resolve.go` — функция `ResolveRunOptions()` связывает `config.Task.Agents` → `RunOptions.AgentsJSON` через `subagent.Manager.Get()` + `subagent.ToAgentsJSON()`, и `config.Task.MCPServers` → `RunOptions.MCPConfigPath` через `mcpmanager.Manager.GenerateConfigFile()`
+- Обновлены все 9 call sites: `cmd/server/main.go`, `internal/api/tasks.go` (2), `internal/api/pipelines.go`, `internal/pipeline/sequential.go`, `internal/pipeline/parallel.go` (3), `internal/scheduler/scheduler.go`, `internal/watcher/watcher.go`
+- Добавлена инъекция `subMgr`/`mcpMgr` в конструкторы `pipeline.NewRunner()`, `scheduler.New()`, `watcher.New()`
+
+**MCP-серверы — реализация**
+- **mcp-excel** — полная реализация через `github.com/xuri/excelize/v2`: `create_spreadsheet`, `write_spreadsheet`, `read_spreadsheet` + новый `add_styled_table` (жирные заголовки, цветные строки, auto-filter)
+- **mcp-email** — реализация `send_email` через `gopkg.in/gomail.v2`: SMTP с TLS, поддержка `attachments`, `html_body`. Конфиг через env vars: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`
+- **mcp-telegram** — новый MCP-сервер через `gopkg.in/telebot.v4`: `send_message` (текст + parse_mode), `send_document` (файл + caption). Конфиг: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- **mcp-filesystem** — полная реализация: `read_file`, `write_file`, `list_directory`, `search_files` + новый `copy_file`
+
+**Leads Pipeline — пайплайн для CEO**
+- 3 новых задачи: `find-leads` (поиск лидов → JSON), `compile-leads-excel` (JSON → Excel-отчёт), `deliver-leads-report` (email + file share + Telegram)
+- Пайплайн `leads-to-ceo` (sequential, 3 шага, single-pass)
+- 2 суб-агента: `leads-report-compiler`, `delivery-agent`
+- 4 MCP-сервера сконфигурированы в `tasks.yaml`: excel, email, telegram, filesystem
+
+**Прочее**
+- Ослаблена валидация: `stop_signal` не требуется для sequential пайплайнов с `max_iterations: 1`
+- Новые зависимости: `excelize/v2`, `gomail.v2`, `telebot.v4`
+
 ---
 
 ## Бэклог
@@ -64,14 +87,16 @@
 - [ ] Оценить миграцию на хуки суб-агентов или MCP-сервер
 - [ ] Расширить список опасных паттернов
 
-### MCP-серверы — реализация
-- [ ] mcp-filesystem: полная реализация tools/call
-- [ ] mcp-excel: интеграция с excelize
+### MCP-серверы — доработки
+- [x] mcp-filesystem: полная реализация tools/call + copy_file
+- [x] mcp-excel: интеграция с excelize + add_styled_table
 - [ ] mcp-word: интеграция с docx-библиотекой
 - [ ] mcp-pdf: интеграция с pdfcpu
-- [ ] mcp-email: SMTP/IMAP интеграция
+- [x] mcp-email: SMTP-отправка с вложениями через gomail
+- [ ] mcp-email: IMAP-чтение (read_inbox, search_emails)
 - [ ] mcp-google: Google Docs/Sheets API
 - [ ] mcp-database: SQL-драйверы (postgres, mysql, sqlite)
+- [x] mcp-telegram: отправка сообщений и файлов через Telegram Bot API
 
 ### Web UI — доработки
 - [ ] Детальный просмотр execution с SSE-стримингом

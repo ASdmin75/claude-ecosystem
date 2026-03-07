@@ -8,6 +8,8 @@ import (
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/events"
+	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
+	"github.com/asdmin/claude-ecosystem/internal/subagent"
 	"github.com/asdmin/claude-ecosystem/internal/task"
 	"github.com/robfig/cron/v3"
 )
@@ -15,6 +17,8 @@ import (
 type Scheduler struct {
 	cron    *cron.Cron
 	runner  *task.Runner
+	subMgr  *subagent.Manager
+	mcpMgr  *mcpmanager.Manager
 	bus     *events.Bus
 	logger  *slog.Logger
 	ctxMu   sync.RWMutex
@@ -23,10 +27,12 @@ type Scheduler struct {
 	paused  map[string]bool
 }
 
-func New(runner *task.Runner, bus *events.Bus, logger *slog.Logger) *Scheduler {
+func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, bus *events.Bus, logger *slog.Logger) *Scheduler {
 	return &Scheduler{
 		cron:   cron.New(),
 		runner: runner,
+		subMgr: subMgr,
+		mcpMgr: mcpMgr,
 		bus:    bus,
 		logger: logger,
 		runCtx: context.Background(),
@@ -51,10 +57,19 @@ func (s *Scheduler) Register(t config.Task) error {
 		parentCtx := s.runCtx
 		s.ctxMu.RUnlock()
 
+		opts, cleanup, err := task.ResolveRunOptions(t, s.subMgr, s.mcpMgr)
+		if err != nil {
+			s.logger.Error("failed to resolve run options", "task", t.Name, "error", err)
+			return
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+
 		timeout := t.ParsedTimeout()
 		ctx, cancel := context.WithTimeout(parentCtx, timeout)
 		defer cancel()
-		result := s.runner.Run(ctx, t, task.RunOptions{}, nil)
+		result := s.runner.Run(ctx, t, opts, nil)
 
 		if result.Error != "" {
 			s.logger.Error("task failed", "task", t.Name, "error", result.Error)

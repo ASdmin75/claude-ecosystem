@@ -76,11 +76,27 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 				}
 			}
 
+			opts, cleanup, resolveErr := task.ResolveRunOptions(*t, s.subagentMgr, s.mcpMgr)
+			if resolveErr != nil {
+				return pipelineRunResponse{
+					ExecutionID: execID,
+					Pipeline:    pipelineName,
+					Status:      "failed",
+					Error:       fmt.Sprintf("step %s: resolve options: %v", step.Task, resolveErr),
+					Output:      lastOutput,
+					Iterations:  iterations,
+					DurationMS:  time.Since(start).Milliseconds(),
+				}
+			}
+			if cleanup != nil {
+				defer cleanup()
+			}
+
 			vars := map[string]string{
 				"PrevOutput": lastOutput,
 			}
 
-			result := s.taskRunner.Run(ctx, *t, task.RunOptions{}, vars)
+			result := s.taskRunner.Run(ctx, *t, opts, vars)
 			if result.Error != "" {
 				return pipelineRunResponse{
 					ExecutionID: execID,

@@ -246,6 +246,23 @@ pipelines:
     stop_signal: "LGTM"
 ```
 
+### Sequential single-pass (линейная цепочка)
+
+Для пайплайнов без цикла используйте `max_iterations: 1` — `stop_signal` не требуется:
+
+```yaml
+pipelines:
+  - name: leads-to-ceo
+    mode: sequential
+    steps:
+      - task: find-leads            # поиск → JSON
+      - task: compile-leads-excel   # JSON → Excel
+      - task: deliver-leads-report  # Excel → email + Telegram
+    max_iterations: 1
+```
+
+Каждый шаг получает вывод предыдущего через `{{.PrevOutput}}`.
+
 ### Parallel (параллельный)
 
 Все шаги запускаются одновременно. Опциональный `collector` собирает результаты.
@@ -276,8 +293,55 @@ mcp_servers:
     command: ./bin/mcp-filesystem
   - name: excel
     command: ./bin/mcp-excel
+  - name: email
+    command: ./bin/mcp-email
     env:
-      DATA_DIR: /path/to/data
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_FROM: ${SMTP_FROM}
+  - name: telegram
+    command: ./bin/mcp-telegram
+    env:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+```
+
+### Доступные серверы и инструменты
+
+| Сервер | Инструменты | Статус |
+|--------|------------|--------|
+| **mcp-filesystem** | `read_file`, `write_file`, `list_directory`, `search_files`, `copy_file` | Реализован |
+| **mcp-excel** | `create_spreadsheet`, `write_spreadsheet`, `read_spreadsheet`, `add_styled_table` | Реализован |
+| **mcp-email** | `send_email` (с вложениями и HTML), `read_inbox`*, `search_emails`* | Частично (*stubs) |
+| **mcp-telegram** | `send_message`, `send_document` | Реализован |
+| **mcp-word** | — | Stub |
+| **mcp-pdf** | — | Stub |
+| **mcp-google** | — | Stub |
+| **mcp-database** | — | Stub |
+
+### Привязка к задачам
+
+Поле `mcp_servers` в конфигурации задачи автоматически генерирует `--mcp-config` JSON-файл и передаёт его Claude CLI:
+
+```yaml
+tasks:
+  - name: create-report
+    prompt: "Create an Excel report..."
+    mcp_servers: [excel, filesystem]
+```
+
+### Привязка суб-агентов
+
+Поле `agents` в конфигурации задачи автоматически резолвит суб-агентов из `.claude/agents/*.md` и передаёт их через `--agents` JSON:
+
+```yaml
+tasks:
+  - name: compile-report
+    prompt: "Compile the report..."
+    agents: [leads-report-compiler]
+    mcp_servers: [excel]
 ```
 
 ### Управление
@@ -294,8 +358,6 @@ curl -X POST -H "Authorization: Bearer <token>" \
 curl -X POST -H "Authorization: Bearer <token>" \
   http://localhost:8080/api/v1/mcp-servers/filesystem/stop
 ```
-
-Серверы запускаются лениво — при первом выполнении задачи, которая на них ссылается.
 
 ---
 

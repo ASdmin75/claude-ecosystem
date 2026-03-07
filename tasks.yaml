@@ -1,100 +1,192 @@
 claude_bin: claude
-
-server:
-  addr: ":8080"
-  data_dir: "data"
-
-auth:
-  paseto_key: ""
-  bearer_tokens: []
-  users: []
-
-# mcp_servers:
-#   - name: filesystem
-#     command: npx
-#     args: ["-y", "@anthropic/mcp-filesystem"]
-#     env:
-#       MCP_ROOT: "/home/user/project"
-#   - name: github
-#     command: npx
-#     args: ["-y", "@anthropic/mcp-github"]
-#     env:
-#       GITHUB_TOKEN: "${GITHUB_TOKEN}"
-
 tasks:
-  - name: code-review
-    prompt: |
-      Review the Go code in the working directory.
-      Focus on: error handling, concurrency safety, and idiomatic Go patterns.
-      Output a brief summary of findings.
+    - name: code-review
+      prompt: |
+        Review the Go code in the working directory.
+        Focus on: error handling, concurrency safety, and idiomatic Go patterns.
+        Output a brief summary of findings.
 
-      Rate each finding as High, Medium, or Low severity.
+        Rate each finding as High, Medium, or Low severity.
 
-      If there are no High or Medium severity findings remaining, output the
-      exact line "LGTM" at the end of your response to signal that the code
-      is in good shape.
+        If there are no High or Medium severity findings remaining, output the
+        exact line "LGTM" at the end of your response to signal that the code
+        is in good shape.
 
-      {{if .PrevOutput}}
-      Previous review/fix context from the last iteration:
-      ---
-      {{.PrevOutput}}
-      ---
-      Focus on whether previous issues were fixed and look for any new issues
-      introduced by the fixes. Do not repeat issues that have already been fixed.
-      {{end}}
-    work_dir: .
-    schedule: "0 9 * * 1-5"  # weekdays at 9:00
-    tags: [review, quality]
+        {{if .PrevOutput}}
+        Previous review/fix context from the last iteration:
+        ---
+        {{.PrevOutput}}
+        ---
+        Focus on whether previous issues were fixed and look for any new issues
+        introduced by the fixes. Do not repeat issues that have already been fixed.
+        {{end}}
+      work_dir: .
+      schedule: 0 9 * * 1-5
+      tags:
+        - review
+        - quality
+    - name: code-fixer
+      prompt: |
+        You are a code fixer. Apply the fixes described in the review below.
+        Only fix High and Medium severity issues. Leave Low severity issues alone.
+        Make minimal, targeted changes — do not refactor or restructure beyond
+        what is needed to fix the specific issues.
 
-  - name: code-fixer
-    prompt: |
-      You are a code fixer. Apply the fixes described in the review below.
-      Only fix High and Medium severity issues. Leave Low severity issues alone.
-      Make minimal, targeted changes — do not refactor or restructure beyond
-      what is needed to fix the specific issues.
+        Review findings to fix:
+        ---
+        {{.PrevOutput}}
+        ---
+      work_dir: .
+      tags:
+        - fix
+        - quality
+      timeout: 10m
+    - name: test-generator
+      prompt: |
+        Analyze the Go source files and generate missing unit tests.
+        Use table-driven tests where appropriate.
+        Only output the test code, no explanations.
+      work_dir: .
+      schedule: 0 12 * * 1-5
+      tags:
+        - tests
+    - name: on-save-lint
+      prompt: |
+        Review the recently changed file: {{.File}}
+        Check for common Go mistakes, suggest improvements.
+        Be concise - max 5 bullet points.
+      work_dir: .
+      watch:
+        paths:
+            - .
+        extensions:
+            - .go
+        debounce: 3s
+      tags:
+        - lint
+        - realtime
+    - name: todo-tracker
+      prompt: |
+        Find all TODO, FIXME, HACK comments in the codebase.
+        Categorize by priority and suggest an action plan.
+      work_dir: .
+      schedule: 0 */4 * * *
+      tags:
+        - tracking
+    - name: find-new-eaeu-logistics-lead
+      prompt: "Найди 100 новых потенциальных клиентов для логистическо-экспедиционной компании из РБ работающей на рынке ЕАЭС с ледующих отраслях:\n- фарма\n- электроника\nКомапнии должны быть резидентами РБ. \nИспользуй сабагента eaeu-logistics-lead-finder"
+      work_dir: .
+      model: sonnet
+      timeout: 60m
+      permission_mode: dontAsk
+    - name: find-leads
+      prompt: |
+        Найди потенциальных клиентов для логистическо-экспедиционной компании из РБ,
+        работающей на рынке ЕАЭС. Верни ПОЛНЫЙ список в формате JSON — массив объектов.
+        Не суммаризируй, верни все найденные лиды целиком.
+      work_dir: .
+      model: sonnet
+      timeout: 60m
+      max_turns: 30
+      permission_mode: dontAsk
+      json_schema: |
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "company": {"type": "string"},
+              "contact": {"type": "string"},
+              "email": {"type": "string"},
+              "phone": {"type": "string"},
+              "position": {"type": "string"},
+              "source": {"type": "string"},
+              "notes": {"type": "string"}
+            },
+            "required": ["company"]
+          }
+        }
+      tags:
+        - leads
+        - sales
+    - name: compile-leads-excel
+      prompt: |
+        Вот список лидов в JSON:
 
-      Review findings to fix:
-      ---
-      {{.PrevOutput}}
-      ---
-    work_dir: .
-    timeout: "10m"
-    tags: [fix, quality]
+        {{.PrevOutput}}
 
-  - name: test-generator
-    prompt: |
-      Analyze the Go source files and generate missing unit tests.
-      Use table-driven tests where appropriate.
-      Only output the test code, no explanations.
-    work_dir: .
-    schedule: "0 12 * * 1-5"  # weekdays at noon
-    tags: [tests]
+        Создай Excel-отчёт для CEO: /tmp/leads-report-{{.Date}}.xlsx
+        Используй инструменты create_spreadsheet и add_styled_table.
+        Добавь лист 'Leads' с таблицей всех лидов и лист 'Summary' с итогами по источникам.
+        Верни только путь к созданному файлу.
+      work_dir: .
+      timeout: 10m
+      mcp_servers:
+        - excel
+      agents:
+        - leads-report-compiler
+      permission_mode: dontAsk
+      tags:
+        - leads
+        - excel
+    - name: deliver-leads-report
+      prompt: |
+        Файл отчёта: {{.PrevOutput}}
 
-  - name: on-save-lint
-    prompt: |
-      Review the recently changed file: {{.File}}
-      Check for common Go mistakes, suggest improvements.
-      Be concise - max 5 bullet points.
-    work_dir: .
-    watch:
-      paths: ["."]
-      extensions: [".go"]
-      debounce: "3s"
-    tags: [lint, realtime]
-
-  - name: todo-tracker
-    prompt: |
-      Find all TODO, FIXME, HACK comments in the codebase.
-      Categorize by priority and suggest an action plan.
-    work_dir: .
-    schedule: "0 */4 * * *"  # every 4 hours
-    tags: [tracking]
-
+        Выполни доставку отчёта CEO:
+        1. Отправь email на ceo@company.com с темой "Отчёт по лидам" и вложением файла
+        2. Скопируй файл в /shares/ceo/reports/
+        3. Отправь уведомление в Telegram с файлом и подписью "Новый отчёт по лидам"
+      work_dir: .
+      timeout: 10m
+      mcp_servers:
+        - email
+        - filesystem
+        - telegram
+      agents:
+        - delivery-agent
+      permission_mode: dontAsk
+      tags:
+        - leads
+        - delivery
 pipelines:
-  - name: review-fix
-    mode: sequential
-    steps:
-      - task: code-review
-      - task: code-fixer
-    max_iterations: 10
-    stop_signal: "LGTM"
+    - name: review-fix
+      mode: sequential
+      steps:
+        - task: code-review
+        - task: code-fixer
+      max_iterations: 10
+      stop_signal: LGTM
+    - name: leads-to-ceo
+      mode: sequential
+      steps:
+        - task: find-leads
+        - task: compile-leads-excel
+        - task: deliver-leads-report
+      max_iterations: 1
+mcp_servers:
+    - name: excel
+      command: ./bin/mcp-excel
+    - name: email
+      command: ./bin/mcp-email
+      env:
+        SMTP_HOST: ${SMTP_HOST}
+        SMTP_PORT: ${SMTP_PORT}
+        SMTP_USER: ${SMTP_USER}
+        SMTP_PASSWORD: ${SMTP_PASSWORD}
+        SMTP_FROM: ${SMTP_FROM}
+    - name: telegram
+      command: ./bin/mcp-telegram
+      env:
+        TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+        TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+    - name: filesystem
+      command: ./bin/mcp-filesystem
+auth:
+    paseto_key: ""
+    users:
+        - username: admin
+          password: $2b$10$1WWjnBvMGpdunC9GlJOtM.yrwGuptF5/J65631hRz2vgCA/pYyZbO
+server:
+    addr: :8080
+    data_dir: data

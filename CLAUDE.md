@@ -27,12 +27,12 @@ Requires Go 1.26+. The `claude` CLI must be on PATH (or set `claude_bin` in task
 
 - **`cmd/server`** — Main binary. HTTP server (REST API + embedded React SPA), scheduler, watcher. Supports `-run <task>` and `-pipeline <name>` for CLI mode.
 - **`cmd/hook`** — Claude Code hook binary. Reads JSON from stdin, blocks dangerous commands, logs file edits.
-- **`cmd/mcp/*`** — MCP server stubs (filesystem, excel, word, pdf, email, google, database). Each is a JSON-RPC 2.0 stdio server.
+- **`cmd/mcp/*`** — MCP servers (JSON-RPC 2.0 stdio). Implemented: filesystem (CRUD + copy), excel (excelize), email (gomail SMTP), telegram (telebot). Stubs: word, pdf, google, database.
 
 ### Core Packages (all under `internal/`)
 
 - **`config/`** — Parses `tasks.yaml` into `Config`/`Task`/`Pipeline`/`MCPServerConfig` structs. Backward-compatible with old `agents.yaml` format.
-- **`task/`** — `Runner` executes `claude -p` with dynamically built CLI args (`--agents`, `--mcp-config`, `--json-schema`, `--max-turns`, etc.). Supports sync `Run()` and streaming `RunStream()`.
+- **`task/`** — `Runner` executes `claude -p` with dynamically built CLI args. `ResolveRunOptions()` wires `config.Task.Agents` → `--agents` JSON and `config.Task.MCPServers` → `--mcp-config` file. Supports sync `Run()` and streaming `RunStream()`.
 - **`pipeline/`** — Runs sequential (loop with `{{.PrevOutput}}`) or parallel (errgroup) pipelines. Factory `Run()` dispatches by mode.
 - **`subagent/`** — CRUD manager for `.claude/agents/*.md` files. Parses YAML frontmatter + markdown. Generates `--agents` JSON for task runner.
 - **`mcpmanager/`** — Process lifecycle for MCP servers (lazy start, SIGTERM/SIGKILL shutdown, health). Generates `--mcp-config` temp files.

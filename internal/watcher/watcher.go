@@ -10,6 +10,8 @@ import (
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/events"
+	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
+	"github.com/asdmin/claude-ecosystem/internal/subagent"
 	"github.com/asdmin/claude-ecosystem/internal/task"
 	"github.com/fsnotify/fsnotify"
 )
@@ -19,6 +21,8 @@ const maxConcurrentTasks = 4
 type Watcher struct {
 	fsw    *fsnotify.Watcher
 	runner *task.Runner
+	subMgr *subagent.Manager
+	mcpMgr *mcpmanager.Manager
 	bus    *events.Bus
 	logger *slog.Logger
 	mu     sync.RWMutex
@@ -27,7 +31,7 @@ type Watcher struct {
 	wg     sync.WaitGroup // tracks in-flight task goroutines
 }
 
-func New(runner *task.Runner, bus *events.Bus, logger *slog.Logger) (*Watcher, error) {
+func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, bus *events.Bus, logger *slog.Logger) (*Watcher, error) {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -35,6 +39,8 @@ func New(runner *task.Runner, bus *events.Bus, logger *slog.Logger) (*Watcher, e
 	return &Watcher{
 		fsw:    fsw,
 		runner: runner,
+		subMgr: subMgr,
+		mcpMgr: mcpMgr,
 		bus:    bus,
 		logger: logger,
 		sem:    make(chan struct{}, maxConcurrentTasks),
@@ -121,12 +127,21 @@ func (w *Watcher) Start(ctx context.Context) {
 					defer w.wg.Done()
 					defer func() { <-w.sem }()
 
+					opts, cleanup, err := task.ResolveRunOptions(t, w.subMgr, w.mcpMgr)
+					if err != nil {
+						w.logger.Error("failed to resolve run options", "task", t.Name, "error", err)
+						return
+					}
+					if cleanup != nil {
+						defer cleanup()
+					}
+
 					timeout := t.ParsedTimeout()
 					runCtx, cancel := context.WithTimeout(ctx, timeout)
 					defer cancel()
 
 					vars := map[string]string{"File": file}
-					result := w.runner.Run(runCtx, t, task.RunOptions{}, vars)
+					result := w.runner.Run(runCtx, t, opts, vars)
 
 					if result.Error != "" {
 						w.logger.Error("watcher task failed", "task", t.Name, "error", result.Error)

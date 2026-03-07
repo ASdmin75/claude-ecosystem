@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/store"
 	"github.com/asdmin/claude-ecosystem/internal/task"
@@ -52,6 +53,81 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, t)
 }
 
+// handleCreateTask creates a new task and persists to disk.
+// POST /api/v1/tasks
+func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
+	var task config.Task
+	if err := readJSON(r, &task); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if task.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if task.Prompt == "" {
+		writeError(w, http.StatusBadRequest, "prompt is required")
+		return
+	}
+
+	if s.findTask(task.Name) != nil {
+		writeError(w, http.StatusConflict, "task already exists: "+task.Name)
+		return
+	}
+
+	s.cfg.Tasks = append(s.cfg.Tasks, task)
+
+	if err := s.cfg.Save(); err != nil {
+		// Rollback
+		s.cfg.Tasks = s.cfg.Tasks[:len(s.cfg.Tasks)-1]
+		s.logger.Error("failed to save config", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
+		return
+	}
+
+	s.logger.Info("task created", "name", task.Name)
+	writeJSON(w, http.StatusCreated, s.findTask(task.Name))
+}
+
+// handleUpdateTask updates a task's configuration in-memory and persists to disk.
+// PUT /api/v1/tasks/{name}
+func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	var updated config.Task
+	if err := readJSON(r, &updated); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Find existing task
+	var found bool
+	for i := range s.cfg.Tasks {
+		if s.cfg.Tasks[i].Name == name {
+			// Preserve the original name (rename not supported)
+			updated.Name = name
+			s.cfg.Tasks[i] = updated
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "task not found: "+name)
+		return
+	}
+
+	// Persist to disk
+	if err := s.cfg.Save(); err != nil {
+		s.logger.Error("failed to save config", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
+		return
+	}
+
+	s.logger.Info("task updated", "name", name)
+	writeJSON(w, http.StatusOK, s.findTask(name))
+}
+
 // handleRunTask runs a task synchronously and returns the result.
 // POST /api/v1/tasks/{name}/run
 func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
@@ -83,11 +159,21 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	opts, cleanup, resolveErr := task.ResolveRunOptions(*t, s.subagentMgr, s.mcpMgr)
+	if resolveErr != nil {
+		s.logger.Error("failed to resolve run options", "task", t.Name, "error", resolveErr)
+		writeError(w, http.StatusInternalServerError, "failed to resolve run options: "+resolveErr.Error())
+		return
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
 	timeout := t.ParsedTimeout()
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	result := s.taskRunner.Run(ctx, *t, task.RunOptions{}, req.TemplateVars)
+	result := s.taskRunner.Run(ctx, *t, opts, req.TemplateVars)
 
 	completedAt := time.Now().UTC()
 	status := "completed"
@@ -104,7 +190,9 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 	exec.SessionID = result.SessionID
 	exec.CompletedAt = &completedAt
 
-	if err := s.store.UpdateExecution(r.Context(), exec); err != nil {
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer dbCancel()
+	if err := s.store.UpdateExecution(dbCtx, exec); err != nil {
 		s.logger.Error("failed to update execution record", "error", err)
 	}
 
@@ -161,18 +249,35 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve options before launching goroutine to report errors synchronously.
+	asyncOpts, asyncCleanup, asyncResolveErr := task.ResolveRunOptions(*t, s.subagentMgr, s.mcpMgr)
+	if asyncResolveErr != nil {
+		s.logger.Error("failed to resolve run options", "task", t.Name, "error", asyncResolveErr)
+		writeError(w, http.StatusInternalServerError, "failed to resolve run options: "+asyncResolveErr.Error())
+		return
+	}
+
 	// Run in background goroutine.
 	taskCopy := *t
 	templateVars := req.TemplateVars
 	go func() {
+		if asyncCleanup != nil {
+			defer asyncCleanup()
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), taskCopy.ParsedTimeout())
 		defer cancel()
 
-		result := s.taskRunner.Run(ctx, taskCopy, task.RunOptions{}, templateVars)
+		s.cancels.Store(execID, cancel)
+		defer s.cancels.Delete(execID)
+
+		result := s.taskRunner.Run(ctx, taskCopy, asyncOpts, templateVars)
 
 		completedAt := time.Now().UTC()
 		status := "completed"
-		if result.Error != "" {
+		if ctx.Err() == context.Canceled {
+			status = "cancelled"
+		} else if result.Error != "" {
 			status = "failed"
 		}
 
@@ -185,7 +290,10 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 		exec.SessionID = result.SessionID
 		exec.CompletedAt = &completedAt
 
-		if err := s.store.UpdateExecution(ctx, exec); err != nil {
+		// Use a fresh context — the task ctx may be cancelled due to timeout.
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dbCancel()
+		if err := s.store.UpdateExecution(dbCtx, exec); err != nil {
 			s.logger.Error("failed to update async execution record", "error", err)
 		}
 
@@ -205,4 +313,20 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 		ExecutionID: execID,
 		Status:      "running",
 	})
+}
+
+// handleCancelExecution cancels a running execution.
+// POST /api/v1/executions/{id}/cancel
+func (s *Server) handleCancelExecution(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	cancelFn, ok := s.cancels.Load(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "execution not running or not found: "+id)
+		return
+	}
+
+	cancelFn.(context.CancelFunc)()
+	s.logger.Info("execution cancelled", "id", id)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled", "execution_id": id})
 }
