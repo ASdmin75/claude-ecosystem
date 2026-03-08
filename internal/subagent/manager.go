@@ -7,59 +7,110 @@ import (
 )
 
 // Manager provides CRUD operations for sub-agent .md files
-// stored in a base directory (typically .claude/agents/).
+// stored in user (~/.claude/agents/) and project (.claude/agents/) directories.
 type Manager struct {
-	baseDir string
+	userDir    string
+	projectDir string
 }
 
-// NewManager creates a Manager that operates on the given base directory.
-// If baseDir is empty, it defaults to ".claude/agents" relative to the
-// current working directory.
-func NewManager(baseDir string) *Manager {
-	if baseDir == "" {
-		baseDir = filepath.Join(".claude", "agents")
+// NewManager creates a Manager that operates on both user and project directories.
+// projectDir is typically ".claude/agents" relative to the working directory.
+func NewManager(projectDir string) *Manager {
+	if projectDir == "" {
+		projectDir = filepath.Join(".claude", "agents")
 	}
-	return &Manager{baseDir: baseDir}
+	home, _ := os.UserHomeDir()
+	userDir := filepath.Join(home, ".claude", "agents")
+	return &Manager{userDir: userDir, projectDir: projectDir}
 }
 
-// List returns all sub-agents found in the agents directory.
+// dirForScope returns the base directory for the given scope.
+func (m *Manager) dirForScope(scope string) string {
+	if scope == "project" {
+		return m.projectDir
+	}
+	return m.userDir
+}
+
+// List returns all sub-agents found in both user and project directories.
 func (m *Manager) List() ([]SubAgent, error) {
-	pattern := filepath.Join(m.baseDir, "*.md")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("glob sub-agent files: %w", err)
-	}
-
-	agents := make([]SubAgent, 0, len(matches))
-	for _, path := range matches {
-		agent, err := ParseFile(path)
+	var agents []SubAgent
+	for _, dir := range []struct {
+		path  string
+		scope string
+	}{
+		{m.userDir, "user"},
+		{m.projectDir, "project"},
+	} {
+		pattern := filepath.Join(dir.path, "*.md")
+		matches, err := filepath.Glob(pattern)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("glob sub-agent files: %w", err)
 		}
-		agents = append(agents, *agent)
+		for _, path := range matches {
+			agent, err := ParseFile(path)
+			if err != nil {
+				return nil, err
+			}
+			agent.Scope = dir.scope
+			agents = append(agents, *agent)
+		}
 	}
 	return agents, nil
 }
 
-// Get returns a specific sub-agent by name.
+// Get returns a specific sub-agent by name, checking project first then user.
 func (m *Manager) Get(name string) (*SubAgent, error) {
-	path := filepath.Join(m.baseDir, name+".md")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, fmt.Errorf("sub-agent %q not found", name)
+	// Check project scope first, then user scope.
+	for _, dir := range []struct {
+		path  string
+		scope string
+	}{
+		{m.projectDir, "project"},
+		{m.userDir, "user"},
+	} {
+		p := filepath.Join(dir.path, name+".md")
+		if _, err := os.Stat(p); err == nil {
+			agent, err := ParseFile(p)
+			if err != nil {
+				return nil, err
+			}
+			agent.Scope = dir.scope
+			return agent, nil
+		}
 	}
-	return ParseFile(path)
+	return nil, fmt.Errorf("sub-agent %q not found", name)
 }
 
-// Create creates a new sub-agent .md file. Returns error if already exists.
+// GetScoped returns a specific sub-agent by name from the given scope.
+func (m *Manager) GetScoped(name, scope string) (*SubAgent, error) {
+	dir := m.dirForScope(scope)
+	p := filepath.Join(dir, name+".md")
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		return nil, fmt.Errorf("sub-agent %q not found in %s scope", name, scope)
+	}
+	agent, err := ParseFile(p)
+	if err != nil {
+		return nil, err
+	}
+	agent.Scope = scope
+	return agent, nil
+}
+
+// Create creates a new sub-agent .md file in the specified scope.
+// If agent.Scope is empty, defaults to "user".
 func (m *Manager) Create(agent *SubAgent) error {
-	path := filepath.Join(m.baseDir, agent.Name+".md")
+	if agent.Scope == "" {
+		agent.Scope = "user"
+	}
+	dir := m.dirForScope(agent.Scope)
+	path := filepath.Join(dir, agent.Name+".md")
 
 	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("sub-agent %q already exists", agent.Name)
+		return fmt.Errorf("sub-agent %q already exists in %s scope", agent.Name, agent.Scope)
 	}
 
-	// Ensure the directory exists.
-	if err := os.MkdirAll(m.baseDir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create agents directory: %w", err)
 	}
 
@@ -79,12 +130,17 @@ func (m *Manager) Create(agent *SubAgent) error {
 	return nil
 }
 
-// Update updates an existing sub-agent .md file. Returns error if not found.
+// Update updates an existing sub-agent .md file.
+// Uses agent.Scope to determine which directory to write to.
 func (m *Manager) Update(agent *SubAgent) error {
-	path := filepath.Join(m.baseDir, agent.Name+".md")
+	if agent.Scope == "" {
+		agent.Scope = "user"
+	}
+	dir := m.dirForScope(agent.Scope)
+	path := filepath.Join(dir, agent.Name+".md")
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return fmt.Errorf("sub-agent %q not found", agent.Name)
+		return fmt.Errorf("sub-agent %q not found in %s scope", agent.Name, agent.Scope)
 	}
 
 	data, err := SerializeToMarkdown(agent)
@@ -103,12 +159,27 @@ func (m *Manager) Update(agent *SubAgent) error {
 	return nil
 }
 
-// Delete removes a sub-agent .md file. Returns error if not found.
+// Delete removes a sub-agent .md file. Checks project scope first, then user.
 func (m *Manager) Delete(name string) error {
-	path := filepath.Join(m.baseDir, name+".md")
+	for _, dir := range []string{m.projectDir, m.userDir} {
+		path := filepath.Join(dir, name+".md")
+		if _, err := os.Stat(path); err == nil {
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("delete sub-agent file: %w", err)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("sub-agent %q not found", name)
+}
+
+// DeleteScoped removes a sub-agent .md file from a specific scope.
+func (m *Manager) DeleteScoped(name, scope string) error {
+	dir := m.dirForScope(scope)
+	path := filepath.Join(dir, name+".md")
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return fmt.Errorf("sub-agent %q not found", name)
+		return fmt.Errorf("sub-agent %q not found in %s scope", name, scope)
 	}
 
 	if err := os.Remove(path); err != nil {

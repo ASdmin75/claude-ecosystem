@@ -188,5 +188,5 @@ auth:
         - username: admin
           password: $2b$10$1WWjnBvMGpdunC9GlJOtM.yrwGuptF5/J65631hRz2vgCA/pYyZbO
 server:
-    addr: :8080
+    addr: :3580
     data_dir: data

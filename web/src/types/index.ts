@@ -1,4 +1,4 @@
-interface DashboardData {
+export interface DashboardData {
   total_tasks: number
   total_pipelines: number
   total_executions: number
@@ -7,7 +7,13 @@ interface DashboardData {
   failed: number
 }
 
-interface Task {
+export interface NotifyConfig {
+  email?: string[]
+  webhook?: string
+  trigger?: 'on_success' | 'on_failure' | 'always'
+}
+
+export interface Task {
   name: string
   prompt: string
   work_dir: string
@@ -20,12 +26,15 @@ interface Task {
   mcp_servers?: string[]
   allowed_tools?: string[]
   json_schema?: string
+  append_system_prompt?: string
   max_turns?: number
   max_budget_usd?: number
   output_format?: string
+  permission_mode?: string
+  notify?: NotifyConfig
 }
 
-interface SubAgent {
+export interface SubAgent {
   name: string
   description: string
   tools?: string[]
@@ -36,9 +45,10 @@ interface SubAgent {
   mcp_servers?: string[]
   instructions: string
   file_path: string
+  scope: string
 }
 
-interface Pipeline {
+export interface Pipeline {
   name: string
   mode: string
   steps: { task: string }[]
@@ -47,7 +57,7 @@ interface Pipeline {
   collector?: string
 }
 
-interface Execution {
+export interface Execution {
   id: string
   task_name: string
   pipeline_name?: string
@@ -64,7 +74,7 @@ interface Execution {
   completed_at?: string
 }
 
-interface ExecutionResult {
+export interface ExecutionResult {
   task_name: string
   output: string
   duration: number
@@ -74,7 +84,7 @@ interface ExecutionResult {
   cost_usd?: number
 }
 
-interface MCPServer {
+export interface MCPServer {
   name: string
   running: boolean
   pid?: number

@@ -15,6 +15,9 @@ type Config struct {
 	MCPServers []MCPServerConfig `yaml:"mcp_servers,omitempty"`
 	Auth       AuthConfig        `yaml:"auth,omitempty"`
 	Server     ServerConfig      `yaml:"server,omitempty"`
+
+	// FilePath is the resolved path to the config file (not serialized).
+	FilePath string `yaml:"-" json:"-"`
 }
 
 // AuthConfig holds authentication settings for the server.
@@ -32,7 +35,7 @@ type UserConfig struct {
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
-	Addr    string `yaml:"addr"`     // default ":8080"
+	Addr    string `yaml:"addr"`     // default ":3580"
 	DataDir string `yaml:"data_dir"` // default "data"
 }
 
@@ -53,8 +56,15 @@ type legacyConfig struct {
 
 // Load reads configuration from the given path. If path is empty it tries
 // "tasks.yaml" first, then falls back to "agents.yaml" for backward
-// compatibility. It applies defaults and validates the result.
+// compatibility. It loads .env (if present), expands ${VAR} references,
+// applies defaults and validates the result.
 func Load(path string) (*Config, error) {
+	// Load .env file before anything else so env vars are available
+	// for ${VAR} expansion. Real env vars take priority over .env values.
+	if err := LoadDotEnv(".env"); err != nil {
+		return nil, fmt.Errorf("loading .env: %w", err)
+	}
+
 	if path == "" {
 		// Try tasks.yaml first, fall back to agents.yaml.
 		if _, err := os.Stat("tasks.yaml"); err == nil {
@@ -97,6 +107,11 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	cfg.FilePath = path
+
+	// Expand ${VAR} references from environment.
+	expandConfigEnvVars(&cfg)
+
 	applyDefaults(&cfg)
 
 	if err := Validate(&cfg); err != nil {
@@ -106,13 +121,25 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// Save writes the current config back to its source file.
+func (cfg *Config) Save() error {
+	if cfg.FilePath == "" {
+		return fmt.Errorf("config file path not set")
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+	return os.WriteFile(cfg.FilePath, data, 0o644)
+}
+
 // applyDefaults fills in zero-value fields with sensible defaults.
 func applyDefaults(cfg *Config) {
 	if cfg.ClaudeBin == "" {
 		cfg.ClaudeBin = "claude"
 	}
 	if cfg.Server.Addr == "" {
-		cfg.Server.Addr = ":8080"
+		cfg.Server.Addr = ":3580"
 	}
 	if cfg.Server.DataDir == "" {
 		cfg.Server.DataDir = "data"

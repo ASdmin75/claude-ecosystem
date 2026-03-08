@@ -1,0 +1,23 @@
+services:
+  server:
+    build: .
+    ports:
+      - "${SERVER_PORT:-3580}:3580"
+    volumes:
+      - ./tasks.yaml:/app/tasks.yaml:ro
+      - ./.claude/agents/:/app/.claude/agents/:ro
+      - server-data:/app/data
+    env_file:
+      - .env
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3580/api/v1/dashboard"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  server-data:

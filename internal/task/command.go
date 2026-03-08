@@ -43,6 +43,10 @@ func BuildArgs(t config.Task, opts RunOptions) []string {
 		args = append(args, "--mcp-config", opts.MCPConfigPath)
 	}
 
+	if t.PermissionMode != "" {
+		args = append(args, "--permission-mode", t.PermissionMode)
+	}
+
 	if len(t.AllowedTools) > 0 {
 		args = append(args, "--allowedTools")
 		args = append(args, t.AllowedTools...)

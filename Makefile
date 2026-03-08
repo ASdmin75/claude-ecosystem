@@ -1,4 +1,4 @@
-.PHONY: build build-ui install run run-task run-pipeline clean test
+.PHONY: build build-ui install run run-task run-pipeline clean test docker-build docker-up docker-down
 
 build:
 	go build -o bin/server ./cmd/server
@@ -37,3 +37,12 @@ test:
 
 clean:
 	rm -rf bin/
+
+docker-build:
+	docker compose build
+
+docker-up:
+	docker compose up -d
+
+docker-down:
+	docker compose down

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/asdmin/claude-ecosystem/internal/auth"
 	"github.com/asdmin/claude-ecosystem/internal/config"
@@ -28,6 +29,7 @@ type Server struct {
 	paseto      *auth.PASETOManager
 	bus         *events.Bus
 	logger      *slog.Logger
+	cancels     sync.Map // map[executionID]context.CancelFunc
 }
 
 // NewServer creates a new Server with all required dependencies.
@@ -71,7 +73,9 @@ func (s *Server) Handler() http.Handler {
 	// --- Protected API routes ---
 	// Tasks
 	mux.HandleFunc("GET /api/v1/tasks", s.withAuth(s.handleListTasks))
+	mux.HandleFunc("POST /api/v1/tasks", s.withAuth(s.handleCreateTask))
 	mux.HandleFunc("GET /api/v1/tasks/{name}", s.withAuth(s.handleGetTask))
+	mux.HandleFunc("PUT /api/v1/tasks/{name}", s.withAuth(s.handleUpdateTask))
 	mux.HandleFunc("POST /api/v1/tasks/{name}/run", s.withAuth(s.handleRunTask))
 	mux.HandleFunc("POST /api/v1/tasks/{name}/run-async", s.withAuth(s.handleRunTaskAsync))
 	mux.HandleFunc("GET /api/v1/tasks/{name}/stream", s.withAuth(s.handleTaskStream))
@@ -85,7 +89,10 @@ func (s *Server) Handler() http.Handler {
 
 	// Pipelines
 	mux.HandleFunc("GET /api/v1/pipelines", s.withAuth(s.handleListPipelines))
+	mux.HandleFunc("POST /api/v1/pipelines", s.withAuth(s.handleCreatePipeline))
 	mux.HandleFunc("GET /api/v1/pipelines/{name}", s.withAuth(s.handleGetPipeline))
+	mux.HandleFunc("PUT /api/v1/pipelines/{name}", s.withAuth(s.handleUpdatePipeline))
+	mux.HandleFunc("DELETE /api/v1/pipelines/{name}", s.withAuth(s.handleDeletePipeline))
 	mux.HandleFunc("POST /api/v1/pipelines/{name}/run", s.withAuth(s.handleRunPipeline))
 	mux.HandleFunc("POST /api/v1/pipelines/{name}/run-async", s.withAuth(s.handleRunPipelineAsync))
 
@@ -93,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/executions", s.withAuth(s.handleListExecutions))
 	mux.HandleFunc("GET /api/v1/executions/{id}", s.withAuth(s.handleGetExecution))
 	mux.HandleFunc("GET /api/v1/executions/{id}/stream", s.withAuth(s.handleExecutionStream))
+	mux.HandleFunc("POST /api/v1/executions/{id}/cancel", s.withAuth(s.handleCancelExecution))
 
 	// MCP Servers
 	mux.HandleFunc("GET /api/v1/mcp-servers", s.withAuth(s.handleListMCPServers))

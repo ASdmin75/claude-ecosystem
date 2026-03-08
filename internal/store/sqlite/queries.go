@@ -144,6 +144,19 @@ func (s *Store) ListExecutions(ctx context.Context, filter store.ExecutionFilter
 	return executions, nil
 }
 
+// MarkStaleRunning updates all executions stuck in "running" status to "failed".
+// This handles cases where the server restarted or a task timed out without updating the DB.
+func (s *Store) MarkStaleRunning(ctx context.Context) (int64, error) {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE executions SET status = 'failed', error = 'server restarted or timeout (stale)'
+		 WHERE status = 'running'`,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("mark stale running: %w", err)
+	}
+	return result.RowsAffected()
+}
+
 // GetUserByUsername retrieves a user by username.
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (*store.User, error) {
 	var user store.User

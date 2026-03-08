@@ -3,8 +3,5 @@ data/
 *.db
 node_modules/
 web/dist/
-*.txt
-/orchestrator
-/server
-/hook
 .env
+.git/

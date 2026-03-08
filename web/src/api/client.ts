@@ -1,3 +1,5 @@
+import type { DashboardData, Task, SubAgent, Pipeline, Execution, ExecutionResult, MCPServer } from '../types'
+
 const BASE = '/api/v1'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -37,7 +39,11 @@ export const api = {
 
   // Tasks
   listTasks: () => request<Task[]>('/tasks'),
+  createTask: (task: Partial<Task>) =>
+    request<Task>('/tasks', { method: 'POST', body: JSON.stringify(task) }),
   getTask: (name: string) => request<Task>(`/tasks/${name}`),
+  updateTask: (name: string, task: Partial<Task>) =>
+    request<Task>(`/tasks/${name}`, { method: 'PUT', body: JSON.stringify(task) }),
   runTask: (name: string, vars?: Record<string, string>) =>
     request<ExecutionResult>(`/tasks/${name}/run`, {
       method: 'POST',
@@ -61,6 +67,12 @@ export const api = {
 
   // Pipelines
   listPipelines: () => request<Pipeline[]>('/pipelines'),
+  createPipeline: (pipeline: Partial<Pipeline>) =>
+    request<Pipeline>('/pipelines', { method: 'POST', body: JSON.stringify(pipeline) }),
+  updatePipeline: (name: string, pipeline: Partial<Pipeline>) =>
+    request<Pipeline>(`/pipelines/${name}`, { method: 'PUT', body: JSON.stringify(pipeline) }),
+  deletePipeline: (name: string) =>
+    request<void>(`/pipelines/${name}`, { method: 'DELETE' }),
   runPipeline: (name: string) =>
     request<ExecutionResult>(`/pipelines/${name}/run`, { method: 'POST' }),
   runPipelineAsync: (name: string) =>
@@ -72,6 +84,8 @@ export const api = {
     return request<Execution[]>(`/executions${qs}`)
   },
   getExecution: (id: string) => request<Execution>(`/executions/${id}`),
+  cancelExecution: (id: string) =>
+    request<{ status: string }>(`/executions/${id}/cancel`, { method: 'POST' }),
 
   // MCP Servers
   listMCPServers: () => request<MCPServer[]>('/mcp-servers'),

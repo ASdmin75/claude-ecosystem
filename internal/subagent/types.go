@@ -18,6 +18,7 @@ type SubAgent struct {
 	MCPServers      []string `yaml:"mcpServers,omitempty" json:"mcp_servers,omitempty"`
 	Instructions    string   `yaml:"-" json:"instructions"` // markdown body after frontmatter
 	FilePath        string   `yaml:"-" json:"file_path"`    // absolute path to .md file
+	Scope           string   `yaml:"-" json:"scope"`        // "user" or "project"
 }
 
 // ToAgentsJSON converts a list of SubAgents to the JSON format expected by `claude --agents`.

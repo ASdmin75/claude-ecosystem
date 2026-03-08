@@ -13,6 +13,7 @@
 9. [Web UI](#web-ui)
 10. [Аутентификация](#аутентификация)
 11. [Hook-система](#hook-система)
+12. [Docker](#docker)
 
 ---
 
@@ -49,13 +50,42 @@ make install
 
 ## Конфигурация
 
+### Файл .env
+
+Секреты и environment-specific значения хранятся в файле `.env` (не коммитится в git):
+
+```bash
+cp .env.example .env
+# Отредактируйте .env, заполнив свои значения
+```
+
+Приоритет значений:
+1. Реальные переменные окружения (наивысший)
+2. Значения из `.env`
+3. Дефолты в `tasks.yaml`
+
+В `tasks.yaml` можно ссылаться на переменные через `${VAR}`:
+
+```yaml
+mcp_servers:
+  - name: email
+    command: ./bin/mcp-email
+    env:
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+```
+
+Подстановка работает в полях: `auth`, `mcp_servers.env`, `server`, `tasks.prompt`, `tasks.work_dir`.
+
+### Файл tasks.yaml
+
 Основной файл конфигурации — `tasks.yaml`. Пример:
 
 ```yaml
 claude_bin: claude
 
 server:
-  addr: ":8080"
+  addr: ":3580"
   data_dir: "data"
 
 auth:
@@ -87,6 +117,10 @@ tasks:
     # mcp_servers: [filesystem]  # MCP-серверы для --mcp-config
     # allowed_tools: [Read, Grep, Glob]
     # json_schema: '{"type":"object",...}'
+    # notify:
+    #   email: [admin@company.com]
+    #   webhook: https://hooks.example.com/task-done
+    #   trigger: on_failure  # on_success | on_failure | always
 
 pipelines:
   - name: review-fix
@@ -118,6 +152,44 @@ pipelines:
 | `max_turns` | Максимум итераций агента |
 | `max_budget_usd` | Лимит бюджета в USD |
 | `output_format` | Формат вывода: `json` (по умолчанию) или `stream-json` |
+| `notify` | Настройки уведомлений (см. ниже) |
+
+#### Уведомления (notify)
+
+Задача может автоматически отправлять email и/или webhook при завершении:
+
+```yaml
+tasks:
+  - name: nightly-report
+    prompt: "Generate daily report..."
+    work_dir: .
+    schedule: "0 22 * * *"
+    notify:
+      email:
+        - ceo@company.com
+        - team@company.com
+      webhook: https://hooks.slack.com/services/XXX
+      trigger: on_failure  # on_success | on_failure | always (default)
+```
+
+| Поле | Описание |
+|------|----------|
+| `email` | Список адресов для email-уведомлений. Требует `SMTP_*` переменных в `.env` |
+| `webhook` | URL для POST-запроса с JSON-телом результата |
+| `trigger` | Когда отправлять: `on_success`, `on_failure`, `always` (по умолчанию) |
+
+**Email** содержит HTML-версию с результатом выполнения и plain-text fallback.
+**Webhook** отправляет JSON:
+```json
+{
+  "event": "task.completed",
+  "task": "nightly-report",
+  "status": "completed",
+  "execution_id": "uuid",
+  "output": "...",
+  "timestamp": "2026-03-08T22:00:00Z"
+}
+```
 
 ---
 
@@ -131,7 +203,7 @@ make run
 ./bin/server -config tasks.yaml
 ```
 
-Запускает HTTP-сервер на `:8080`, планировщик cron и watcher файлов.
+Запускает HTTP-сервер на `:3580`, планировщик cron и watcher файлов.
 
 ### Разовый запуск задачи
 
@@ -204,16 +276,16 @@ You are a security-focused code reviewer. Focus on:
 
 ```bash
 # Список суб-агентов
-curl -H "Authorization: Bearer <token>" http://localhost:8080/api/v1/subagents
+curl -H "Authorization: Bearer <token>" http://localhost:3580/api/v1/subagents
 
 # Создание
 curl -X POST -H "Authorization: Bearer <token>" \
   -d '{"name":"reviewer","description":"Code reviewer","instructions":"..."}' \
-  http://localhost:8080/api/v1/subagents
+  http://localhost:3580/api/v1/subagents
 
 # Удаление
 curl -X DELETE -H "Authorization: Bearer <token>" \
-  http://localhost:8080/api/v1/subagents/reviewer
+  http://localhost:3580/api/v1/subagents/reviewer
 ```
 
 ### Использование в задачах
@@ -348,15 +420,15 @@ tasks:
 
 ```bash
 # Статус серверов
-curl -H "Authorization: Bearer <token>" http://localhost:8080/api/v1/mcp-servers
+curl -H "Authorization: Bearer <token>" http://localhost:3580/api/v1/mcp-servers
 
 # Запуск
 curl -X POST -H "Authorization: Bearer <token>" \
-  http://localhost:8080/api/v1/mcp-servers/filesystem/start
+  http://localhost:3580/api/v1/mcp-servers/filesystem/start
 
 # Остановка
 curl -X POST -H "Authorization: Bearer <token>" \
-  http://localhost:8080/api/v1/mcp-servers/filesystem/stop
+  http://localhost:3580/api/v1/mcp-servers/filesystem/stop
 ```
 
 ---
@@ -427,7 +499,7 @@ curl -X POST -H "Authorization: Bearer <token>" \
 
 ## Web UI
 
-Веб-интерфейс доступен по адресу `http://localhost:8080/` после запуска сервера.
+Веб-интерфейс доступен по адресу `http://localhost:3580/` после запуска сервера.
 
 ### Сборка
 
@@ -442,7 +514,7 @@ make build-ui
 ```bash
 cd web
 npm install
-npm run dev   # Vite dev server на :5173, проксирует /api на :8080
+npm run dev   # Vite dev server на :5173, проксирует /api на :3580
 ```
 
 ### Страницы
@@ -465,12 +537,12 @@ npm run dev   # Vite dev server на :5173, проксирует /api на :8080
 
 ```bash
 # Получение токена
-curl -X POST http://localhost:8080/api/v1/auth/login \
+curl -X POST http://localhost:3580/api/v1/auth/login \
   -d '{"username":"admin","password":"secret"}'
 
 # Использование
 curl -H "Authorization: Bearer v4.local.xxx..." \
-  http://localhost:8080/api/v1/tasks
+  http://localhost:3580/api/v1/tasks
 ```
 
 ### Bearer-токены
@@ -485,7 +557,7 @@ auth:
 
 ```bash
 curl -H "Authorization: Bearer my-ci-token" \
-  http://localhost:8080/api/v1/tasks
+  http://localhost:3580/api/v1/tasks
 ```
 
 ---
@@ -524,3 +596,50 @@ make install
 - `chmod -R 777 /`
 
 Пример конфигурации: `claude-hooks.example.json`.
+
+---
+
+## Docker
+
+### Быстрый старт
+
+```bash
+cp .env.example .env
+# Заполните ANTHROPIC_API_KEY и другие переменные в .env
+
+make docker-build
+make docker-up
+```
+
+Сервер будет доступен на `http://localhost:3580`.
+
+### Остановка
+
+```bash
+make docker-down
+```
+
+### Что входит в образ
+
+Единый Docker-образ содержит:
+- Go-сервер (HTTP API + scheduler + watcher + Web UI)
+- Все MCP-серверы (`mcp-excel`, `mcp-email`, `mcp-telegram`, `mcp-filesystem` и др.)
+- Claude Code CLI
+
+MCP-серверы запускаются автоматически как дочерние процессы внутри контейнера — отдельные контейнеры для них не нужны.
+
+### Volumes
+
+| Mount | Описание |
+|-------|----------|
+| `./tasks.yaml` | Конфигурация задач (read-only) |
+| `./.claude/agents/` | Суб-агенты (read-only) |
+| `server-data` | SQLite БД и данные (named volume) |
+
+### Переменные окружения
+
+Все переменные из `.env` автоматически передаются в контейнер. Порт можно переопределить:
+
+```bash
+SERVER_PORT=9090 make docker-up
+```

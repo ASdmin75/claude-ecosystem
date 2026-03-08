@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/store"
 	"github.com/asdmin/claude-ecosystem/internal/task"
@@ -133,6 +134,108 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 		Iterations:  iterations,
 		DurationMS:  time.Since(start).Milliseconds(),
 	}
+}
+
+// handleCreatePipeline creates a new pipeline and persists to disk.
+// POST /api/v1/pipelines
+func (s *Server) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
+	var p config.Pipeline
+	if err := readJSON(r, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if p.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if len(p.Steps) == 0 {
+		writeError(w, http.StatusBadRequest, "at least one step is required")
+		return
+	}
+	if p.Mode == "" {
+		p.Mode = "sequential"
+	}
+
+	if s.findPipeline(p.Name) != nil {
+		writeError(w, http.StatusConflict, "pipeline already exists: "+p.Name)
+		return
+	}
+
+	s.cfg.Pipelines = append(s.cfg.Pipelines, p)
+
+	if err := s.cfg.Save(); err != nil {
+		s.cfg.Pipelines = s.cfg.Pipelines[:len(s.cfg.Pipelines)-1]
+		s.logger.Error("failed to save config", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
+		return
+	}
+
+	s.logger.Info("pipeline created", "name", p.Name)
+	writeJSON(w, http.StatusCreated, s.findPipeline(p.Name))
+}
+
+// handleUpdatePipeline updates a pipeline's configuration in-memory and persists to disk.
+// PUT /api/v1/pipelines/{name}
+func (s *Server) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	var updated config.Pipeline
+	if err := readJSON(r, &updated); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var found bool
+	for i := range s.cfg.Pipelines {
+		if s.cfg.Pipelines[i].Name == name {
+			updated.Name = name
+			s.cfg.Pipelines[i] = updated
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "pipeline not found: "+name)
+		return
+	}
+
+	if err := s.cfg.Save(); err != nil {
+		s.logger.Error("failed to save config", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
+		return
+	}
+
+	s.logger.Info("pipeline updated", "name", name)
+	writeJSON(w, http.StatusOK, s.findPipeline(name))
+}
+
+// handleDeletePipeline removes a pipeline from the config and persists to disk.
+// DELETE /api/v1/pipelines/{name}
+func (s *Server) handleDeletePipeline(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	var found bool
+	for i := range s.cfg.Pipelines {
+		if s.cfg.Pipelines[i].Name == name {
+			s.cfg.Pipelines = append(s.cfg.Pipelines[:i], s.cfg.Pipelines[i+1:]...)
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "pipeline not found: "+name)
+		return
+	}
+
+	if err := s.cfg.Save(); err != nil {
+		s.logger.Error("failed to save config", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
+		return
+	}
+
+	s.logger.Info("pipeline deleted", "name", name)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleRunPipeline runs a pipeline synchronously.

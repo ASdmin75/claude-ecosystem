@@ -38,6 +38,14 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("task %s: invalid debounce %q: %w", t.Name, t.Watch.Debounce, err)
 			}
 		}
+
+		if t.Notify != nil && t.Notify.Trigger != "" {
+			switch t.Notify.Trigger {
+			case "on_success", "on_failure", "always":
+			default:
+				return fmt.Errorf("task %s: invalid notify trigger %q (must be \"on_success\", \"on_failure\", or \"always\")", t.Name, t.Notify.Trigger)
+			}
+		}
 	}
 
 	for _, p := range cfg.Pipelines {

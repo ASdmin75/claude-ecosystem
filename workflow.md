@@ -13,7 +13,7 @@
 - Переименование: `agent` → `task`, `Agent` → `Task`, `agents.yaml` → `tasks.yaml`
 - Новая схема конфигурации: `Config`, `Task`, `Pipeline`, `MCPServerConfig`, `AuthConfig`, `ServerConfig`
 - Обратная совместимость с `agents.yaml` (автомиграция при загрузке)
-- Go 1.26.0
+- Go 1.26.1
 
 **Фаза 2: Расширенный task runner**
 - Динамическое построение CLI-аргументов `claude -p` (`--agents`, `--mcp-config`, `--json-schema`, `--max-turns`, `--max-budget-usd`, `--allowed-tools`, `--resume`)
@@ -79,6 +79,41 @@
 - Ослаблена валидация: `stop_signal` не требуется для sequential пайплайнов с `max_iterations: 1`
 - Новые зависимости: `excelize/v2`, `gomail.v2`, `telebot.v4`
 
+### 2026-03-08 — Поддержка .env
+
+- Встроенный парсер `.env` без внешних зависимостей (`internal/config/dotenv.go`)
+- Загрузка `.env` при старте сервера (до парсинга `tasks.yaml`)
+- Подстановка `${VAR}` ссылок в конфигурации: auth, MCP servers env, task prompts, work_dir
+- Приоритет: `.env` < переменные окружения (реальные env vars не перезаписываются)
+- `.env.example` с описанием всех переменных
+- `.env` в `.gitignore`
+- Unit-тесты: `LoadDotEnv`, `ExpandEnvVars`, приоритет, отсутствующий файл
+
+### 2026-03-08 — Email/webhook уведомления
+
+- Новый пакет `internal/notify/` — обработчик уведомлений при завершении задач
+- Структура `NotifyConfig` в `config.Task`: поля `email` ([]string), `webhook` (string), `trigger` (on_success | on_failure | always)
+- Email через SMTP (gomail): HTML-шаблон с результатом + plain-text fallback, использует те же `SMTP_*` env vars что и mcp-email
+- Webhook: HTTP POST с JSON-телом (event, task, status, execution_id, output, error, timestamp)
+- Подписка на события `task.completed` и `pipeline.completed` через event bus
+- Валидация `notify.trigger` в `config.Validate()`
+- Подстановка `${VAR}` в полях `notify.email` и `notify.webhook`
+- TypeScript-тип `NotifyConfig` в Web UI
+- Unit-тесты: trigger-логика, webhook-доставка, фильтрация по статусу, шаблоны
+
+### 2026-03-08 — Docker Compose
+
+- Multi-stage `Dockerfile`: Node (React) → Go (бинарники) → Alpine (runtime + Claude CLI)
+- Единый образ содержит server + все MCP-серверы (mcpmanager запускает их как дочерние процессы)
+- `docker-compose.yml`: сервис server с health check (`/api/v1/dashboard`), volumes для config/data/agents, `.env`
+- `.dockerignore` для чистой сборки
+- Makefile: `docker-build`, `docker-up`, `docker-down`
+
+### 2026-03-08 — Прочее
+
+- Порт по умолчанию изменён с `:8080` на `:3580`
+- Go 1.26.0 → 1.26.1
+
 ---
 
 ## Бэклог
@@ -108,5 +143,5 @@
 ### Инфраструктура
 - [ ] Unit-тесты для всех internal/ пакетов
 - [ ] CI/CD pipeline (GitHub Actions)
-- [ ] Docker-образ
+- [x] Docker-образ (Dockerfile + docker-compose.yml)
 - [ ] Документация API (OpenAPI/Swagger)

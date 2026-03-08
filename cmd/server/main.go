@@ -18,6 +18,7 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
+	"github.com/asdmin/claude-ecosystem/internal/notify"
 	"github.com/asdmin/claude-ecosystem/internal/pipeline"
 	"github.com/asdmin/claude-ecosystem/internal/scheduler"
 	"github.com/asdmin/claude-ecosystem/internal/store"
@@ -55,6 +56,10 @@ func main() {
 		fmt.Fprintf(os.Stdout, "\n=== %s ===\n%s\n", e.Payload["task"], e.Payload["output"])
 		outputMu.Unlock()
 	})
+
+	// Initialize email/webhook notification handler.
+	notifier := notify.NewHandler(cfg.Tasks, logger)
+	notifier.Subscribe(bus)
 
 	// Initialize sub-agent manager and MCP manager (needed for task resolution in all modes)
 	subagentMgr := subagent.NewManager(".claude/agents")
