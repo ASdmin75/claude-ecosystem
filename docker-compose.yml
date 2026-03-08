@@ -4,9 +4,10 @@ services:
     ports:
       - "${SERVER_PORT:-3580}:3580"
     volumes:
-      - ./tasks.yaml:/app/tasks.yaml:ro
-      - ./.claude/agents/:/app/.claude/agents/:ro
+      - ./tasks.yaml:/app/tasks.yaml
+      - ./.claude/agents/:/app/.claude/agents/
       - server-data:/app/data
+      - ${WORKSPACE_DIR:-./workspace}:/app/workspace
     env_file:
       - .env
     environment:

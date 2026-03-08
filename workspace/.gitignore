@@ -1,0 +1,5 @@
+# Ignore all task output files, keep directory structure
+*
+!.gitignore
+!.gitkeep
+!*/

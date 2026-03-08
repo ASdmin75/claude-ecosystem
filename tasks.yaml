@@ -115,7 +115,7 @@ tasks:
 
         {{.PrevOutput}}
 
-        Создай Excel-отчёт для CEO: /tmp/leads-report-{{.Date}}.xlsx
+        Создай Excel-отчёт для CEO: workspace/leads/leads-report-{{.Date}}.xlsx
         Используй инструменты create_spreadsheet и add_styled_table.
         Добавь лист 'Leads' с таблицей всех лидов и лист 'Summary' с итогами по источникам.
         Верни только путь к созданному файлу.
@@ -135,7 +135,7 @@ tasks:
 
         Выполни доставку отчёта CEO:
         1. Отправь email на ceo@company.com с темой "Отчёт по лидам" и вложением файла
-        2. Скопируй файл в /shares/ceo/reports/
+        2. Скопируй файл в workspace/ceo/reports/
         3. Отправь уведомление в Telegram с файлом и подписью "Новый отчёт по лидам"
       work_dir: .
       timeout: 10m

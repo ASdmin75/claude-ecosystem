@@ -109,6 +109,16 @@
 - `.dockerignore` для чистой сборки
 - Makefile: `docker-build`, `docker-up`, `docker-down`
 
+### 2026-03-08 — Workspace volumes и Docker I/O
+
+- Добавлен volume `workspace` для файлового ввода-вывода задач в Docker
+- Переменная `WORKSPACE_DIR` в `.env` (по умолчанию `./workspace`)
+- Маппинг: `${WORKSPACE_DIR:-./workspace}:/app/workspace`
+- Структура каталогов: `workspace/leads/`, `workspace/ceo/reports/`
+- `.gitignore` в workspace — данные не попадают в git, структура сохраняется через `.gitkeep`
+- Убран `:ro` с `tasks.yaml` и `.claude/agents/` — Web UI может сохранять изменения конфигурации
+- Обновлены пути в задачах `compile-leads-excel` и `deliver-leads-report` на workspace-relative
+
 ### 2026-03-08 — Прочее
 
 - Порт по умолчанию изменён с `:8080` на `:3580`
