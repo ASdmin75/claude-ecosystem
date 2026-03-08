@@ -1,15 +1,15 @@
 # TODO
 
-## 1. Структурированное логирование (slog) 
-> Добавлено: 2026-03-07 22:11 
+## 1. Структурированное логирование (slog) <!-- Выполнено: 2026-03-08 -->
+> Добавлено: 2026-03-07 22:11
 
-- [ ] Заменить все `fmt.Printf`/`fmt.Println` на `slog.Info`/`slog.Error`/`slog.Warn`
-- [ ] Добавить slog в task runner (начало/конец задачи, ошибки, таймауты)
-- [ ] Добавить slog в pipeline runner
-- [ ] Добавить slog в watcher и scheduler
-- [ ] Добавить request logging middleware (метод, путь, статус, длительность)
-- [ ] Настраиваемый уровень логирования через `tasks.yaml` (`server.log_level`)
-- [ ] Опциональный вывод в файл (`server.log_file`)
+- [x] Заменить все `fmt.Printf`/`fmt.Println` на `slog.Info`/`slog.Error`/`slog.Warn`
+- [x] Добавить slog в task runner (начало/конец задачи, ошибки, таймауты)
+- [x] Добавить slog в pipeline runner
+- [x] Добавить slog в watcher и scheduler
+- [x] Добавить request logging middleware (метод, путь, статус, длительность)
+- [x] Настраиваемый уровень логирования через `tasks.yaml` (`server.log_level`)
+- [x] Опциональный вывод в файл (`server.log_file`)
 
 ## 2. Email-уведомления с результатами задач <!-- Выполнено: 2026-03-08 -->
 > Добавлено: 2026-03-07 22:11

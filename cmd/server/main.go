@@ -4,12 +4,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sync"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,6 +35,7 @@ func main() {
 	runPipeline := flag.String("pipeline", "", "run a pipeline by name and exit")
 	flag.Parse()
 
+	// Bootstrap logger at Info level for config loading; reconfigure after config is loaded.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	cfg, err := config.Load(*cfgPath)
@@ -42,19 +44,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Reconfigure logger based on config (log_level, log_file).
+	logger, logCleanup, err := setupLogger(cfg.Server)
+	if err != nil {
+		logger.Error("failed to setup logger", "error", err)
+		os.Exit(1)
+	}
+	if logCleanup != nil {
+		defer logCleanup()
+	}
+
 	taskRunner := task.NewRunner(cfg.ClaudeBin)
 	bus := events.NewBus()
 
-	var outputMu sync.Mutex
-
 	bus.Subscribe("task.completed", func(e events.Event) {
 		if e.Payload["error"] != "" {
-			logger.Error("task result", "task", e.Payload["task"], "error", e.Payload["error"])
+			logger.Error("task completed with error", "task", e.Payload["task"], "error", e.Payload["error"])
 			return
 		}
-		outputMu.Lock()
-		fmt.Fprintf(os.Stdout, "\n=== %s ===\n%s\n", e.Payload["task"], e.Payload["output"])
-		outputMu.Unlock()
+		logger.Info("task completed", "task", e.Payload["task"], "output_length", len(e.Payload["output"]))
 	})
 
 	// Initialize email/webhook notification handler.
@@ -233,4 +241,39 @@ func main() {
 	}
 
 	bus.Wait()
+}
+
+// parseLogLevel converts a string log level name to slog.Level.
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// setupLogger creates a slog.Logger based on server configuration.
+// It returns the logger and an optional cleanup function to close the log file.
+func setupLogger(sc config.ServerConfig) (*slog.Logger, func(), error) {
+	level := parseLogLevel(sc.LogLevel)
+	opts := &slog.HandlerOptions{Level: level}
+
+	var w io.Writer = os.Stderr
+	var cleanup func()
+
+	if sc.LogFile != "" {
+		f, err := os.OpenFile(sc.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return nil, nil, fmt.Errorf("opening log file %s: %w", sc.LogFile, err)
+		}
+		w = io.MultiWriter(os.Stderr, f)
+		cleanup = func() { f.Close() }
+	}
+
+	return slog.New(slog.NewTextHandler(w, opts)), cleanup, nil
 }

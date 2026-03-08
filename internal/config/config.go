@@ -35,8 +35,10 @@ type UserConfig struct {
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
-	Addr    string `yaml:"addr"`     // default ":3580"
-	DataDir string `yaml:"data_dir"` // default "data"
+	Addr     string `yaml:"addr"`      // default ":3580"
+	DataDir  string `yaml:"data_dir"`  // default "data"
+	LogLevel string `yaml:"log_level"` // debug, info, warn, error (default "info")
+	LogFile  string `yaml:"log_file"`  // optional path to log file
 }
 
 // MCPServerConfig defines an MCP server that tasks can reference.

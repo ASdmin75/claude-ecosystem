@@ -79,8 +79,13 @@ func (r *Runner) RunSequential(ctx context.Context, p config.Pipeline) (string, 
 				return prevOutput, fmt.Errorf("pipeline %s, step %s (iteration %d): %s", p.Name, step.Task, i, result.Error)
 			}
 
-			fmt.Printf("\n=== [%s] iteration %d, step %d: %s ===\n%s\n",
-				p.Name, i, stepIdx+1, step.Task, result.Output)
+			r.logger.Info("step completed",
+				"pipeline", p.Name,
+				"iteration", i,
+				"step", stepIdx+1,
+				"task", step.Task,
+				"output_length", len(result.Output),
+			)
 
 			prevOutput = result.Output
 
