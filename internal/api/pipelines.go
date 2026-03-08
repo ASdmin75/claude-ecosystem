@@ -95,9 +95,13 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 
 			vars := map[string]string{
 				"PrevOutput": lastOutput,
+				"Date":       time.Now().Format("2006-01-02"),
 			}
 
-			result := s.taskRunner.Run(ctx, *t, opts, vars)
+			// Apply per-task timeout.
+			stepCtx, stepCancel := context.WithTimeout(ctx, t.ParsedTimeout())
+			result := s.taskRunner.Run(stepCtx, *t, opts, vars)
+			stepCancel()
 			if result.Error != "" {
 				return pipelineRunResponse{
 					ExecutionID: execID,
@@ -316,7 +320,12 @@ func (s *Server) handleRunPipelineAsync(w http.ResponseWriter, r *http.Request) 
 	}
 
 	go func() {
-		ctx := context.Background()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		s.cancels.Store(execID, cancel)
+		defer s.cancels.Delete(execID)
+
 		resp := s.runPipeline(ctx, name, execID)
 
 		completedAt := time.Now().UTC()

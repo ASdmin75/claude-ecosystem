@@ -48,7 +48,7 @@ Requires Go 1.26+. The `claude` CLI must be on PATH (or set `claude_bin` in task
 
 Each task has: `name`, `prompt` (Go template), `work_dir`, and either `schedule` (cron) or `watch` (paths + extensions). Optional: `tags`, `model`, `timeout`, `agents` (sub-agent names), `mcp_servers`, `allowed_tools`, `json_schema`, `max_turns`, `max_budget_usd`, `output_format`.
 
-Pipelines chain tasks in sequential loops or parallel execution. Config also includes `server`, `auth`, and `mcp_servers` sections.
+Pipelines chain tasks in sequential loops or parallel execution. Template variables available in pipeline steps: `{{.PrevOutput}}` (output from previous step), `{{.Date}}` (current date YYYY-MM-DD). When using `allowed_tools` with sub-agents, include `Agent` in the list so Claude can delegate to them. Each pipeline step enforces the task's `timeout`. Config also includes `server`, `auth`, and `mcp_servers` sections.
 
 ## REST API
 

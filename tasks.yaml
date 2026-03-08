@@ -80,10 +80,7 @@ tasks:
       timeout: 60m
       permission_mode: dontAsk
     - name: find-leads
-      prompt: |
-        Найди потенциальных клиентов для логистическо-экспедиционной компании из РБ,
-        работающей на рынке ЕАЭС. Верни ПОЛНЫЙ список в формате JSON — массив объектов.
-        Не суммаризируй, верни все найденные лиды целиком.
+      prompt: "Найди 25 новых потенциальных клиентов для логистическо-экспедиционной компании из РБ работающей на рынке ЕАЭС с ледующих отраслях:\n- фарма\n- электроника\nКомапнии должны быть резидентами РБ. \n"
       work_dir: .
       tags:
         - leads
@@ -93,6 +90,7 @@ tasks:
       agents:
         - eaeu-logistics-lead-finder
       allowed_tools:
+        - Agent
         - WebSearch
         - WebFetch
       json_schema: |
@@ -112,7 +110,7 @@ tasks:
             "required": ["company"]
           }
         }
-      max_turns: 30
+      max_turns: 100
       permission_mode: dontAsk
     - name: compile-leads-excel
       prompt: |
@@ -139,7 +137,7 @@ tasks:
         Файл отчёта: {{.PrevOutput}}
 
         Выполни доставку отчёта CEO:
-        1. Отправь email на ceo@company.com с темой "Отчёт по лидам" и вложением файла
+        1. Отправь email на alexstav1975@yandex.by с темой "Отчёт по лидам" и вложением файла
         2. Скопируй файл в workspace/ceo/reports/
         3. Отправь уведомление в Telegram с файлом и подписью "Новый отчёт по лидам"
       work_dir: .

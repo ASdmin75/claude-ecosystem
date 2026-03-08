@@ -320,13 +320,36 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCancelExecution(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	cancelFn, ok := s.cancels.Load(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "execution not running or not found: "+id)
+	// Try in-memory cancel first (active process).
+	if cancelFn, ok := s.cancels.Load(id); ok {
+		cancelFn.(context.CancelFunc)()
+		s.logger.Info("execution cancelled", "id", id)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled", "execution_id": id})
 		return
 	}
 
-	cancelFn.(context.CancelFunc)()
-	s.logger.Info("execution cancelled", "id", id)
+	// Fallback: mark stale "running" execution as cancelled in DB
+	// (e.g. process lost after server restart).
+	exec, err := s.store.GetExecution(r.Context(), id)
+	if err != nil || exec == nil {
+		writeError(w, http.StatusNotFound, "execution not found: "+id)
+		return
+	}
+	if exec.Status != "running" {
+		writeError(w, http.StatusConflict, "execution is not running: "+exec.Status)
+		return
+	}
+
+	now := time.Now().UTC()
+	exec.Status = "cancelled"
+	exec.Error = "cancelled by user (process no longer tracked)"
+	exec.CompletedAt = &now
+	if err := s.store.UpdateExecution(r.Context(), exec); err != nil {
+		s.logger.Error("failed to update cancelled execution", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update execution")
+		return
+	}
+
+	s.logger.Info("stale execution marked as cancelled", "id", id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled", "execution_id": id})
 }

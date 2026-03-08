@@ -153,6 +153,24 @@
 - Отключён Group Privacy для получения сообщений в группах
 - Проверена отправка сообщений через `mcp-telegram`
 
+### 2026-03-08 — Исправление пайплайна leads-to-ceo (v2)
+
+**Блокировка инструмента Agent в задаче find-leads**
+- Баг: `allowed_tools: [WebSearch, WebFetch]` передавалось как `--allowedTools WebSearch WebFetch`, что блокировало инструмент `Agent` — Claude не мог делегировать работу суб-агенту `eaeu-logistics-lead-finder`
+- Фикс: добавлен `Agent` в `allowed_tools` задачи `find-leads`
+
+**Недостаточный max_turns**
+- Баг: `max_turns: 30` — слишком мало для поиска 25 лидов (каждый лид требует 2-3+ тёрна на поиск и обработку)
+- Фикс: увеличено до `max_turns: 100`
+
+**Переменная `{{.Date}}` не передавалась в пайплайне**
+- Баг: `compile-leads-excel` использовал `{{.Date}}` в имени файла, но `runPipeline()` передавал только `PrevOutput` — дата была пустой, файл назывался `leads-report-.xlsx`
+- Фикс: добавлено `"Date": time.Now().Format("2006-01-02")` в template vars пайплайна (`internal/api/pipelines.go`)
+
+**Отсутствие per-task таймаута в пайплайнах**
+- Баг: `runPipeline()` использовал общий контекст пайплайна без per-task таймаутов — если шаг зависал, весь пайплайн блокировался бесконечно (в отличие от `handleRunTask`, который применяет `t.ParsedTimeout()`)
+- Фикс: добавлен `context.WithTimeout(ctx, t.ParsedTimeout())` для каждого шага пайплайна
+
 ### 2026-03-08 — UI-фиксы и Makefile rebuild
 
 **Исправление переполнения текста ошибки в Execution History**

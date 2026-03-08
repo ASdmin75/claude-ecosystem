@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -46,7 +47,7 @@ func NewServer(
 	bus *events.Bus,
 	logger *slog.Logger,
 ) *Server {
-	return &Server{
+	s := &Server{
 		cfg:         cfg,
 		taskRunner:  taskRunner,
 		subagentMgr: subagentMgr,
@@ -57,6 +58,33 @@ func NewServer(
 		paseto:      paseto,
 		bus:         bus,
 		logger:      logger,
+	}
+	s.cleanupStaleExecutions()
+	return s
+}
+
+// cleanupStaleExecutions marks any "running" executions from a previous server
+// instance as failed, since their processes are no longer tracked.
+func (s *Server) cleanupStaleExecutions() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	execs, err := s.store.ListExecutions(ctx, store.ExecutionFilter{Status: "running", Limit: 100})
+	if err != nil {
+		s.logger.Error("failed to list stale executions", "error", err)
+		return
+	}
+
+	now := time.Now().UTC()
+	for i := range execs {
+		execs[i].Status = "failed"
+		execs[i].Error = "server restarted while task was running"
+		execs[i].CompletedAt = &now
+		if err := s.store.UpdateExecution(ctx, &execs[i]); err != nil {
+			s.logger.Error("failed to clean up stale execution", "id", execs[i].ID, "error", err)
+			continue
+		}
+		s.logger.Info("cleaned up stale execution", "id", execs[i].ID, "task", execs[i].TaskName)
 	}
 }
 
