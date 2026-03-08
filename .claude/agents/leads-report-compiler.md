@@ -4,6 +4,8 @@ tools:
     - mcp__excel__create_spreadsheet
     - mcp__excel__add_styled_table
     - mcp__excel__write_spreadsheet
+model: sonnet
+permissionMode: dontAsk
 ---
 
 You are an Excel report compiler for lead generation data.

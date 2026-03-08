@@ -80,7 +80,7 @@ tasks:
       timeout: 60m
       permission_mode: dontAsk
     - name: find-leads
-      prompt: "Найди 25 новых потенциальных клиентов для логистическо-экспедиционной компании из РБ работающей на рынке ЕАЭС с ледующих отраслях:\n- фарма\n- электроника\nКомапнии должны быть резидентами РБ. \n"
+      prompt: "Найди 10 новых потенциальных клиентов для логистическо-экспедиционной компании из РБ работающей на рынке ЕАЭС с ледующих отраслях:\n- фарма\n- электроника\nКомапнии должны быть резидентами РБ.\nИспользуй сабагента eaeu-logistics-lead-finder\n"
       work_dir: .
       tags:
         - leads
@@ -93,24 +93,7 @@ tasks:
         - Agent
         - WebSearch
         - WebFetch
-      json_schema: |
-        {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "company": {"type": "string"},
-              "contact": {"type": "string"},
-              "email": {"type": "string"},
-              "phone": {"type": "string"},
-              "position": {"type": "string"},
-              "source": {"type": "string"},
-              "notes": {"type": "string"}
-            },
-            "required": ["company"]
-          }
-        }
-      max_turns: 100
+      max_turns: 15
       permission_mode: dontAsk
     - name: compile-leads-excel
       prompt: |
