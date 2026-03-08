@@ -124,6 +124,15 @@
 - Порт по умолчанию изменён с `:8080` на `:3580`
 - Go 1.26.0 → 1.26.1
 
+### 2026-03-08 — Systemd daemon
+
+- Systemd user service (`deploy/claude-ecosystem.service`) для запуска сервера как Linux-демона
+- Unit-файл: `Type=simple`, graceful shutdown через SIGTERM, `Restart=on-failure`, логирование в journald
+- `EnvironmentFile` загружает `.env`, `PATH` включает `~/.local/bin` для доступа к `claude` CLI
+- Makefile targets: `daemon-install`, `daemon-uninstall`, `daemon-start`, `daemon-stop`, `daemon-restart`, `daemon-status`, `daemon-logs`
+- User-level systemd (`systemctl --user`) — не требует `sudo`
+- `daemon-install` автоматически собирает бинарники, устанавливает service и включает автозапуск
+
 ---
 
 ## Бэклог
@@ -154,4 +163,5 @@
 - [ ] Unit-тесты для всех internal/ пакетов
 - [ ] CI/CD pipeline (GitHub Actions)
 - [x] Docker-образ (Dockerfile + docker-compose.yml)
+- [ ] Docker: авторизация Claude Code Max (OAuth) — `claude login` из контейнера не подключается к api.anthropic.com (ERR_BAD_REQUEST). Варианты: host network, DNS-fix, или ANTHROPIC_API_KEY
 - [ ] Документация API (OpenAPI/Swagger)

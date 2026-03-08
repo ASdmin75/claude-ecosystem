@@ -1,0 +1,26 @@
+[Unit]
+Description=Claude Ecosystem Server
+Documentation=https://github.com/asdmin/claude-ecosystem
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/development/AI/Claude/claude-ecosystem
+ExecStart=%h/development/AI/Claude/claude-ecosystem/bin/server -config tasks.yaml
+EnvironmentFile=-%h/development/AI/Claude/claude-ecosystem/.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=5
+
+# Graceful shutdown (server handles SIGTERM)
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claude-ecosystem
+
+[Install]
+WantedBy=default.target

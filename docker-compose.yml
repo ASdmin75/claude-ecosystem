@@ -8,6 +8,8 @@ services:
       - ./.claude/agents/:/app/.claude/agents/
       - server-data:/app/data
       - ${WORKSPACE_DIR:-./workspace}:/app/workspace
+      # Claude Code auth — see docs/user-guide.md#docker for setup options
+      - claude-auth:/root/.claude
     env_file:
       - .env
     environment:
@@ -22,3 +24,4 @@ services:
 
 volumes:
   server-data:
+  claude-auth:

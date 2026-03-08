@@ -54,10 +54,14 @@ func (r *Runner) Run(ctx context.Context, t config.Task, opts RunOptions, templa
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		errMsg := stderr.String()
+		if errMsg == "" {
+			errMsg = stdout.String()
+		}
 		return Result{
 			TaskName: t.Name,
 			Output:   stdout.String(),
-			Error:    fmt.Sprintf("%v: %s", err, stderr.String()),
+			Error:    fmt.Sprintf("%v: %s", err, errMsg),
 			Duration: time.Since(start),
 		}
 	}

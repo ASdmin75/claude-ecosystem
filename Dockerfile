@@ -33,7 +33,7 @@ COPY --from=builder /app/bin/ ./bin/
 # Default config and agents directory
 COPY tasks.yaml ./tasks.yaml
 COPY .claude/agents/ ./.claude/agents/
-RUN mkdir -p data
+RUN mkdir -p data /root/.claude
 
 EXPOSE 3580
 ENTRYPOINT ["./bin/server"]

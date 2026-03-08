@@ -1,4 +1,6 @@
-.PHONY: build build-ui install run run-task run-pipeline clean test docker-build docker-up docker-down
+.PHONY: build build-ui install run run-task run-pipeline clean test \
+       docker-build docker-up docker-down \
+       daemon-install daemon-uninstall daemon-start daemon-stop daemon-restart daemon-status daemon-logs
 
 build:
 	go build -o bin/server ./cmd/server
@@ -46,3 +48,38 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+# --- Systemd user daemon ---
+
+SYSTEMD_DIR = $(HOME)/.config/systemd/user
+SERVICE_NAME = claude-ecosystem
+
+daemon-install: build
+	@mkdir -p $(SYSTEMD_DIR)
+	@sed 's|%h|$(HOME)|g' deploy/claude-ecosystem.service > $(SYSTEMD_DIR)/$(SERVICE_NAME).service
+	@systemctl --user daemon-reload
+	@systemctl --user enable $(SERVICE_NAME)
+	@echo "Daemon installed and enabled. Run: make daemon-start"
+
+daemon-uninstall:
+	@systemctl --user stop $(SERVICE_NAME) 2>/dev/null || true
+	@systemctl --user disable $(SERVICE_NAME) 2>/dev/null || true
+	@rm -f $(SYSTEMD_DIR)/$(SERVICE_NAME).service
+	@systemctl --user daemon-reload
+	@echo "Daemon uninstalled."
+
+daemon-start:
+	@systemctl --user start $(SERVICE_NAME)
+	@echo "Started. View logs: make daemon-logs"
+
+daemon-stop:
+	@systemctl --user stop $(SERVICE_NAME)
+
+daemon-restart:
+	@systemctl --user restart $(SERVICE_NAME)
+
+daemon-status:
+	@systemctl --user status $(SERVICE_NAME)
+
+daemon-logs:
+	@journalctl --user-unit $(SERVICE_NAME) -f
