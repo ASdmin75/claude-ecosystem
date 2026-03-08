@@ -85,10 +85,16 @@ tasks:
         работающей на рынке ЕАЭС. Верни ПОЛНЫЙ список в формате JSON — массив объектов.
         Не суммаризируй, верни все найденные лиды целиком.
       work_dir: .
+      tags:
+        - leads
+        - sales
       model: sonnet
       timeout: 60m
-      max_turns: 30
-      permission_mode: dontAsk
+      agents:
+        - eaeu-logistics-lead-finder
+      allowed_tools:
+        - WebSearch
+        - WebFetch
       json_schema: |
         {
           "type": "array",
@@ -106,9 +112,8 @@ tasks:
             "required": ["company"]
           }
         }
-      tags:
-        - leads
-        - sales
+      max_turns: 30
+      permission_mode: dontAsk
     - name: compile-leads-excel
       prompt: |
         Вот список лидов в JSON:
@@ -120,15 +125,15 @@ tasks:
         Добавь лист 'Leads' с таблицей всех лидов и лист 'Summary' с итогами по источникам.
         Верни только путь к созданному файлу.
       work_dir: .
-      timeout: 10m
-      mcp_servers:
-        - excel
-      agents:
-        - leads-report-compiler
-      permission_mode: dontAsk
       tags:
         - leads
         - excel
+      timeout: 10m
+      agents:
+        - leads-report-compiler
+      mcp_servers:
+        - excel
+      permission_mode: dontAsk
     - name: deliver-leads-report
       prompt: |
         Файл отчёта: {{.PrevOutput}}
@@ -138,17 +143,17 @@ tasks:
         2. Скопируй файл в workspace/ceo/reports/
         3. Отправь уведомление в Telegram с файлом и подписью "Новый отчёт по лидам"
       work_dir: .
+      tags:
+        - leads
+        - delivery
       timeout: 10m
+      agents:
+        - delivery-agent
       mcp_servers:
         - email
         - filesystem
         - telegram
-      agents:
-        - delivery-agent
       permission_mode: dontAsk
-      tags:
-        - leads
-        - delivery
 pipelines:
     - name: review-fix
       mode: sequential
@@ -170,16 +175,16 @@ mcp_servers:
     - name: email
       command: ./bin/mcp-email
       env:
-        SMTP_HOST: ${SMTP_HOST}
-        SMTP_PORT: ${SMTP_PORT}
-        SMTP_USER: ${SMTP_USER}
-        SMTP_PASSWORD: ${SMTP_PASSWORD}
-        SMTP_FROM: ${SMTP_FROM}
+        SMTP_FROM: ip.stasheuski@gmail.com
+        SMTP_HOST: smtp.gmail.com
+        SMTP_PASSWORD: lnjc lupx dmje bqnc
+        SMTP_PORT: "587"
+        SMTP_USER: ip.stasheuski@gmail.com
     - name: telegram
       command: ./bin/mcp-telegram
       env:
-        TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-        TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+        TELEGRAM_BOT_TOKEN: 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+        TELEGRAM_CHAT_ID: "123456789"
     - name: filesystem
       command: ./bin/mcp-filesystem
 auth:
@@ -190,3 +195,5 @@ auth:
 server:
     addr: :3580
     data_dir: data
+    log_level: ""
+    log_file: ""

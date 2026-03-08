@@ -90,8 +90,8 @@ export default function ExecutionHistory() {
         </div>
 
         {selected && (
-          <div className="w-1/2">
-            <div className="bg-white rounded-lg shadow p-4">
+          <div className="w-1/2 min-w-0">
+            <div className="bg-white rounded-lg shadow p-4 overflow-hidden">
               <div className="flex justify-between items-start mb-4">
                 <div>
                   <h3 className="font-bold text-lg">{selected.task_name}</h3>
@@ -132,7 +132,7 @@ export default function ExecutionHistory() {
               {detailQuery.data?.error && (
                 <div className="mb-4">
                   <h4 className="text-sm font-semibold text-red-600 mb-1">Error</h4>
-                  <pre className="bg-red-50 text-red-800 text-xs p-3 rounded overflow-auto max-h-40">{detailQuery.data.error}</pre>
+                  <pre className="bg-red-50 text-red-800 text-xs p-3 rounded overflow-y-auto max-h-40 whitespace-pre-wrap break-all">{detailQuery.data.error}</pre>
                 </div>
               )}
 

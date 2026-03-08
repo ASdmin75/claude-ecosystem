@@ -134,8 +134,17 @@ function AgentEditor({ agent, isNew, onChange, onSave, onCancel, saving }: {
   saving: boolean
 }) {
   const [preview, setPreview] = useState(false)
+  const [csvFields, setCsvFields] = useState<Record<string, string>>({})
   const set = (key: string, value: unknown) => onChange({ ...agent, [key]: value })
   const csvToArray = (s: string) => s.split(',').map((v) => v.trim()).filter(Boolean)
+
+  const csvValue = (key: 'tools' | 'disallowed_tools' | 'mcp_servers') =>
+    key in csvFields ? csvFields[key] : ((agent[key] as string[]) || []).join(', ')
+
+  const csvOnChange = (key: 'tools' | 'disallowed_tools' | 'mcp_servers', raw: string) => {
+    setCsvFields({ ...csvFields, [key]: raw })
+    set(key, csvToArray(raw))
+  }
 
   return (
     <div className="bg-white rounded-lg shadow p-4">
@@ -259,8 +268,8 @@ function AgentEditor({ agent, isNew, onChange, onSave, onCancel, saving }: {
 
         <Field label="Tools (comma-separated)">
           <input
-            value={(agent.tools || []).join(', ')}
-            onChange={(e) => set('tools', csvToArray(e.target.value))}
+            value={csvValue('tools')}
+            onChange={(e) => csvOnChange('tools', e.target.value)}
             placeholder="Read, Edit, Bash, Grep, Glob, Write"
             className="w-full px-2 py-1 border rounded text-sm"
           />
@@ -268,16 +277,17 @@ function AgentEditor({ agent, isNew, onChange, onSave, onCancel, saving }: {
 
         <Field label="Disallowed Tools (comma-separated)">
           <input
-            value={(agent.disallowed_tools || []).join(', ')}
-            onChange={(e) => set('disallowed_tools', csvToArray(e.target.value))}
+            value={csvValue('disallowed_tools')}
+            onChange={(e) => csvOnChange('disallowed_tools', e.target.value)}
+            placeholder=""
             className="w-full px-2 py-1 border rounded text-sm"
           />
         </Field>
 
         <Field label="MCP Servers (comma-separated)">
           <input
-            value={(agent.mcp_servers || []).join(', ')}
-            onChange={(e) => set('mcp_servers', csvToArray(e.target.value))}
+            value={csvValue('mcp_servers')}
+            onChange={(e) => csvOnChange('mcp_servers', e.target.value)}
             className="w-full px-2 py-1 border rounded text-sm"
           />
         </Field>

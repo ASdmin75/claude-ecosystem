@@ -133,6 +133,10 @@ export default function TaskList() {
   )
 }
 
+function csvToArray(s: string): string[] {
+  return s.split(',').map((v) => v.trim()).filter(Boolean)
+}
+
 function TaskEditor({ task, isNew, onChange, onSave, onCancel, saving }: {
   task: Task
   isNew: boolean
@@ -141,8 +145,17 @@ function TaskEditor({ task, isNew, onChange, onSave, onCancel, saving }: {
   onCancel: () => void
   saving: boolean
 }) {
+  const [csvFields, setCsvFields] = useState<Record<string, string>>({})
   const set = <K extends keyof Task>(key: K, value: Task[K]) =>
     onChange({ ...task, [key]: value })
+
+  const csvValue = (key: 'tags' | 'agents' | 'mcp_servers' | 'allowed_tools') =>
+    key in csvFields ? csvFields[key] : (task[key] || []).join(', ')
+
+  const csvOnChange = (key: 'tags' | 'agents' | 'mcp_servers' | 'allowed_tools', raw: string) => {
+    setCsvFields({ ...csvFields, [key]: raw })
+    set(key, csvToArray(raw))
+  }
 
   return (
     <div className="bg-white rounded-lg shadow p-4">
@@ -260,32 +273,32 @@ function TaskEditor({ task, isNew, onChange, onSave, onCancel, saving }: {
 
         <Field label="Tags (comma-separated)">
           <input
-            value={(task.tags || []).join(', ')}
-            onChange={(e) => set('tags', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))}
+            value={csvValue('tags')}
+            onChange={(e) => csvOnChange('tags', e.target.value)}
             className="w-full px-2 py-1 border rounded text-sm"
           />
         </Field>
 
         <Field label="Agents (comma-separated)">
           <input
-            value={(task.agents || []).join(', ')}
-            onChange={(e) => set('agents', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))}
+            value={csvValue('agents')}
+            onChange={(e) => csvOnChange('agents', e.target.value)}
             className="w-full px-2 py-1 border rounded text-sm"
           />
         </Field>
 
         <Field label="MCP Servers (comma-separated)">
           <input
-            value={(task.mcp_servers || []).join(', ')}
-            onChange={(e) => set('mcp_servers', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))}
+            value={csvValue('mcp_servers')}
+            onChange={(e) => csvOnChange('mcp_servers', e.target.value)}
             className="w-full px-2 py-1 border rounded text-sm"
           />
         </Field>
 
         <Field label="Allowed Tools (comma-separated)">
           <input
-            value={(task.allowed_tools || []).join(', ')}
-            onChange={(e) => set('allowed_tools', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))}
+            value={csvValue('allowed_tools')}
+            onChange={(e) => csvOnChange('allowed_tools', e.target.value)}
             className="w-full px-2 py-1 border rounded text-sm"
           />
         </Field>

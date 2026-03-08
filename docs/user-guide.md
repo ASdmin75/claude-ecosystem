@@ -38,6 +38,9 @@ make build
 # Сборка Web UI (опционально)
 make build-ui
 
+# Пересборка всего + перезапуск сервера (UI + Go + restart)
+make rebuild
+
 # Установка hook-бинарника
 make install
 ```
@@ -723,6 +726,7 @@ make daemon-start
 | `make daemon-install` | Собрать, установить service, включить автозапуск |
 | `make daemon-start` | Запустить демон |
 | `make daemon-stop` | Остановить демон |
+| `make rebuild` | Пересобрать UI + бинарники и перезапустить (останавливает Docker и/или процесс) |
 | `make daemon-restart` | Перезапустить (после обновления кода — `make build && make daemon-restart`) |
 | `make daemon-status` | Показать статус |
 | `make daemon-logs` | Показать логи в реальном времени |

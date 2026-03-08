@@ -133,6 +133,21 @@
 - User-level systemd (`systemctl --user`) — не требует `sudo`
 - `daemon-install` автоматически собирает бинарники, устанавливает service и включает автозапуск
 
+### 2026-03-08 — UI-фиксы и Makefile rebuild
+
+**Исправление переполнения текста ошибки в Execution History**
+- Добавлены `min-w-0`, `overflow-hidden` на контейнер деталей
+- `<pre>` с ошибкой: `overflow-y-auto`, `whitespace-pre-wrap`, `break-all` — текст переносится вместо горизонтального скролла
+
+**Исправление ввода запятой в CSV-полях форм**
+- TaskList: поля Tags, Agents, MCP Servers, Allowed Tools — `filter(Boolean)` при каждом onChange мгновенно удалял запятую
+- SubAgentList: поля Tools, Disallowed Tools, MCP Servers — аналогичная проблема
+- Решение: сырой текст хранится в отдельном `csvFields` state, парсинг в массив — параллельно, но отображается raw-строка
+
+**Makefile: таргет `rebuild`**
+- Останавливает Docker (`docker compose down`), убивает процесс `server`, пересобирает UI + Go-бинарники, запускает systemd-демон
+- `build-ui` теперь делает `touch internal/ui/embed.go` после копирования dist — инвалидирует Go build cache для `go:embed`
+
 ---
 
 ## Бэклог
@@ -154,7 +169,7 @@
 
 ### Web UI — доработки
 - [ ] Детальный просмотр execution с SSE-стримингом
-- [ ] Редактирование задач через UI
+- [x] Редактирование задач через UI (CSV-поля исправлены)
 - [ ] Конфигурация scheduler/watcher через UI
 - [ ] Управление MCP-серверами через UI
 - [ ] Тёмная тема

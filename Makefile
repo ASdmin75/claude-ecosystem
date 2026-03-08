@@ -1,6 +1,7 @@
 .PHONY: build build-ui install run run-task run-pipeline clean test \
        docker-build docker-up docker-down \
-       daemon-install daemon-uninstall daemon-start daemon-stop daemon-restart daemon-status daemon-logs
+       daemon-install daemon-uninstall daemon-start daemon-stop daemon-restart daemon-status daemon-logs \
+       rebuild
 
 build:
 	go build -o bin/server ./cmd/server
@@ -14,6 +15,7 @@ build-ui:
 	cd web && npm install && npm run build
 	rm -rf internal/ui/dist
 	cp -r web/dist internal/ui/dist
+	@touch internal/ui/embed.go
 
 install: build
 	@echo "Installing hook binary..."
@@ -83,3 +85,11 @@ daemon-status:
 
 daemon-logs:
 	@journalctl --user-unit $(SERVICE_NAME) -f
+
+rebuild:
+	@docker compose down 2>/dev/null || true
+	@pgrep -x server | xargs -r kill 2>/dev/null || true
+	@sleep 1
+	$(MAKE) build-ui build
+	@systemctl --user restart $(SERVICE_NAME) 2>/dev/null || bin/server -config tasks.yaml &
+	@echo "Rebuilt and restarted."
