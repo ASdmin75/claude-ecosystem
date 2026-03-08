@@ -3,6 +3,7 @@ package mcpmanager
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -46,6 +47,7 @@ func (m *Manager) Start(name string) error {
 	}
 
 	cmd := exec.Command(srv.config.Command, srv.config.Args...)
+	cmd.Env = os.Environ()
 	for k, v := range srv.config.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

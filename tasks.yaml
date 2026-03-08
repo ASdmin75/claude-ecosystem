@@ -174,17 +174,8 @@ mcp_servers:
       command: ./bin/mcp-excel
     - name: email
       command: ./bin/mcp-email
-      env:
-        SMTP_FROM: ip.stasheuski@gmail.com
-        SMTP_HOST: smtp.gmail.com
-        SMTP_PASSWORD: lnjc lupx dmje bqnc
-        SMTP_PORT: "587"
-        SMTP_USER: ip.stasheuski@gmail.com
     - name: telegram
       command: ./bin/mcp-telegram
-      env:
-        TELEGRAM_BOT_TOKEN: 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
-        TELEGRAM_CHAT_ID: "123456789"
     - name: filesystem
       command: ./bin/mcp-filesystem
 auth:
