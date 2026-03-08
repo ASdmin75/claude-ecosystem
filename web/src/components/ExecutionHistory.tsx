@@ -6,10 +6,10 @@ import { useState } from 'react'
 import type { Execution } from '../types'
 
 const statusColor: Record<string, string> = {
-  running: 'bg-blue-100 text-blue-700',
-  completed: 'bg-green-100 text-green-700',
-  failed: 'bg-red-100 text-red-700',
-  cancelled: 'bg-yellow-100 text-yellow-700',
+  running: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+  completed: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+  failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  cancelled: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300',
 }
 
 export default function ExecutionHistory() {
@@ -36,16 +36,16 @@ export default function ExecutionHistory() {
     },
   })
 
-  if (isLoading) return <p className="text-gray-500">Loading...</p>
+  if (isLoading) return <p className="text-gray-500 dark:text-gray-400">Loading...</p>
 
   return (
     <div>
       <h2 className="text-xl font-bold mb-4">Execution History</h2>
       <div className="flex gap-4">
         <div className={selected ? 'w-1/2' : 'w-full'}>
-          <div className="bg-white rounded-lg shadow overflow-hidden">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-950 overflow-hidden">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50">
+              <thead className="bg-gray-50 dark:bg-gray-700/50">
                 <tr>
                   <th className="text-left px-4 py-2">Task</th>
                   <th className="text-left px-4 py-2">Status</th>
@@ -60,15 +60,27 @@ export default function ExecutionHistory() {
                   <tr
                     key={e.id}
                     onClick={() => setSelected(e)}
-                    className={`border-t cursor-pointer hover:bg-gray-50 ${selected?.id === e.id ? 'bg-blue-50' : ''}`}
+                    className={`border-t border-gray-100 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 ${selected?.id === e.id ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}
                   >
-                    <td className="px-4 py-2 font-medium">{e.task_name}</td>
+                    <td className="px-4 py-2 font-medium">
+                      {e.pipeline_name && !e.task_name ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="text-purple-500 dark:text-purple-400" title="Pipeline">⛓</span>
+                          {e.pipeline_name}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="text-blue-500 dark:text-blue-400" title="Task">▶</span>
+                          {e.task_name || '-'}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-2">
                       <span className={`inline-block px-2 py-0.5 rounded text-xs ${statusColor[e.status] || ''}`}>{e.status}</span>
                     </td>
-                    <td className="px-4 py-2 text-gray-500">{e.trigger}</td>
-                    <td className="px-4 py-2 text-gray-500">{e.duration_ms ? `${(e.duration_ms / 1000).toFixed(1)}s` : '-'}</td>
-                    <td className="px-4 py-2 text-gray-500">{new Date(e.started_at).toLocaleString()}</td>
+                    <td className="px-4 py-2 text-gray-500 dark:text-gray-400">{e.trigger}</td>
+                    <td className="px-4 py-2 text-gray-500 dark:text-gray-400">{e.duration_ms ? `${(e.duration_ms / 1000).toFixed(1)}s` : '-'}</td>
+                    <td className="px-4 py-2 text-gray-500 dark:text-gray-400">{new Date(e.started_at).toLocaleString()}</td>
                     <td className="px-4 py-2">
                       {e.status === 'running' && (
                         <button
@@ -82,7 +94,7 @@ export default function ExecutionHistory() {
                   </tr>
                 ))}
                 {executions?.length === 0 && (
-                  <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No executions yet.</td></tr>
+                  <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400 dark:text-gray-500">No executions yet.</td></tr>
                 )}
               </tbody>
             </table>
@@ -91,11 +103,25 @@ export default function ExecutionHistory() {
 
         {selected && (
           <div className="w-1/2 min-w-0">
-            <div className="bg-white rounded-lg shadow p-4 overflow-hidden">
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-950 p-4 overflow-hidden">
               <div className="flex justify-between items-start mb-4">
                 <div>
-                  <h3 className="font-bold text-lg">{selected.task_name}</h3>
-                  <p className="text-xs text-gray-400 mt-1">ID: {selected.id}</p>
+                  <h3 className="font-bold text-lg inline-flex items-center gap-2">
+                    {selected.pipeline_name && !selected.task_name ? (
+                      <>
+                        <span className="text-purple-500 dark:text-purple-400">⛓</span>
+                        {selected.pipeline_name}
+                        <span className="text-xs font-normal text-purple-500 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/30 px-1.5 py-0.5 rounded">pipeline</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-blue-500 dark:text-blue-400">▶</span>
+                        {selected.task_name || '-'}
+                        <span className="text-xs font-normal text-blue-500 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-1.5 py-0.5 rounded">task</span>
+                      </>
+                    )}
+                  </h3>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">ID: {selected.id}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   {(selected.status === 'running' || detailQuery.data?.status === 'running') && (
@@ -107,46 +133,46 @@ export default function ExecutionHistory() {
                       {cancelMutation.isPending ? 'Stopping...' : 'Stop'}
                     </button>
                   )}
-                  <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 text-lg">&times;</button>
+                  <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg">&times;</button>
                 </div>
               </div>
 
               {cancelMutation.error && (
-                <p className="text-sm mb-2 p-2 bg-red-50 text-red-600 rounded">{cancelMutation.error.message}</p>
+                <p className="text-sm mb-2 p-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded">{cancelMutation.error.message}</p>
               )}
 
               <div className="grid grid-cols-2 gap-2 text-sm mb-4">
                 <div>
-                  <span className="text-gray-500">Status:</span>{' '}
+                  <span className="text-gray-500 dark:text-gray-400">Status:</span>{' '}
                   <span className={`inline-block px-2 py-0.5 rounded text-xs ${statusColor[selected.status] || ''}`}>{selected.status}</span>
                 </div>
-                <div><span className="text-gray-500">Trigger:</span> {selected.trigger}</div>
-                <div><span className="text-gray-500">Duration:</span> {selected.duration_ms ? `${(selected.duration_ms / 1000).toFixed(1)}s` : '-'}</div>
-                <div><span className="text-gray-500">Model:</span> {selected.model || '-'}</div>
-                <div><span className="text-gray-500">Cost:</span> {selected.cost_usd ? `$${selected.cost_usd.toFixed(4)}` : '-'}</div>
-                <div><span className="text-gray-500">Started:</span> {new Date(selected.started_at).toLocaleString()}</div>
+                <div><span className="text-gray-500 dark:text-gray-400">Trigger:</span> {selected.trigger}</div>
+                <div><span className="text-gray-500 dark:text-gray-400">Duration:</span> {selected.duration_ms ? `${(selected.duration_ms / 1000).toFixed(1)}s` : '-'}</div>
+                <div><span className="text-gray-500 dark:text-gray-400">Model:</span> {selected.model || '-'}</div>
+                <div><span className="text-gray-500 dark:text-gray-400">Cost:</span> {selected.cost_usd ? `$${selected.cost_usd.toFixed(4)}` : '-'}</div>
+                <div><span className="text-gray-500 dark:text-gray-400">Started:</span> {new Date(selected.started_at).toLocaleString()}</div>
               </div>
 
-              {detailQuery.isLoading && <p className="text-gray-400 text-sm">Loading details...</p>}
+              {detailQuery.isLoading && <p className="text-gray-400 dark:text-gray-500 text-sm">Loading details...</p>}
 
               {detailQuery.data?.error && (
                 <div className="mb-4">
-                  <h4 className="text-sm font-semibold text-red-600 mb-1">Error</h4>
-                  <pre className="bg-red-50 text-red-800 text-xs p-3 rounded overflow-y-auto max-h-40 whitespace-pre-wrap break-all">{detailQuery.data.error}</pre>
+                  <h4 className="text-sm font-semibold text-red-600 dark:text-red-400 mb-1">Error</h4>
+                  <pre className="bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-300 text-xs p-3 rounded overflow-y-auto max-h-40 whitespace-pre-wrap break-all">{detailQuery.data.error}</pre>
                 </div>
               )}
 
               {detailQuery.data?.output && (
                 <div>
-                  <h4 className="text-sm font-semibold text-gray-700 mb-1">Output</h4>
-                  <div className="bg-gray-50 text-gray-800 text-sm p-3 rounded overflow-auto max-h-96 prose prose-sm prose-gray max-w-none">
+                  <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Output</h4>
+                  <div className="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 text-sm p-3 rounded overflow-auto max-h-96 prose prose-sm prose-gray dark:prose-invert max-w-none">
                     <Markdown remarkPlugins={[remarkGfm]}>{detailQuery.data.output}</Markdown>
                   </div>
                 </div>
               )}
 
               {detailQuery.data && !detailQuery.data.output && !detailQuery.data.error && selected.status === 'running' && (
-                <p className="text-sm text-blue-500">Task is still running...</p>
+                <p className="text-sm text-blue-500 dark:text-blue-400">Task is still running...</p>
               )}
             </div>
           </div>

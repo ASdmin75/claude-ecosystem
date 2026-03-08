@@ -171,6 +171,25 @@
 - Баг: `runPipeline()` использовал общий контекст пайплайна без per-task таймаутов — если шаг зависал, весь пайплайн блокировался бесконечно (в отличие от `handleRunTask`, который применяет `t.ParsedTimeout()`)
 - Фикс: добавлен `context.WithTimeout(ctx, t.ParsedTimeout())` для каждого шага пайплайна
 
+### 2026-03-08 — Execution History: отображение пайплайнов + тёмная тема
+
+**Отображение имени пайплайна в Execution History**
+- Баг: при запуске пайплайна в таблице Execution History колонка Task была пустой — `pipeline_name` записывался в БД, но UI отображал только `task_name`
+- Фикс: `ExecutionHistory.tsx` — fallback на `pipeline_name` когда `task_name` пустой
+- Визуальное различие: задачи отмечены синим значком ▶, пайплайны — фиолетовым значком ⛓
+- В панели деталей — бейдж "task" или "pipeline" соответствующего цвета
+
+**Тёмная тема (Dark Mode)**
+- CSS: `@custom-variant dark` в `index.css` — class-based dark mode для Tailwind CSS 4
+- `App.tsx`: хук `useTheme()` — переключение через кнопку в sidebar, состояние в `localStorage('theme')`, класс `dark` на `<html>`
+- Все 6 компонентов обновлены с `dark:` вариантами Tailwind:
+  - Фоны: `gray-900` (main), `gray-950` (root), `gray-800` (карточки/панели)
+  - Инпуты: `gray-700` с `gray-600` бордерами
+  - Статус-бейджи: полупрозрачные `dark:bg-*/40` варианты
+  - Markdown-вывод: `dark:prose-invert` для корректной инверсии типографики
+  - Тени: `dark:shadow-gray-950`
+- Компоненты: Login, Dashboard, TaskList, SubAgentList, PipelineList, ExecutionHistory
+
 ### 2026-03-08 — UI-фиксы и Makefile rebuild
 
 **Исправление переполнения текста ошибки в Execution History**
@@ -210,7 +229,7 @@
 - [x] Редактирование задач через UI (CSV-поля исправлены)
 - [ ] Конфигурация scheduler/watcher через UI
 - [ ] Управление MCP-серверами через UI
-- [ ] Тёмная тема
+- [x] Тёмная тема
 
 ### Инфраструктура
 - [ ] Unit-тесты для всех internal/ пакетов

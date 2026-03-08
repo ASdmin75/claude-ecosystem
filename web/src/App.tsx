@@ -1,4 +1,5 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom'
+import { useEffect, useState } from 'react'
 import Dashboard from './components/Dashboard'
 import TaskList from './components/TaskList'
 import SubAgentList from './components/SubAgentList'
@@ -14,17 +15,29 @@ const navItems = [
   { path: '/executions', label: 'Executions' },
 ]
 
+function useTheme() {
+  const [dark, setDark] = useState(() => localStorage.getItem('theme') === 'dark')
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', dark)
+    localStorage.setItem('theme', dark ? 'dark' : 'light')
+  }, [dark])
+
+  return { dark, toggle: () => setDark((d) => !d) }
+}
+
 export default function App() {
   const location = useLocation()
   const token = localStorage.getItem('token')
+  const { dark, toggle } = useTheme()
 
   if (!token && location.pathname !== '/login') {
     return <Login />
   }
 
   return (
-    <div className="min-h-screen flex">
-      <nav className="w-56 bg-gray-900 text-white p-4 space-y-2">
+    <div className="min-h-screen flex bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
+      <nav className="w-56 bg-gray-900 dark:bg-gray-950 dark:border-r dark:border-gray-800 text-white p-4 space-y-2">
         <h1 className="text-lg font-bold mb-6">Claude Ecosystem</h1>
         {navItems.map((item) => (
           <Link
@@ -39,14 +52,22 @@ export default function App() {
             {item.label}
           </Link>
         ))}
-        <button
-          onClick={() => { localStorage.removeItem('token'); window.location.reload() }}
-          className="block w-full text-left px-3 py-2 rounded text-sm text-gray-400 hover:bg-gray-800 mt-8"
-        >
-          Logout
-        </button>
+        <div className="pt-6 space-y-2">
+          <button
+            onClick={toggle}
+            className="block w-full text-left px-3 py-2 rounded text-sm text-gray-400 hover:bg-gray-800"
+          >
+            {dark ? 'Light Mode' : 'Dark Mode'}
+          </button>
+          <button
+            onClick={() => { localStorage.removeItem('token'); window.location.reload() }}
+            className="block w-full text-left px-3 py-2 rounded text-sm text-gray-400 hover:bg-gray-800"
+          >
+            Logout
+          </button>
+        </div>
       </nav>
-      <main className="flex-1 p-6">
+      <main className="flex-1 p-6 bg-gray-50 dark:bg-gray-900">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/tasks" element={<TaskList />} />

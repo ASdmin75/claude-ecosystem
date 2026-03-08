@@ -58,7 +58,7 @@ Key endpoints: task CRUD + run, sub-agent CRUD, pipeline run, execution history,
 
 ## Web UI
 
-React 19 + Vite + TypeScript + Tailwind CSS 4 + TanStack Query. Source in `web/`, built output embedded in Go binary via `internal/ui/dist/`.
+React 19 + Vite + TypeScript + Tailwind CSS 4 + TanStack Query. Source in `web/`, built output embedded in Go binary via `internal/ui/dist/`. Dark mode support via class-based toggle (`localStorage` persisted, button in sidebar).
 
 ## Hook System
 
