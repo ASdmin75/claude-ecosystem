@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
+	"github.com/asdmin/claude-ecosystem/internal/domain"
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
 	"github.com/asdmin/claude-ecosystem/internal/task"
@@ -18,12 +19,13 @@ type Runner struct {
 	tasks      map[string]config.Task
 	subMgr     *subagent.Manager
 	mcpMgr     *mcpmanager.Manager
+	domainMgr  *domain.Manager
 	logger     *slog.Logger
 }
 
 // NewRunner creates a pipeline Runner. The tasks slice is indexed by name for
 // quick lookup when resolving pipeline steps.
-func NewRunner(taskRunner *task.Runner, tasks []config.Task, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, logger *slog.Logger) *Runner {
+func NewRunner(taskRunner *task.Runner, tasks []config.Task, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, domainMgr *domain.Manager, logger *slog.Logger) *Runner {
 	m := make(map[string]config.Task, len(tasks))
 	for _, t := range tasks {
 		m[t.Name] = t
@@ -33,6 +35,7 @@ func NewRunner(taskRunner *task.Runner, tasks []config.Task, subMgr *subagent.Ma
 		tasks:      m,
 		subMgr:     subMgr,
 		mcpMgr:     mcpMgr,
+		domainMgr:  domainMgr,
 		logger:     logger,
 	}
 }
@@ -62,7 +65,7 @@ func (r *Runner) RunSequential(ctx context.Context, p config.Pipeline) (string, 
 				"Iteration":  fmt.Sprintf("%d", i),
 			}
 
-			opts, cleanup, err := task.ResolveRunOptions(t, r.subMgr, r.mcpMgr)
+			opts, cleanup, err := task.ResolveRunOptions(t, r.subMgr, r.mcpMgr, r.domainMgr)
 			if err != nil {
 				cancel()
 				return prevOutput, fmt.Errorf("pipeline %s, step %s: resolve options: %w", p.Name, step.Task, err)

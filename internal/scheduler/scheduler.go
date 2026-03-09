@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
+	"github.com/asdmin/claude-ecosystem/internal/domain"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
@@ -15,28 +16,30 @@ import (
 )
 
 type Scheduler struct {
-	cron    *cron.Cron
-	runner  *task.Runner
-	subMgr  *subagent.Manager
-	mcpMgr  *mcpmanager.Manager
-	bus     *events.Bus
-	logger  *slog.Logger
-	ctxMu   sync.RWMutex
-	runCtx  context.Context
-	pauseMu sync.RWMutex
-	paused  map[string]bool
+	cron      *cron.Cron
+	runner    *task.Runner
+	subMgr    *subagent.Manager
+	mcpMgr    *mcpmanager.Manager
+	domainMgr *domain.Manager
+	bus       *events.Bus
+	logger    *slog.Logger
+	ctxMu     sync.RWMutex
+	runCtx    context.Context
+	pauseMu   sync.RWMutex
+	paused    map[string]bool
 }
 
-func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, bus *events.Bus, logger *slog.Logger) *Scheduler {
+func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus, logger *slog.Logger) *Scheduler {
 	return &Scheduler{
-		cron:   cron.New(),
-		runner: runner,
-		subMgr: subMgr,
-		mcpMgr: mcpMgr,
-		bus:    bus,
-		logger: logger,
-		runCtx: context.Background(),
-		paused: make(map[string]bool),
+		cron:      cron.New(),
+		runner:    runner,
+		subMgr:    subMgr,
+		mcpMgr:    mcpMgr,
+		domainMgr: domainMgr,
+		bus:       bus,
+		logger:    logger,
+		runCtx:    context.Background(),
+		paused:    make(map[string]bool),
 	}
 }
 
@@ -57,7 +60,7 @@ func (s *Scheduler) Register(t config.Task) error {
 		parentCtx := s.runCtx
 		s.ctxMu.RUnlock()
 
-		opts, cleanup, err := task.ResolveRunOptions(t, s.subMgr, s.mcpMgr)
+		opts, cleanup, err := task.ResolveRunOptions(t, s.subMgr, s.mcpMgr, s.domainMgr)
 		if err != nil {
 			s.logger.Error("failed to resolve run options", "task", t.Name, "error", err)
 			return

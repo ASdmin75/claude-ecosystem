@@ -17,6 +17,7 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/api"
 	"github.com/asdmin/claude-ecosystem/internal/auth"
 	"github.com/asdmin/claude-ecosystem/internal/config"
+	"github.com/asdmin/claude-ecosystem/internal/domain"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
 	"github.com/asdmin/claude-ecosystem/internal/notify"
@@ -69,16 +70,22 @@ func main() {
 	notifier := notify.NewHandler(cfg.Tasks, logger)
 	notifier.Subscribe(bus)
 
-	// Initialize sub-agent manager and MCP manager (needed for task resolution in all modes)
+	// Initialize sub-agent manager, MCP manager, and domain manager (needed for task resolution in all modes)
 	subagentMgr := subagent.NewManager(".claude/agents")
 	mcpMgr := mcpmanager.New(cfg.MCPServers, logger)
 	defer mcpMgr.StopAll()
+
+	domainMgr := domain.New(cfg.Domains, logger)
+	if err := domainMgr.Init(); err != nil {
+		logger.Error("failed to initialize domains", "error", err)
+		os.Exit(1)
+	}
 
 	// Run single task mode
 	if *runOnce != "" {
 		for _, t := range cfg.Tasks {
 			if t.Name == *runOnce {
-				opts, cleanup, resolveErr := task.ResolveRunOptions(t, subagentMgr, mcpMgr)
+				opts, cleanup, resolveErr := task.ResolveRunOptions(t, subagentMgr, mcpMgr, domainMgr)
 				if resolveErr != nil {
 					logger.Error("failed to resolve run options", "error", resolveErr)
 					os.Exit(1)
@@ -104,7 +111,7 @@ func main() {
 
 	// Run pipeline mode
 	if *runPipeline != "" {
-		pr := pipeline.NewRunner(taskRunner, cfg.Tasks, subagentMgr, mcpMgr, logger)
+		pr := pipeline.NewRunner(taskRunner, cfg.Tasks, subagentMgr, mcpMgr, domainMgr, logger)
 		for _, p := range cfg.Pipelines {
 			if p.Name == *runPipeline {
 				output, err := pr.Run(context.Background(), p)
@@ -178,8 +185,8 @@ func main() {
 	authMw := auth.NewMiddleware(pasetoMgr, bearerAuth)
 
 	// Initialize scheduler and watcher
-	sched := scheduler.New(taskRunner, subagentMgr, mcpMgr, bus, logger)
-	w, err := watcher.New(taskRunner, subagentMgr, mcpMgr, bus, logger)
+	sched := scheduler.New(taskRunner, subagentMgr, mcpMgr, domainMgr, bus, logger)
+	w, err := watcher.New(taskRunner, subagentMgr, mcpMgr, domainMgr, bus, logger)
 	if err != nil {
 		logger.Error("failed to create watcher", "error", err)
 		os.Exit(1)
@@ -205,7 +212,7 @@ func main() {
 
 	// Initialize REST API
 	apiServer := api.NewServer(
-		cfg, taskRunner, subagentMgr, mcpMgr,
+		cfg, taskRunner, subagentMgr, mcpMgr, domainMgr,
 		db, db, authMw, pasetoMgr,
 		bus, logger,
 	)

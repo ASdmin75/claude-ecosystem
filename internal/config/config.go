@@ -13,6 +13,7 @@ type Config struct {
 	Tasks      []Task            `yaml:"tasks"`
 	Pipelines  []Pipeline        `yaml:"pipelines,omitempty"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers,omitempty"`
+	Domains    map[string]Domain `yaml:"domains,omitempty"`
 	Auth       AuthConfig        `yaml:"auth,omitempty"`
 	Server     ServerConfig      `yaml:"server,omitempty"`
 
@@ -110,6 +111,12 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.FilePath = path
+
+	// Populate Domain.Name from map keys.
+	for k, d := range cfg.Domains {
+		d.Name = k
+		cfg.Domains[k] = d
+	}
 
 	// Expand ${VAR} references from environment.
 	expandConfigEnvVars(&cfg)

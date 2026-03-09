@@ -80,8 +80,17 @@ tasks:
       timeout: 60m
       permission_mode: dontAsk
     - name: find-leads
-      prompt: "Найди 10 новых потенциальных клиентов для логистическо-экспедиционной компании из РБ работающей на рынке ЕАЭС с ледующих отраслях:\n- фарма\n- электроника\nКомапнии должны быть резидентами РБ.\nИспользуй сабагента eaeu-logistics-lead-finder\n"
+      prompt: |
+        Найди 50 новых потенциальных клиентов для логистическо-экспедиционной компании из РБ работающей на рынке ЕАЭС с ледующих отраслях:
+        - фарма
+        - электроника
+        - химическая и нефтехимическая промышленность
+        - деревообрабатывающая и целлюлозно-бумажная промышленность
+        - машиностроение и металлообработка
+        Комапнии должны быть резидентами РБ.
+        Используй сабагента eaeu-logistics-lead-finder
       work_dir: .
+      domain: leads
       tags:
         - leads
         - sales
@@ -89,23 +98,28 @@ tasks:
       timeout: 60m
       agents:
         - eaeu-logistics-lead-finder
+      mcp_servers:
+        - database
       allowed_tools:
         - Agent
         - WebSearch
         - WebFetch
-      max_turns: 15
+        - mcp__database__check_exists
+        - mcp__database__insert
+        - mcp__database__query
+      max_turns: 50
       permission_mode: dontAsk
     - name: compile-leads-excel
       prompt: |
-        Вот список лидов в JSON:
-
-        {{.PrevOutput}}
+        Получи все лиды из базы данных через mcp__database__query.
+        SQL: SELECT * FROM leads WHERE status = 'new' ORDER BY found_at DESC
 
         Создай Excel-отчёт для CEO: workspace/leads/leads-report-{{.Date}}.xlsx
         Используй инструменты create_spreadsheet и add_styled_table.
         Добавь лист 'Leads' с таблицей всех лидов и лист 'Summary' с итогами по источникам.
         Верни только путь к созданному файлу.
       work_dir: .
+      domain: leads
       tags:
         - leads
         - excel
@@ -114,11 +128,13 @@ tasks:
         - leads-report-compiler
       mcp_servers:
         - excel
+        - database
       allowed_tools:
         - mcp__excel__create_spreadsheet
         - mcp__excel__add_styled_table
         - mcp__excel__write_spreadsheet
         - mcp__excel__read_spreadsheet
+        - mcp__database__query
       permission_mode: dontAsk
     - name: deliver-leads-report
       prompt: |
@@ -129,6 +145,7 @@ tasks:
         2. Скопируй файл в workspace/ceo/reports/
         3. Отправь уведомление в Telegram с файлом и подписью "Новый отчёт по лидам"
       work_dir: .
+      domain: leads
       tags:
         - leads
         - delivery
@@ -159,7 +176,40 @@ pipelines:
         - task: compile-leads-excel
         - task: deliver-leads-report
       max_iterations: 1
+domains:
+    leads:
+        description: B2B logistics leads for EAEU market
+        data_dir: data/leads
+        db: leads.db
+        schema: |
+            CREATE TABLE IF NOT EXISTS leads (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              tax_id TEXT,
+              country TEXT,
+              industry TEXT,
+              city TEXT,
+              website TEXT,
+              contact_person TEXT,
+              contact_email TEXT,
+              contact_phone TEXT,
+              source_url TEXT,
+              status TEXT DEFAULT 'new',
+              notes TEXT,
+              raw_json TEXT,
+              found_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tax_id ON leads(tax_id) WHERE tax_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_leads_name ON leads(name);
+        domain_doc: DOMAIN.md
+        tasks: [find-leads, compile-leads-excel, deliver-leads-report]
+        pipelines: [leads-to-ceo]
+        agents: [eaeu-logistics-lead-finder, leads-report-compiler]
+        mcp_servers: [database, excel]
 mcp_servers:
+    - name: database
+      command: ./bin/mcp-database
     - name: excel
       command: ./bin/mcp-excel
     - name: email

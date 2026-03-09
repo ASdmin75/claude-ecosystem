@@ -11,6 +11,7 @@ import (
 
 	"github.com/asdmin/claude-ecosystem/internal/auth"
 	"github.com/asdmin/claude-ecosystem/internal/config"
+	"github.com/asdmin/claude-ecosystem/internal/domain"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
 	"github.com/asdmin/claude-ecosystem/internal/store"
@@ -25,6 +26,7 @@ type Server struct {
 	taskRunner  *task.Runner
 	subagentMgr *subagent.Manager
 	mcpMgr      *mcpmanager.Manager
+	domainMgr   *domain.Manager
 	store       store.ExecutionStore
 	authStore   store.AuthStore
 	authMw      *auth.Middleware
@@ -40,6 +42,7 @@ func NewServer(
 	taskRunner *task.Runner,
 	subagentMgr *subagent.Manager,
 	mcpMgr *mcpmanager.Manager,
+	domainMgr *domain.Manager,
 	execStore store.ExecutionStore,
 	authStore store.AuthStore,
 	authMw *auth.Middleware,
@@ -52,6 +55,7 @@ func NewServer(
 		taskRunner:  taskRunner,
 		subagentMgr: subagentMgr,
 		mcpMgr:      mcpMgr,
+		domainMgr:   domainMgr,
 		store:       execStore,
 		authStore:   authStore,
 		authMw:      authMw,

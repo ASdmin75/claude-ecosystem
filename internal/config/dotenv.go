@@ -95,6 +95,13 @@ func expandConfigEnvVars(cfg *Config) {
 		}
 	}
 
+	// Domains
+	for k, d := range cfg.Domains {
+		d.DataDir = ExpandEnvVars(d.DataDir)
+		d.DB = ExpandEnvVars(d.DB)
+		cfg.Domains[k] = d
+	}
+
 	// Task prompts and related fields
 	for i := range cfg.Tasks {
 		cfg.Tasks[i].Prompt = ExpandEnvVars(cfg.Tasks[i].Prompt)

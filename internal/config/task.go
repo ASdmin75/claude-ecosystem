@@ -12,6 +12,7 @@ const (
 // Task defines a single unit of work (formerly called Agent).
 type Task struct {
 	Name               string        `yaml:"name" json:"name"`
+	Domain             string        `yaml:"domain,omitempty" json:"domain,omitempty"`
 	Prompt             string        `yaml:"prompt" json:"prompt"`
 	WorkDir            string        `yaml:"work_dir" json:"work_dir"`
 	Schedule           string        `yaml:"schedule,omitempty" json:"schedule,omitempty"`

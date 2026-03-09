@@ -8,10 +8,11 @@ import (
 
 // RunOptions provides runtime overrides and additional parameters for task execution.
 type RunOptions struct {
-	MCPConfigPath   string // path to generated mcp-config JSON file
-	AgentsJSON      string // JSON for --agents flag
-	ResumeSessionID string // for --resume
-	OutputFormat    string // override output format ("json" or "stream-json")
+	MCPConfigPath      string // path to generated mcp-config JSON file
+	AgentsJSON         string // JSON for --agents flag
+	ResumeSessionID    string // for --resume
+	OutputFormat       string // override output format ("json" or "stream-json")
+	AppendSystemPrompt string // additional system prompt (e.g. from domain doc)
 }
 
 // BuildArgs constructs the full claude CLI argument list from a task config.
@@ -61,8 +62,17 @@ func BuildArgs(t config.Task, opts RunOptions) []string {
 		args = append(args, "--json-schema", t.JSONSchema)
 	}
 
-	if t.AppendSystemPrompt != "" {
-		args = append(args, "--append-system-prompt", t.AppendSystemPrompt)
+	// Merge append_system_prompt: task config + domain doc from opts
+	appendPrompt := t.AppendSystemPrompt
+	if opts.AppendSystemPrompt != "" {
+		if appendPrompt != "" {
+			appendPrompt = appendPrompt + "\n\n" + opts.AppendSystemPrompt
+		} else {
+			appendPrompt = opts.AppendSystemPrompt
+		}
+	}
+	if appendPrompt != "" {
+		args = append(args, "--append-system-prompt", appendPrompt)
 	}
 
 	if t.MaxTurns > 0 {

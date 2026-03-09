@@ -77,7 +77,7 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 				}
 			}
 
-			opts, cleanup, resolveErr := task.ResolveRunOptions(*t, s.subagentMgr, s.mcpMgr)
+			opts, cleanup, resolveErr := task.ResolveRunOptions(*t, s.subagentMgr, s.mcpMgr, s.domainMgr)
 			if resolveErr != nil {
 				return pipelineRunResponse{
 					ExecutionID: execID,

@@ -159,7 +159,7 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts, cleanup, resolveErr := task.ResolveRunOptions(*t, s.subagentMgr, s.mcpMgr)
+	opts, cleanup, resolveErr := task.ResolveRunOptions(*t, s.subagentMgr, s.mcpMgr, s.domainMgr)
 	if resolveErr != nil {
 		s.logger.Error("failed to resolve run options", "task", t.Name, "error", resolveErr)
 		writeError(w, http.StatusInternalServerError, "failed to resolve run options: "+resolveErr.Error())
@@ -258,7 +258,7 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resolve options before launching goroutine to report errors synchronously.
-	asyncOpts, asyncCleanup, asyncResolveErr := task.ResolveRunOptions(*t, s.subagentMgr, s.mcpMgr)
+	asyncOpts, asyncCleanup, asyncResolveErr := task.ResolveRunOptions(*t, s.subagentMgr, s.mcpMgr, s.domainMgr)
 	if asyncResolveErr != nil {
 		s.logger.Error("failed to resolve run options", "task", t.Name, "error", asyncResolveErr)
 		writeError(w, http.StatusInternalServerError, "failed to resolve run options: "+asyncResolveErr.Error())

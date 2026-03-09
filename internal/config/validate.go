@@ -39,6 +39,12 @@ func Validate(cfg *Config) error {
 			}
 		}
 
+		if t.Domain != "" {
+			if _, ok := cfg.Domains[t.Domain]; !ok {
+				return fmt.Errorf("task %s: references unknown domain %q", t.Name, t.Domain)
+			}
+		}
+
 		if t.Notify != nil && t.Notify.Trigger != "" {
 			switch t.Notify.Trigger {
 			case "on_success", "on_failure", "always":
@@ -70,6 +76,15 @@ func Validate(cfg *Config) error {
 		for _, step := range p.Steps {
 			if !seen[step.Task] {
 				return fmt.Errorf("pipeline %s: step references unknown task %q", p.Name, step.Task)
+			}
+		}
+	}
+
+	// Validate domain references
+	for name, d := range cfg.Domains {
+		for _, taskName := range d.Tasks {
+			if !seen[taskName] {
+				return fmt.Errorf("domain %s: references unknown task %q", name, taskName)
 			}
 		}
 	}

@@ -27,12 +27,13 @@ Requires Go 1.26+. The `claude` CLI must be on PATH (or set `claude_bin` in task
 
 - **`cmd/server`** — Main binary. HTTP server (REST API + embedded React SPA), scheduler, watcher. Supports `-run <task>` and `-pipeline <name>` for CLI mode.
 - **`cmd/hook`** — Claude Code hook binary. Reads JSON from stdin, blocks dangerous commands, logs file edits.
-- **`cmd/mcp/*`** — MCP servers (JSON-RPC 2.0 stdio). Implemented: filesystem (CRUD + copy), excel (excelize), email (gomail SMTP), telegram (telebot). Stubs: word, pdf, google, database.
+- **`cmd/mcp/*`** — MCP servers (JSON-RPC 2.0 stdio). Implemented: filesystem (CRUD + copy), excel (excelize), email (gomail SMTP), telegram (telebot), database (SQLite via domain system). Stubs: word, pdf, google.
 
 ### Core Packages (all under `internal/`)
 
-- **`config/`** — Parses `tasks.yaml` into `Config`/`Task`/`Pipeline`/`MCPServerConfig` structs. Backward-compatible with old `agents.yaml` format.
-- **`task/`** — `Runner` executes `claude -p` with dynamically built CLI args. `ResolveRunOptions()` wires `config.Task.Agents` → `--agents` JSON and `config.Task.MCPServers` → `--mcp-config` file. Supports sync `Run()` and streaming `RunStream()`.
+- **`config/`** — Parses `tasks.yaml` into `Config`/`Task`/`Pipeline`/`MCPServerConfig`/`Domain` structs. Backward-compatible with old `agents.yaml` format.
+- **`domain/`** — Domain manager: initializes data directories, applies SQLite schemas, generates DOMAIN.md templates, provides env vars and doc content for task resolution.
+- **`task/`** — `Runner` executes `claude -p` with dynamically built CLI args. `ResolveRunOptions()` wires `config.Task.Agents` → `--agents` JSON, `config.Task.MCPServers` → `--mcp-config` file (with domain env vars), and `config.Task.Domain` → DOMAIN.md injection into `--append-system-prompt`. Supports sync `Run()` and streaming `RunStream()`.
 - **`pipeline/`** — Runs sequential (loop with `{{.PrevOutput}}`) or parallel (errgroup) pipelines. Factory `Run()` dispatches by mode.
 - **`subagent/`** — CRUD manager for `.claude/agents/*.md` files. Parses YAML frontmatter + markdown. Generates `--agents` JSON for task runner.
 - **`mcpmanager/`** — Process lifecycle for MCP servers (lazy start, SIGTERM/SIGKILL shutdown, health). Generates `--mcp-config` temp files.
@@ -46,9 +47,13 @@ Requires Go 1.26+. The `claude` CLI must be on PATH (or set `claude_bin` in task
 
 ## Configuration (tasks.yaml)
 
-Each task has: `name`, `prompt` (Go template), `work_dir`, and either `schedule` (cron) or `watch` (paths + extensions). Optional: `tags`, `model`, `timeout`, `agents` (sub-agent names), `mcp_servers`, `allowed_tools`, `json_schema`, `max_turns`, `max_budget_usd`, `output_format`.
+Each task has: `name`, `prompt` (Go template), `work_dir`, and either `schedule` (cron) or `watch` (paths + extensions). Optional: `tags`, `model`, `timeout`, `agents` (sub-agent names), `mcp_servers`, `allowed_tools`, `json_schema`, `max_turns`, `max_budget_usd`, `output_format`, `domain`.
 
-Pipelines chain tasks in sequential loops or parallel execution. Template variables available in pipeline steps: `{{.PrevOutput}}` (output from previous step), `{{.Date}}` (current date YYYY-MM-DD). When using `allowed_tools` with sub-agents, include `Agent` in the list so Claude can delegate to them. Each pipeline step enforces the task's `timeout`. Config also includes `server`, `auth`, and `mcp_servers` sections.
+Pipelines chain tasks in sequential loops or parallel execution. Template variables available in pipeline steps: `{{.PrevOutput}}` (output from previous step), `{{.Date}}` (current date YYYY-MM-DD). When using `allowed_tools` with sub-agents, include `Agent` in the list so Claude can delegate to them. Each pipeline step enforces the task's `timeout`. Config also includes `server`, `auth`, `mcp_servers`, and `domains` sections.
+
+### Domains
+
+Optional `domains` section defines business data domains linked to tasks. Each domain has: `data_dir`, `db` (SQLite file), `schema` (SQL to apply on init), `domain_doc` (DOMAIN.md auto-injected into agent system prompt), and reference lists (`tasks`, `pipelines`, `agents`, `mcp_servers`). Tasks reference a domain via `domain: <name>`. Domain env vars (`DOMAIN_DB_PATH`, `DOMAIN_DATA_DIR`, etc.) are automatically injected into MCP server configs. The `data/{domain}/DOMAIN.md` file provides agents with table schemas, deduplication rules, and tool usage examples — all without hardcoding in task prompts.
 
 ## REST API
 

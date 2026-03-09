@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
+	"github.com/asdmin/claude-ecosystem/internal/domain"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
@@ -19,31 +20,33 @@ import (
 const maxConcurrentTasks = 4
 
 type Watcher struct {
-	fsw    *fsnotify.Watcher
-	runner *task.Runner
-	subMgr *subagent.Manager
-	mcpMgr *mcpmanager.Manager
-	bus    *events.Bus
-	logger *slog.Logger
-	mu     sync.RWMutex
-	tasks  []config.Task
-	sem    chan struct{}   // concurrency limiter
-	wg     sync.WaitGroup // tracks in-flight task goroutines
+	fsw       *fsnotify.Watcher
+	runner    *task.Runner
+	subMgr    *subagent.Manager
+	mcpMgr    *mcpmanager.Manager
+	domainMgr *domain.Manager
+	bus       *events.Bus
+	logger    *slog.Logger
+	mu        sync.RWMutex
+	tasks     []config.Task
+	sem       chan struct{}   // concurrency limiter
+	wg        sync.WaitGroup // tracks in-flight task goroutines
 }
 
-func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, bus *events.Bus, logger *slog.Logger) (*Watcher, error) {
+func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus, logger *slog.Logger) (*Watcher, error) {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
 	return &Watcher{
-		fsw:    fsw,
-		runner: runner,
-		subMgr: subMgr,
-		mcpMgr: mcpMgr,
-		bus:    bus,
-		logger: logger,
-		sem:    make(chan struct{}, maxConcurrentTasks),
+		fsw:       fsw,
+		runner:    runner,
+		subMgr:    subMgr,
+		mcpMgr:    mcpMgr,
+		domainMgr: domainMgr,
+		bus:       bus,
+		logger:    logger,
+		sem:       make(chan struct{}, maxConcurrentTasks),
 	}, nil
 }
 
@@ -127,7 +130,7 @@ func (w *Watcher) Start(ctx context.Context) {
 					defer w.wg.Done()
 					defer func() { <-w.sem }()
 
-					opts, cleanup, err := task.ResolveRunOptions(t, w.subMgr, w.mcpMgr)
+					opts, cleanup, err := task.ResolveRunOptions(t, w.subMgr, w.mcpMgr, w.domainMgr)
 					if err != nil {
 						w.logger.Error("failed to resolve run options", "task", t.Name, "error", err)
 						return

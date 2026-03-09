@@ -22,6 +22,12 @@ type mcpConfigEntry struct {
 // GenerateConfigFile generates a --mcp-config JSON file for the given server names.
 // The caller is responsible for cleaning up the file.
 func (m *Manager) GenerateConfigFile(serverNames []string) (string, error) {
+	return m.GenerateConfigFileWithEnv(serverNames, nil)
+}
+
+// GenerateConfigFileWithEnv generates a --mcp-config JSON file for the given server names,
+// merging extraEnv into each server's environment variables.
+func (m *Manager) GenerateConfigFileWithEnv(serverNames []string, extraEnv map[string]string) (string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -38,9 +44,19 @@ func (m *Manager) GenerateConfigFile(serverNames []string) (string, error) {
 			Command: srv.config.Command,
 			Args:    srv.config.Args,
 		}
-		if len(srv.config.Env) > 0 {
-			entry.Env = srv.config.Env
+
+		// Merge server env + extra env
+		if len(srv.config.Env) > 0 || len(extraEnv) > 0 {
+			merged := make(map[string]string)
+			for k, v := range srv.config.Env {
+				merged[k] = v
+			}
+			for k, v := range extraEnv {
+				merged[k] = v
+			}
+			entry.Env = merged
 		}
+
 		cfg.MCPServers[name] = entry
 	}
 

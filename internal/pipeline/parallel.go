@@ -32,7 +32,7 @@ func (r *Runner) RunParallel(ctx context.Context, p config.Pipeline) (string, er
 		go func(t config.Task) {
 			defer wg.Done()
 
-			opts, cleanup, err := task.ResolveRunOptions(t, r.subMgr, r.mcpMgr)
+			opts, cleanup, err := task.ResolveRunOptions(t, r.subMgr, r.mcpMgr, r.domainMgr)
 			if err != nil {
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("task %s: resolve options: %w", t.Name, err))
@@ -89,7 +89,7 @@ func (r *Runner) RunParallel(ctx context.Context, p config.Pipeline) (string, er
 	collectorCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	collectorOpts, cleanup, err := task.ResolveRunOptions(collectorTask, r.subMgr, r.mcpMgr)
+	collectorOpts, cleanup, err := task.ResolveRunOptions(collectorTask, r.subMgr, r.mcpMgr, r.domainMgr)
 	if err != nil {
 		return string(resultsJSON), fmt.Errorf("pipeline %s, collector %s: resolve options: %w", p.Name, p.Collector, err)
 	}

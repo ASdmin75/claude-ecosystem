@@ -263,6 +263,63 @@
 - Убраны `refetchInterval: 5000` (список) и `refetchInterval: 3000` (детали при status=running)
 - `App.tsx`: SSE подключается при наличии токена, toast-уведомления при старте/завершении задач и пайплайнов
 
+### 2026-03-09 — Система доменов + дедупликация лидов
+
+**Проблема:** субагент `eaeu-logistics-lead-finder` при повторных запусках находил дублирующихся лидов. Agent memory (`.claude/agent-memory/`) ненадёжна для дедупликации: MEMORY.md ограничен 200 строками, LLM может пропустить дубликат. Нужно структурированное хранилище с точной проверкой.
+
+**Решение: секция `domains` в `tasks.yaml`**
+
+Домен — реестр, связывающий бизнес-данные (SQLite DB, файлы, документацию) с задачами, агентами и пайплайнами. Бизнес-данные отделены от системной БД `claude-ecosystem.db`.
+
+**Конфигурация (`internal/config/`)**
+- Новый тип `Domain` (`domain.go`): `description`, `data_dir`, `db`, `schema`, `domain_doc`, ссылки на `tasks/pipelines/agents/mcp_servers`
+- Поле `Domain string` в `Task` — привязка задачи к домену
+- `Config.Domains map[string]Domain` — секция `domains:` в `tasks.yaml` (опциональна)
+- Валидация ссылок: task→domain, domain→tasks (`validate.go`)
+- Подстановка `${VAR}` в `domain.DataDir` и `domain.DB` (`dotenv.go`)
+
+**Менеджер доменов (`internal/domain/manager.go`)**
+- `Init()`: создаёт `data_dir`, применяет SQL-схему через SQLite, генерирует шаблон `DOMAIN.md` (парсит CREATE TABLE → таблица колонок)
+- `DomainEnvVars()`: возвращает `DOMAIN_DB_PATH`, `DOMAIN_DATA_DIR`, `DOMAIN_NAME`, `DOMAIN_DOC_PATH` для инжекции в MCP-серверы
+- `DomainDocContent()`: читает `DOMAIN.md` для инжекции в system prompt агента
+
+**MCP конфиг с env vars (`internal/mcpmanager/config.go`)**
+- Новый метод `GenerateConfigFileWithEnv(serverNames, extraEnv)` — мержит domain env vars в `Env` каждого MCP-сервера при генерации JSON
+- `GenerateConfigFile()` → делегирует в `GenerateConfigFileWithEnv(names, nil)`
+
+**Резолвинг задач (`internal/task/resolve.go`)**
+- `ResolveRunOptions()` принимает `*domain.Manager` (4-й параметр)
+- Если `task.Domain != ""`: получает domain env vars → передаёт в `GenerateConfigFileWithEnv()`, читает `DOMAIN.md` → добавляет в `RunOptions.AppendSystemPrompt`
+- `BuildArgs()` мержит `AppendSystemPrompt` из task config + opts (через `\n\n`)
+
+**MCP Database Server (`cmd/mcp/mcp-database/main.go`) — полная реализация из стаба**
+- 6 инструментов: `query` (SELECT + auto LIMIT 1000), `execute` (INSERT/UPDATE/DELETE), `list_tables`, `describe_table`, `check_exists` (дедупликация по column=value → bool), `insert` (table + JSON data → ID)
+- Безопасность: `check_exists`/`insert` строят SQL параметризованно (без инъекций), `query`/`execute` отклоняют DROP/ALTER/ATTACH
+- Валидация идентификаторов через regexp `^[a-zA-Z_][a-zA-Z0-9_]*$`
+- Читает `DOMAIN_DB_PATH` из env (инжектируется domain manager → MCP config)
+
+**Wiring (`cmd/server/main.go`)**
+- `domain.New(cfg.Domains, logger)` + `Init()` при старте
+- `domainMgr` прокинут во все компоненты: `pipeline.NewRunner`, `scheduler.New`, `watcher.New`, `api.NewServer`, `ResolveRunOptions()` (все 9 call sites)
+
+**DOMAIN.md — документация домена для AI**
+- Файл `data/leads/DOMAIN.md` автоматически инжектируется в `--append-system-prompt` задач с `domain: leads`
+- Содержит: описание таблиц, правила дедупликации, примеры вызовов MCP-инструментов
+- Агент получает полный контекст без хардкода в промптах задач
+
+**Конфигурация `tasks.yaml`**
+- Добавлена секция `domains.leads`: schema с таблицей leads (15 полей + unique index на tax_id)
+- Добавлен MCP-сервер `database` (`./bin/mcp-database`)
+- Задачи `find-leads`, `compile-leads-excel`, `deliver-leads-report` получили `domain: leads`
+- `find-leads`: добавлен `mcp_servers: [database]`, расширен `allowed_tools` инструментами `mcp__database__*`
+- `compile-leads-excel`: добавлен `mcp_servers: [database]` + `mcp__database__query` для чтения из БД вместо `{{.PrevOutput}}`
+
+**Unit-тесты (38 тестов)**
+- `internal/config/domain_test.go`: paths, config loading, validation, env expansion
+- `internal/domain/manager_test.go`: Init, env vars, doc content, get domain
+- `internal/mcpmanager/config_test.go`: env merging, nil env, delegation
+- `cmd/mcp/mcp-database/main_test.go`: query, execute, check_exists, insert, list_tables, describe_table, SQL injection prevention, deduplication
+
 ---
 
 ## Бэклог
@@ -279,7 +336,7 @@
 - [x] mcp-email: SMTP-отправка с вложениями через gomail
 - [ ] mcp-email: IMAP-чтение (read_inbox, search_emails)
 - [ ] mcp-google: Google Docs/Sheets API
-- [ ] mcp-database: SQL-драйверы (postgres, mysql, sqlite)
+- [x] mcp-database: SQLite-реализация (query, execute, check_exists, insert, list_tables, describe_table) — интеграция через domain system
 - [x] mcp-telegram: отправка сообщений и файлов через Telegram Bot API
 
 ### Web UI — доработки
