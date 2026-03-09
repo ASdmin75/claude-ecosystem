@@ -268,6 +268,14 @@ func (s *Server) handleRunPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.bus.Publish(events.Event{
+		Type: "pipeline.started",
+		Payload: map[string]string{
+			"execution_id": execID,
+			"pipeline":     name,
+		},
+	})
+
 	resp := s.runPipeline(r.Context(), name, execID)
 
 	completedAt := time.Now().UTC()
@@ -318,6 +326,14 @@ func (s *Server) handleRunPipelineAsync(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "failed to create execution record")
 		return
 	}
+
+	s.bus.Publish(events.Event{
+		Type: "pipeline.started",
+		Payload: map[string]string{
+			"execution_id": execID,
+			"pipeline":     name,
+		},
+	})
 
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())

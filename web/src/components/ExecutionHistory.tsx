@@ -18,14 +18,12 @@ export default function ExecutionHistory() {
   const { data: executions, isLoading } = useQuery({
     queryKey: ['executions'],
     queryFn: () => api.listExecutions({ limit: '50' }),
-    refetchInterval: 5000,
   })
 
   const detailQuery = useQuery({
     queryKey: ['execution', selected?.id],
     queryFn: () => api.getExecution(selected!.id),
     enabled: !!selected,
-    refetchInterval: selected?.status === 'running' ? 3000 : false,
   })
 
   const cancelMutation = useMutation({

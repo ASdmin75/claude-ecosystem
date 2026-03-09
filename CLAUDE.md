@@ -54,11 +54,11 @@ Pipelines chain tasks in sequential loops or parallel execution. Template variab
 
 All under `/api/v1/`. Auth required (PASETO or bearer token) except `/auth/login`.
 
-Key endpoints: task CRUD + run, sub-agent CRUD, pipeline run, execution history, MCP server management, SSE streaming, dashboard stats.
+Key endpoints: task CRUD + run, sub-agent CRUD, pipeline run, execution history, MCP server management, SSE streaming (`/events` for global event stream, `/executions/{id}/stream` for per-execution), dashboard stats. Auth supports query param `?token=` for SSE (EventSource limitation).
 
 ## Web UI
 
-React 19 + Vite + TypeScript + Tailwind CSS 4 + TanStack Query. Source in `web/`, built output embedded in Go binary via `internal/ui/dist/`. Dark mode support via class-based toggle (`localStorage` persisted, button in sidebar).
+React 19 + Vite + TypeScript + Tailwind CSS 4 + TanStack Query. Source in `web/`, built output embedded in Go binary via `internal/ui/dist/`. Dark mode support via class-based toggle (`localStorage` persisted, button in sidebar). Real-time updates via SSE (`useSSE` hook) with auto-reconnect — no polling. Toast notifications on task/pipeline start/completion.
 
 ## Hook System
 

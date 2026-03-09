@@ -169,6 +169,14 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 		defer cleanup()
 	}
 
+	s.bus.Publish(events.Event{
+		Type: "task.started",
+		Payload: map[string]string{
+			"execution_id": execID,
+			"task":         t.Name,
+		},
+	})
+
 	timeout := t.ParsedTimeout()
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
@@ -256,6 +264,14 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to resolve run options: "+asyncResolveErr.Error())
 		return
 	}
+
+	s.bus.Publish(events.Event{
+		Type: "task.started",
+		Payload: map[string]string{
+			"execution_id": execID,
+			"task":         t.Name,
+		},
+	})
 
 	// Run in background goroutine.
 	taskCopy := *t

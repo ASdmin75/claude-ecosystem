@@ -8,6 +8,59 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/events"
 )
 
+// handleEvents sends Server-Sent Events for all system events.
+// GET /api/v1/events
+// Clients receive task.started, task.completed, pipeline.started, pipeline.completed events.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	flusher.Flush()
+
+	ch := make(chan events.Event, 128)
+	done := make(chan struct{})
+
+	eventTypes := []string{
+		"task.started", "task.completed",
+		"pipeline.started", "pipeline.completed",
+		"task.cancelled",
+	}
+	for _, et := range eventTypes {
+		s.bus.Subscribe(et, func(e events.Event) {
+			select {
+			case ch <- e:
+			default:
+			}
+		})
+	}
+
+	go func() {
+		<-r.Context().Done()
+		close(done)
+	}()
+
+	for {
+		select {
+		case <-done:
+			return
+		case evt := <-ch:
+			data, err := json.Marshal(evt.Payload)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Type, data)
+			flusher.Flush()
+		}
+	}
+}
+
 // handleExecutionStream sends Server-Sent Events for a specific execution.
 // GET /api/v1/executions/{id}/stream
 func (s *Server) handleExecutionStream(w http.ResponseWriter, r *http.Request) {

@@ -237,6 +237,32 @@
 - Баг: `mcp-telegram` отправлял документы без имени файла — в Telegram файл приходил как `file` без расширения
 - Фикс: добавлено `FileName: filepath.Base(filePath)` в `handleSendDocument()` — теперь файл приходит с оригинальным именем (напр. `leads-report-2026-03-09.xlsx`)
 
+### 2026-03-09 — Динамическое обновление UI через SSE
+
+**Бэкенд: глобальный SSE-эндпоинт**
+- Новый эндпоинт `GET /api/v1/events` — общий поток Server-Sent Events для всех событий системы
+- Типы событий: `task.started`, `task.completed`, `pipeline.started`, `pipeline.completed`, `task.cancelled`
+- Публикация `task.started` при запуске задач (sync и async handlers)
+- Публикация `pipeline.started` при запуске пайплайнов (sync и async handlers)
+- Auth middleware: добавлена поддержка `?token=` query param для SSE (EventSource не умеет ставить заголовки)
+
+**Фронтенд: SSE-клиент**
+- Новый хук `useSSE` (`web/src/hooks/useSSE.ts`) — подключение к `/api/v1/events` с автопереподключением (exponential backoff: 1s → 30s)
+- При получении любого события — автоматическая инвалидация TanStack Query кешей (`executions`, `dashboard`, `execution` detail)
+- Callback `onEvent` для кастомной обработки событий
+
+**Фронтенд: toast-уведомления**
+- Новый компонент `Toast` (`web/src/components/Toast.tsx`) — хук `useToast()` + контейнер `ToastContainer`
+- Три типа: `success` (зелёный), `error` (красный), `info` (синий)
+- Автоскрытие через 5 секунд, ручное закрытие по кнопке
+- Slide-in анимация (CSS keyframes в `index.css`)
+
+**Фронтенд: real-time обновления**
+- Dashboard: счётчики обновляются в реальном времени (через SSE → query invalidation)
+- Execution History: список и детали обновляются в реальном времени
+- Убраны `refetchInterval: 5000` (список) и `refetchInterval: 3000` (детали при status=running)
+- `App.tsx`: SSE подключается при наличии токена, toast-уведомления при старте/завершении задач и пайплайнов
+
 ---
 
 ## Бэклог
@@ -257,7 +283,9 @@
 - [x] mcp-telegram: отправка сообщений и файлов через Telegram Bot API
 
 ### Web UI — доработки
-- [ ] Детальный просмотр execution с SSE-стримингом
+- [x] Динамическое обновление UI через SSE (real-time, без polling)
+- [x] Toast-уведомления при завершении задач/пайплайнов
+- [ ] Детальный просмотр execution с SSE-стримингом (live output)
 - [x] Редактирование задач через UI (CSV-поля исправлены)
 - [ ] Конфигурация scheduler/watcher через UI
 - [ ] Управление MCP-серверами через UI

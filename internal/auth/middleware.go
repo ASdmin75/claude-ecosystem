@@ -29,9 +29,19 @@ func NewMiddleware(paseto *PASETOManager, bearer *BearerAuth) *Middleware {
 // Handler returns an http.Handler that checks the Authorization header.
 // It tries PASETO first, then bearer. On success it sets the username in
 // the request context under UserKey. On failure it returns 401 Unauthorized.
+// For SSE endpoints, a "token" query parameter is also accepted since
+// EventSource cannot set custom headers.
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
+
+		// Fall back to query param for SSE (EventSource can't set headers).
+		if authHeader == "" {
+			if qToken := r.URL.Query().Get("token"); qToken != "" {
+				authHeader = "Bearer " + qToken
+			}
+		}
+
 		if authHeader == "" {
 			http.Error(w, "missing authorization header", http.StatusUnauthorized)
 			return

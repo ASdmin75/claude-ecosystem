@@ -136,6 +136,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/mcp-servers/{name}/start", s.withAuth(s.handleStartMCPServer))
 	mux.HandleFunc("POST /api/v1/mcp-servers/{name}/stop", s.withAuth(s.handleStopMCPServer))
 
+	// Global SSE event stream
+	mux.HandleFunc("GET /api/v1/events", s.withAuth(s.handleEvents))
+
 	// Dashboard
 	mux.HandleFunc("GET /api/v1/dashboard", s.withAuth(s.handleDashboard))
 

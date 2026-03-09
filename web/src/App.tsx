@@ -1,11 +1,13 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import Dashboard from './components/Dashboard'
 import TaskList from './components/TaskList'
 import SubAgentList from './components/SubAgentList'
 import PipelineList from './components/PipelineList'
 import ExecutionHistory from './components/ExecutionHistory'
 import Login from './components/Login'
+import { ToastContainer, useToast } from './components/Toast'
+import { useSSE, type SSEEvent } from './hooks/useSSE'
 
 const navItems = [
   { path: '/', label: 'Dashboard' },
@@ -30,6 +32,38 @@ export default function App() {
   const location = useLocation()
   const token = localStorage.getItem('token')
   const { dark, toggle } = useTheme()
+  const { toasts, addToast, removeToast } = useToast()
+
+  const handleSSEEvent = useCallback((event: SSEEvent) => {
+    const name = event.data.task || event.data.pipeline || ''
+    switch (event.type) {
+      case 'task.started':
+        addToast(`Task "${name}" started`, 'info')
+        break
+      case 'task.completed':
+        if (event.data.status === 'failed') {
+          addToast(`Task "${name}" failed`, 'error')
+        } else {
+          addToast(`Task "${name}" completed`, 'success')
+        }
+        break
+      case 'pipeline.started':
+        addToast(`Pipeline "${name}" started`, 'info')
+        break
+      case 'pipeline.completed':
+        if (event.data.status === 'failed') {
+          addToast(`Pipeline "${name}" failed`, 'error')
+        } else {
+          addToast(`Pipeline "${name}" completed`, 'success')
+        }
+        break
+      case 'task.cancelled':
+        addToast(`Task "${name}" cancelled`, 'info')
+        break
+    }
+  }, [addToast])
+
+  useSSE(token ? handleSSEEvent : undefined)
 
   if (!token && location.pathname !== '/login') {
     return <Login />
@@ -77,6 +111,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
         </Routes>
       </main>
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   )
 }
