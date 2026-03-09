@@ -402,13 +402,20 @@ mcp_servers:
 
 ### Привязка к задачам
 
-Поле `mcp_servers` в конфигурации задачи автоматически генерирует `--mcp-config` JSON-файл и передаёт его Claude CLI:
+Поле `mcp_servers` в конфигурации задачи автоматически генерирует `--mcp-config` JSON-файл и передаёт его Claude CLI.
+
+**Важно:** при использовании `permission_mode: dontAsk` MCP-инструменты блокируются, если не указаны явно в `allowed_tools`. Имена инструментов следуют формату `mcp__<server>__<tool>`:
 
 ```yaml
 tasks:
   - name: create-report
     prompt: "Create an Excel report..."
     mcp_servers: [excel, filesystem]
+    allowed_tools:
+      - mcp__excel__create_spreadsheet
+      - mcp__excel__add_styled_table
+      - mcp__filesystem__copy_file
+    permission_mode: dontAsk
 ```
 
 ### Привязка суб-агентов

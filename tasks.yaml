@@ -114,6 +114,11 @@ tasks:
         - leads-report-compiler
       mcp_servers:
         - excel
+      allowed_tools:
+        - mcp__excel__create_spreadsheet
+        - mcp__excel__add_styled_table
+        - mcp__excel__write_spreadsheet
+        - mcp__excel__read_spreadsheet
       permission_mode: dontAsk
     - name: deliver-leads-report
       prompt: |
@@ -134,6 +139,10 @@ tasks:
         - email
         - filesystem
         - telegram
+      allowed_tools:
+        - mcp__email__send_email
+        - mcp__filesystem__copy_file
+        - mcp__telegram__send_document
       permission_mode: dontAsk
 pipelines:
     - name: review-fix

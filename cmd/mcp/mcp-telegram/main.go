@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -175,7 +176,8 @@ func handleSendDocument(args map[string]any) (any, error) {
 	}
 
 	doc := &tele.Document{
-		File: tele.FromDisk(filePath),
+		File:     tele.FromDisk(filePath),
+		FileName: filepath.Base(filePath),
 	}
 	if caption, ok := args["caption"].(string); ok {
 		doc.Caption = caption

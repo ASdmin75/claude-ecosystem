@@ -7,6 +7,7 @@ import (
 )
 
 // mcpConfigFile is the JSON format for the --mcp-config flag.
+// Format: {"mcpServers": {"name": {"command": "...", "args": [...]}}}
 type mcpConfigFile struct {
 	MCPServers map[string]mcpConfigEntry `json:"mcpServers"`
 }
@@ -14,12 +15,11 @@ type mcpConfigFile struct {
 // mcpConfigEntry represents a single server in the config file.
 type mcpConfigEntry struct {
 	Command string            `json:"command"`
-	Args    []string          `json:"args"`
+	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 }
 
 // GenerateConfigFile generates a --mcp-config JSON file for the given server names.
-// It writes the JSON to a temp file and returns the path.
 // The caller is responsible for cleaning up the file.
 func (m *Manager) GenerateConfigFile(serverNames []string) (string, error) {
 	m.mu.RLock()

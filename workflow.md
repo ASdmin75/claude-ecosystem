@@ -219,6 +219,24 @@
 - Останавливает Docker (`docker compose down`), убивает процесс `server`, пересобирает UI + Go-бинарники, запускает systemd-демон
 - `build-ui` теперь делает `touch internal/ui/embed.go` после копирования dist — инвалидирует Go build cache для `go:embed`
 
+### 2026-03-09 — Исправление MCP config + allowed_tools + Telegram filename
+
+**Исправление формата `--mcp-config` JSON**
+- Баг: `GenerateConfigFile()` генерировал JSON с `"args": null` при отсутствии аргументов у MCP-сервера — Claude Code отклонял файл: `mcpServers.excel: Does not adhere to MCP server configuration schema`
+- Фикс: `args` помечен `json:"args,omitempty"` — пустые args не включаются в JSON
+- Убрано ранее добавленное поле `"type": "stdio"` — Claude Code его не требует для stdio-серверов
+- Протестирован формат вручную: `claude -p "..." --mcp-config file.json` — подтверждён формат `{"mcpServers": {"name": {"command": "..."}}}`
+
+**Разблокировка MCP-инструментов в режиме `dontAsk`**
+- Баг: при `permission_mode: dontAsk` Claude Code блокировал MCP-инструменты — они требуют явного перечисления в `allowed_tools`
+- Фикс: добавлены `allowed_tools` для двух задач:
+  - `compile-leads-excel`: `mcp__excel__create_spreadsheet`, `mcp__excel__add_styled_table`, `mcp__excel__write_spreadsheet`, `mcp__excel__read_spreadsheet`
+  - `deliver-leads-report`: `mcp__email__send_email`, `mcp__filesystem__copy_file`, `mcp__telegram__send_document`
+
+**Исправление имени файла в Telegram**
+- Баг: `mcp-telegram` отправлял документы без имени файла — в Telegram файл приходил как `file` без расширения
+- Фикс: добавлено `FileName: filepath.Base(filePath)` в `handleSendDocument()` — теперь файл приходит с оригинальным именем (напр. `leads-report-2026-03-09.xlsx`)
+
 ---
 
 ## Бэклог
