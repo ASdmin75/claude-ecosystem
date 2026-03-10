@@ -1,4 +1,4 @@
-import type { DashboardData, Task, SubAgent, Pipeline, Execution, ExecutionResult, MCPServer } from '../types'
+import type { DashboardData, Task, SubAgent, Pipeline, Execution, ExecutionResult, MCPServer, WizardPlan, ApplyResult } from '../types'
 
 const BASE = '/api/v1'
 
@@ -93,6 +93,23 @@ export const api = {
     request<void>(`/mcp-servers/${name}/start`, { method: 'POST' }),
   stopMCPServer: (name: string) =>
     request<void>(`/mcp-servers/${name}/stop`, { method: 'POST' }),
+
+  // Wizard
+  wizardGenerate: (description: string, workDir?: string) =>
+    request<WizardPlan>('/wizard/generate', {
+      method: 'POST',
+      body: JSON.stringify({ description, work_dir: workDir }),
+    }),
+  wizardGetPlan: (id: string) => request<WizardPlan>(`/wizard/plans/${id}`),
+  wizardUpdatePlan: (id: string, plan: WizardPlan) =>
+    request<WizardPlan>(`/wizard/plans/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(plan),
+    }),
+  wizardApply: (id: string) =>
+    request<ApplyResult>(`/wizard/plans/${id}/apply`, { method: 'POST' }),
+  wizardDiscard: (id: string) =>
+    request<void>(`/wizard/plans/${id}`, { method: 'DELETE' }),
 }
 
 // SSE helper

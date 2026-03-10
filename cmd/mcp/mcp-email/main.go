@@ -33,7 +33,7 @@ type tool struct {
 var tools = []tool{
 	{
 		Name:        "send_email",
-		Description: "Send an email message with optional attachments and HTML body.",
+		Description: "Send an email message with optional attachments, HTML body, CC, and BCC recipients.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -59,6 +59,15 @@ var tools = []tool{
 					"description": "List of CC recipient email addresses.",
 					"items":       map[string]any{"type": "string"},
 				},
+				"bcc": map[string]any{
+					"type":        "array",
+					"description": "List of BCC recipient email addresses (hidden from other recipients). Use for mass distribution of reports.",
+					"items":       map[string]any{"type": "string"},
+				},
+				"reply_to": map[string]any{
+					"type":        "string",
+					"description": "Reply-To email address (if different from sender).",
+				},
 				"attachments": map[string]any{
 					"type":        "array",
 					"description": "List of file paths to attach.",
@@ -66,6 +75,38 @@ var tools = []tool{
 				},
 			},
 			"required": []string{"to", "subject", "body"},
+		},
+	},
+	{
+		Name:        "send_report",
+		Description: "Send a report email to multiple recipients with attachments. Convenience wrapper: accepts a recipients list (all go to BCC for privacy), a single visible 'from_name', and file attachments. Ideal for periodic report distribution to management.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"recipients": map[string]any{
+					"type":        "array",
+					"description": "List of email addresses to receive the report (sent as BCC for privacy).",
+					"items":       map[string]any{"type": "string"},
+				},
+				"subject": map[string]any{
+					"type":        "string",
+					"description": "Email subject line.",
+				},
+				"body": map[string]any{
+					"type":        "string",
+					"description": "Plain text email body with report summary.",
+				},
+				"html_body": map[string]any{
+					"type":        "string",
+					"description": "HTML email body with formatted report.",
+				},
+				"attachments": map[string]any{
+					"type":        "array",
+					"description": "List of file paths to attach (e.g. Excel reports).",
+					"items":       map[string]any{"type": "string"},
+				},
+			},
+			"required": []string{"recipients", "subject", "body"},
 		},
 	},
 	{
@@ -118,6 +159,15 @@ func textResult(text string) any {
 	}
 }
 
+func errorResult(msg string) any {
+	return map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": "Error: " + msg},
+		},
+		"isError": true,
+	}
+}
+
 func handleToolCall(params map[string]any) (any, error) {
 	toolName, _ := params["name"].(string)
 	args, _ := params["arguments"].(map[string]any)
@@ -125,6 +175,8 @@ func handleToolCall(params map[string]any) (any, error) {
 	switch toolName {
 	case "send_email":
 		return handleSendEmail(args)
+	case "send_report":
+		return handleSendReport(args)
 	case "read_inbox", "search_emails":
 		return textResult("This tool is not implemented yet."), nil
 	default:
@@ -132,7 +184,7 @@ func handleToolCall(params map[string]any) (any, error) {
 	}
 }
 
-func handleSendEmail(args map[string]any) (any, error) {
+func getDialer() (*gomail.Dialer, string, error) {
 	host := os.Getenv("SMTP_HOST")
 	portStr := os.Getenv("SMTP_PORT")
 	user := os.Getenv("SMTP_USER")
@@ -140,7 +192,7 @@ func handleSendEmail(args map[string]any) (any, error) {
 	from := os.Getenv("SMTP_FROM")
 
 	if host == "" || portStr == "" {
-		return nil, fmt.Errorf("SMTP_HOST and SMTP_PORT env vars are required")
+		return nil, "", fmt.Errorf("SMTP_HOST and SMTP_PORT env vars are required")
 	}
 	if from == "" {
 		from = user
@@ -148,19 +200,46 @@ func handleSendEmail(args map[string]any) (any, error) {
 
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid SMTP_PORT: %w", err)
+		return nil, "", fmt.Errorf("invalid SMTP_PORT: %w", err)
 	}
 
-	// Parse recipients
-	toRaw, _ := args["to"].([]any)
-	if len(toRaw) == 0 {
-		return nil, fmt.Errorf("at least one recipient is required")
+	return gomail.NewDialer(host, port, user, password), from, nil
+}
+
+func parseStringList(raw any) []string {
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
 	}
-	var to []string
-	for _, r := range toRaw {
-		if s, ok := r.(string); ok {
-			to = append(to, s)
+	var result []string
+	for _, r := range arr {
+		if s, ok := r.(string); ok && s != "" {
+			result = append(result, s)
 		}
+	}
+	return result
+}
+
+func attachFiles(m *gomail.Message, args map[string]any, key string) error {
+	paths := parseStringList(args[key])
+	for _, path := range paths {
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("attachment not found: %s", path)
+		}
+		m.Attach(path)
+	}
+	return nil
+}
+
+func handleSendEmail(args map[string]any) (any, error) {
+	d, from, err := getDialer()
+	if err != nil {
+		return nil, err
+	}
+
+	to := parseStringList(args["to"])
+	if len(to) == 0 {
+		return nil, fmt.Errorf("at least one recipient is required")
 	}
 
 	subject, _ := args["subject"].(string)
@@ -182,37 +261,75 @@ func handleSendEmail(args map[string]any) (any, error) {
 	}
 
 	// CC
-	if ccRaw, ok := args["cc"].([]any); ok {
-		var cc []string
-		for _, r := range ccRaw {
-			if s, ok := r.(string); ok {
-				cc = append(cc, s)
-			}
-		}
-		if len(cc) > 0 {
-			m.SetHeader("Cc", cc...)
-		}
+	if cc := parseStringList(args["cc"]); len(cc) > 0 {
+		m.SetHeader("Cc", cc...)
+	}
+
+	// BCC
+	if bcc := parseStringList(args["bcc"]); len(bcc) > 0 {
+		m.SetHeader("Bcc", bcc...)
+	}
+
+	// Reply-To
+	if replyTo, ok := args["reply_to"].(string); ok && replyTo != "" {
+		m.SetHeader("Reply-To", replyTo)
 	}
 
 	// Attachments
-	if attachRaw, ok := args["attachments"].([]any); ok {
-		for _, a := range attachRaw {
-			if path, ok := a.(string); ok {
-				if _, err := os.Stat(path); err != nil {
-					return nil, fmt.Errorf("attachment not found: %s", path)
-				}
-				m.Attach(path)
-			}
-		}
+	if err := attachFiles(m, args, "attachments"); err != nil {
+		return nil, err
 	}
-
-	d := gomail.NewDialer(host, port, user, password)
 
 	if err := d.DialAndSend(m); err != nil {
 		return nil, fmt.Errorf("failed to send email: %w", err)
 	}
 
-	return textResult(fmt.Sprintf("Email sent successfully to %v (subject: %s)", to, subject)), nil
+	allRecipients := append(to, parseStringList(args["cc"])...)
+	allRecipients = append(allRecipients, parseStringList(args["bcc"])...)
+	return textResult(fmt.Sprintf("Email sent successfully to %d recipients (subject: %s)", len(allRecipients), subject)), nil
+}
+
+func handleSendReport(args map[string]any) (any, error) {
+	d, from, err := getDialer()
+	if err != nil {
+		return nil, err
+	}
+
+	recipients := parseStringList(args["recipients"])
+	if len(recipients) == 0 {
+		return nil, fmt.Errorf("at least one recipient is required")
+	}
+
+	subject, _ := args["subject"].(string)
+	body, _ := args["body"].(string)
+	htmlBody, _ := args["html_body"].(string)
+
+	m := gomail.NewMessage()
+	m.SetHeader("From", from)
+	// Send to self, all recipients in BCC for privacy
+	m.SetHeader("To", from)
+	m.SetHeader("Bcc", recipients...)
+	m.SetHeader("Subject", subject)
+
+	if htmlBody != "" {
+		m.SetBody("text/html", htmlBody)
+		if body != "" {
+			m.AddAlternative("text/plain", body)
+		}
+	} else {
+		m.SetBody("text/plain", body)
+	}
+
+	// Attachments
+	if err := attachFiles(m, args, "attachments"); err != nil {
+		return nil, err
+	}
+
+	if err := d.DialAndSend(m); err != nil {
+		return nil, fmt.Errorf("failed to send report: %w", err)
+	}
+
+	return textResult(fmt.Sprintf("Report sent successfully to %d recipients (subject: %s)", len(recipients), subject)), nil
 }
 
 func main() {
@@ -235,7 +352,7 @@ func main() {
 			resp.Result = map[string]any{
 				"protocolVersion": "2024-11-05",
 				"capabilities":   map[string]any{"tools": map[string]any{}},
-				"serverInfo":     map[string]any{"name": "mcp-email", "version": "0.1.0"},
+				"serverInfo":     map[string]any{"name": "mcp-email", "version": "1.1.0"},
 			}
 		case "tools/list":
 			resp.Result = map[string]any{"tools": tools}
@@ -246,12 +363,7 @@ func main() {
 			} else {
 				result, err := handleToolCall(params)
 				if err != nil {
-					resp.Result = map[string]any{
-						"content": []map[string]any{
-							{"type": "text", "text": "Error: " + err.Error()},
-						},
-						"isError": true,
-					}
+					resp.Result = errorResult(err.Error())
 				} else {
 					resp.Result = result
 				}

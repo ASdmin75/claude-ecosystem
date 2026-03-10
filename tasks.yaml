@@ -80,6 +80,7 @@ tasks:
       timeout: 60m
       permission_mode: dontAsk
     - name: find-leads
+      domain: leads
       prompt: |
         Найди 50 новых потенциальных клиентов для логистическо-экспедиционной компании из РБ работающей на рынке ЕАЭС с ледующих отраслях:
         - фарма
@@ -90,7 +91,6 @@ tasks:
         Комапнии должны быть резидентами РБ.
         Используй сабагента eaeu-logistics-lead-finder
       work_dir: .
-      domain: leads
       tags:
         - leads
         - sales
@@ -110,6 +110,7 @@ tasks:
       max_turns: 50
       permission_mode: dontAsk
     - name: compile-leads-excel
+      domain: leads
       prompt: |
         Получи все лиды из базы данных через mcp__database__query.
         SQL: SELECT * FROM leads WHERE status = 'new' ORDER BY found_at DESC
@@ -119,7 +120,6 @@ tasks:
         Добавь лист 'Leads' с таблицей всех лидов и лист 'Summary' с итогами по источникам.
         Верни только путь к созданному файлу.
       work_dir: .
-      domain: leads
       tags:
         - leads
         - excel
@@ -137,6 +137,7 @@ tasks:
         - mcp__database__query
       permission_mode: dontAsk
     - name: deliver-leads-report
+      domain: leads
       prompt: |
         Файл отчёта: {{.PrevOutput}}
 
@@ -145,7 +146,6 @@ tasks:
         2. Скопируй файл в workspace/ceo/reports/
         3. Отправь уведомление в Telegram с файлом и подписью "Новый отчёт по лидам"
       work_dir: .
-      domain: leads
       tags:
         - leads
         - delivery
@@ -161,6 +161,135 @@ tasks:
         - mcp__filesystem__copy_file
         - mcp__telegram__send_document
       permission_mode: dontAsk
+    - name: sync-export-by-catalog
+      domain: export-by-aviation
+      prompt: |-
+        Сегодня {{.Date}}. Синхронизируй каталог компаний с export.by в локальную БД.
+
+        1. Вызови mcp__exportby__get_stats — проверь текущий прогресс.
+        2. Если каталог ещё не полностью просканирован, вызови mcp__exportby__sync_catalog с max_pages=100 для продолжения.
+        3. Если каталог уже полный, вызови mcp__exportby__check_new для проверки новых записей.
+        4. Проверь финальную статистику через mcp__exportby__get_stats.
+
+        Формат вывода:
+        СИНХРОНИЗАЦИЯ: страниц N/N, компаний в БД N из N
+        НОВЫХ КОМПАНИЙ: N
+        СТАТУС: [завершено/в процессе]
+      work_dir: .
+      tags:
+        - leads
+        - aviation
+        - export-by
+        - sync
+      model: haiku
+      timeout: 10m
+      mcp_servers:
+        - exportby
+      allowed_tools:
+        - mcp__exportby__sync_catalog
+        - mcp__exportby__check_new
+        - mcp__exportby__get_stats
+      max_turns: 15
+      max_budget_usd: 0.05
+      permission_mode: bypassPermissions
+    - name: analyze-export-by-aviation
+      domain: export-by-aviation
+      prompt: |-
+        Сегодня {{.Date}}. Проанализируй компании из каталога export.by и определи потенциальных лидов для авиаперевозки.
+
+        Предыдущий этап:
+        {{.PrevOutput}}
+
+        Работай ТОЛЬКО с данными в БД — НЕ используй WebFetch.
+
+        1. Вызови mcp__exportby__get_unanalyzed с limit=100 — получишь компании, которых ещё нет в таблице companies.
+           Если unanalyzed = 0, выведи "НОВЫХ ЛИДОВ: 0" и заверши.
+
+        2. Для каждой компании оцени потребность в авиаперевозке по описанию:
+           - aviation_priority = 2 (высокий): скоропортящееся, электроника, медтехника, фармацевтика, точные приборы, высокоценные грузы, авиа-логистика
+           - aviation_priority = 1 (средний): экспорт в дальние страны (Азия, Америка, Австралия), малые партии, время-чувствительные товары
+           - aviation_priority = 0 (низкий): стройматериалы, сырьё, тяжёлые/объёмные грузы, услуги без физических товаров
+           - needs_aviation = 1 если aviation_priority >= 1
+
+        3. Для компаний с aviation_priority >= 1 вставь в таблицу companies через mcp__database__execute:
+           INSERT OR IGNORE INTO companies (name, url, description, products, needs_aviation, aviation_priority, found_date, status)
+           VALUES ('...', 'https://export.by/companies/{export_by_id}', '...', '', needs_aviation, priority, '{{.Date}}', 'new')
+
+        4. Запиши в scan_log итог сессии.
+
+        ВАЖНО: Обрабатывай компании батчами — группируй INSERT в одном SQL-запросе (INSERT INTO ... VALUES (...), (...), ...) для эффективности.
+
+        Формат вывода:
+        НОВЫХ ЛИДОВ: N
+        ПРИОРИТЕТНЫЕ ЛИДЫ:
+        - [Название] | [Описание 30 символов] | priority=N
+      work_dir: .
+      tags:
+        - leads
+        - aviation
+        - export-by
+        - analysis
+      model: sonnet
+      timeout: 15m
+      mcp_servers:
+        - database
+        - exportby
+      allowed_tools:
+        - mcp__exportby__get_unanalyzed
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__insert
+      max_turns: 20
+      max_budget_usd: 0.3
+      permission_mode: bypassPermissions
+    - name: compile-export-by-aviation-excel
+      domain: export-by-aviation
+      prompt: "Сегодня {{.Date}}. Сформируй Excel-отчёт по лидам из export.by для авиаперевозок.\n\nПредыдущий этап:\n{{.PrevOutput}}\n\nДействия:\n1. Запроси из БД все компании со статусом 'new', отсортированные по aviation_priority DESC, found_date DESC\n2. Создай Excel-файл data/export-by-aviation/leads_{{.Date}}.xlsx со следующими столбцами:\n   - Приоритет (\U0001F534 Высокий / \U0001F7E1 Средний / \U0001F7E2 Низкий)\n   - Название компании\n   - Описание / Продукция\n   - Направления экспорта\n   - Потребность в авиа\n   - Контактная информация\n   - URL профиля\n   - Дата обнаружения\n   - Статус\n3. Выдели строки с aviation_priority=2 красным цветом, aviation_priority=1 — жёлтым\n4. Добавь лист 'Сводка' с общей статистикой\n\nВыведи путь к созданному файлу."
+      work_dir: .
+      tags:
+        - leads
+        - aviation
+        - excel
+        - report
+      model: sonnet
+      timeout: 20m
+      mcp_servers:
+        - database
+        - excel
+      allowed_tools:
+        - mcp__database__query
+        - mcp__database__describe_table
+        - mcp__excel__create_spreadsheet
+        - mcp__excel__add_styled_table
+        - mcp__excel__write_spreadsheet
+        - mcp__excel__read_spreadsheet
+      max_turns: 25
+      permission_mode: bypassPermissions
+    - name: deliver-export-by-aviation-report
+      domain: export-by-aviation
+      prompt: "Сегодня {{.Date}}. Доставь отчёт по авиационным лидам с export.by руководству.\n\nРезультат предыдущего этапа:\n{{.PrevOutput}}\n\nДействия:\n1. Определи путь к Excel-файлу из результата выше (data/export-by-aviation/leads_{{.Date}}.xlsx)\n2. Запроси из БД топ-лиды (aviation_priority=2, статус 'new') для краткой сводки\n3. Отправь Telegram-сообщение со сводкой:\n   - Заголовок: \U0001F6EB Новые авиационные лиды с export.by — {{.Date}}\n   - Количество новых лидов\n   - Топ-приоритетные компании (не более 5) с описанием\n   - Примечание о приложенном Excel\n4. Прикрепи Excel-файл к Telegram-сообщению\n5. Отправь email через mcp__email__send_report с Excel-файлом и той же сводкой\n\nПосле отправки обнови статус отправленных лидов на 'reported' в БД."
+      work_dir: .
+      tags:
+        - leads
+        - aviation
+        - delivery
+        - telegram
+      model: haiku
+      timeout: 15m
+      mcp_servers:
+        - database
+        - telegram
+        - email
+        - filesystem
+      allowed_tools:
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__telegram__send_message
+        - mcp__telegram__send_document
+        - mcp__email__send_report
+        - mcp__filesystem__read_file
+      max_turns: 15
+      permission_mode: bypassPermissions
 pipelines:
     - name: review-fix
       mode: sequential
@@ -176,7 +305,100 @@ pipelines:
         - task: compile-leads-excel
         - task: deliver-leads-report
       max_iterations: 1
+    - name: export-by-sync
+      mode: sequential
+      steps:
+        - task: sync-export-by-catalog
+      max_iterations: 1
+    - name: export-by-aviation-to-ceo
+      mode: sequential
+      steps:
+        - task: sync-export-by-catalog
+        - task: analyze-export-by-aviation
+        - task: compile-export-by-aviation-excel
+        - task: deliver-export-by-aviation-report
+      max_iterations: 1
+      stop_signal: 'НОВЫХ ЛИДОВ: 0'
+mcp_servers:
+    - name: database
+      command: ./bin/mcp-database
+    - name: excel
+      command: ./bin/mcp-excel
+    - name: email
+      command: ./bin/mcp-email
+    - name: telegram
+      command: ./bin/mcp-telegram
+    - name: filesystem
+      command: ./bin/mcp-filesystem
+    - name: exportby
+      command: ./bin/mcp-exportby
 domains:
+    export-by-aviation:
+        description: Лиды с export.by — белорусские экспортёры, нуждающиеся в авиаперевозке грузов. MCP-сервер exportby выполняет скрейпинг сайта и хранит сырые данные в raw_companies. Задача analyze оценивает aviation_priority на основе данных в БД без обращения к сайту.
+        data_dir: data/export-by-aviation
+        db: leads.db
+        schema: |-
+            CREATE TABLE IF NOT EXISTS companies (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              url TEXT,
+              description TEXT,
+              products TEXT,
+              contact_info TEXT,
+              export_destinations TEXT,
+              needs_aviation INTEGER DEFAULT 0,
+              aviation_priority INTEGER DEFAULT 0,
+              found_date TEXT NOT NULL,
+              status TEXT DEFAULT 'new',
+              notes TEXT,
+              UNIQUE(name)
+            );
+
+            CREATE TABLE IF NOT EXISTS scan_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              scanned_at TEXT NOT NULL,
+              pages_scanned INTEGER,
+              new_leads_found INTEGER,
+              notes TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS raw_companies (
+              id INTEGER PRIMARY KEY,
+              export_by_id INTEGER UNIQUE NOT NULL,
+              name TEXT NOT NULL,
+              description TEXT,
+              country TEXT,
+              logo TEXT,
+              products TEXT,
+              products_fetched INTEGER DEFAULT 0,
+              scraped_at TEXT NOT NULL,
+              updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS scan_progress (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              last_page INTEGER NOT NULL,
+              total_pages INTEGER,
+              total_companies INTEGER,
+              companies_added INTEGER DEFAULT 0,
+              scanned_at TEXT NOT NULL
+            );
+        domain_doc: DOMAIN.md
+        tasks:
+            - sync-export-by-catalog
+            - analyze-export-by-aviation
+            - compile-export-by-aviation-excel
+            - deliver-export-by-aviation-report
+        pipelines:
+            - export-by-aviation-to-ceo
+            - export-by-sync
+        agents:
+            - export-by-scraper
+        mcp_servers:
+            - database
+            - exportby
+            - excel
+            - email
     leads:
         description: B2B logistics leads for EAEU market
         data_dir: data/leads
@@ -203,21 +425,18 @@ domains:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tax_id ON leads(tax_id) WHERE tax_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_leads_name ON leads(name);
         domain_doc: DOMAIN.md
-        tasks: [find-leads, compile-leads-excel, deliver-leads-report]
-        pipelines: [leads-to-ceo]
-        agents: [eaeu-logistics-lead-finder, leads-report-compiler]
-        mcp_servers: [database, excel]
-mcp_servers:
-    - name: database
-      command: ./bin/mcp-database
-    - name: excel
-      command: ./bin/mcp-excel
-    - name: email
-      command: ./bin/mcp-email
-    - name: telegram
-      command: ./bin/mcp-telegram
-    - name: filesystem
-      command: ./bin/mcp-filesystem
+        tasks:
+            - find-leads
+            - compile-leads-excel
+            - deliver-leads-report
+        pipelines:
+            - leads-to-ceo
+        agents:
+            - eaeu-logistics-lead-finder
+            - leads-report-compiler
+        mcp_servers:
+            - database
+            - excel
 auth:
     paseto_key: ""
     users:

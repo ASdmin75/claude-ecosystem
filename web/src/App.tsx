@@ -5,12 +5,14 @@ import TaskList from './components/TaskList'
 import SubAgentList from './components/SubAgentList'
 import PipelineList from './components/PipelineList'
 import ExecutionHistory from './components/ExecutionHistory'
+import Wizard from './components/Wizard'
 import Login from './components/Login'
 import { ToastContainer, useToast } from './components/Toast'
 import { useSSE, type SSEEvent } from './hooks/useSSE'
 
 const navItems = [
   { path: '/', label: 'Dashboard' },
+  { path: '/wizard', label: 'Wizard' },
   { path: '/tasks', label: 'Tasks' },
   { path: '/subagents', label: 'Sub-Agents' },
   { path: '/pipelines', label: 'Pipelines' },
@@ -104,6 +106,7 @@ export default function App() {
       <main className="flex-1 p-6 bg-gray-50 dark:bg-gray-900">
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/wizard" element={<Wizard />} />
           <Route path="/tasks" element={<TaskList />} />
           <Route path="/subagents" element={<SubAgentList />} />
           <Route path="/pipelines" element={<PipelineList />} />

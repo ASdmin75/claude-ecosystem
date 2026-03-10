@@ -212,7 +212,14 @@ func parseJSONOutput(data []byte) Result {
 
 	var result Result
 
-	if r, ok := raw["result"].(string); ok {
+	// With --json-schema, the output is in "structured_output" (object),
+	// and "result" is empty. Without it, "result" is a string.
+	if so, ok := raw["structured_output"]; ok {
+		soBytes, err := json.Marshal(so)
+		if err == nil {
+			result.Output = string(soBytes)
+		}
+	} else if r, ok := raw["result"].(string); ok {
 		result.Output = r
 	} else {
 		result.Output = string(data)
@@ -227,6 +234,11 @@ func parseJSONOutput(data []byte) Result {
 	}
 
 	if c, ok := raw["cost_usd"].(float64); ok {
+		result.CostUSD = c
+	}
+
+	// Try total_cost_usd as well (newer CLI format)
+	if c, ok := raw["total_cost_usd"].(float64); ok && result.CostUSD == 0 {
 		result.CostUSD = c
 	}
 

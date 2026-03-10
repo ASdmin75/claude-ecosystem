@@ -34,31 +34,51 @@ func New(domains map[string]config.Domain, logger *slog.Logger) *Manager {
 // template DOMAIN.md files for all configured domains.
 func (m *Manager) Init() error {
 	for name, d := range m.domains {
-		// Create data directory
-		if err := os.MkdirAll(d.DataDir, 0o755); err != nil {
-			return fmt.Errorf("domain %s: create data dir %s: %w", name, d.DataDir, err)
+		if err := m.initSingle(name, d); err != nil {
+			return err
 		}
-		m.logger.Info("domain data dir ready", "domain", name, "path", d.DataDir)
+	}
+	return nil
+}
 
-		// Apply database schema
-		if d.DB != "" && d.Schema != "" {
-			dbPath := d.DBPath()
-			if err := m.applySchema(dbPath, d.Schema); err != nil {
-				return fmt.Errorf("domain %s: apply schema: %w", name, err)
-			}
-			m.logger.Info("domain database ready", "domain", name, "db", dbPath)
+// AddDomain registers a new domain, creates its data directory, applies the
+// schema, and generates the DOMAIN.md template — the same init logic as Init
+// but for a single domain added at runtime.
+func (m *Manager) AddDomain(name string, d config.Domain) error {
+	if _, exists := m.domains[name]; exists {
+		return fmt.Errorf("domain %q already exists", name)
+	}
+	d.Name = name
+	if err := m.initSingle(name, d); err != nil {
+		return err
+	}
+	m.domains[name] = d
+	return nil
+}
+
+// initSingle initializes a single domain: mkdir, apply schema, generate doc.
+func (m *Manager) initSingle(name string, d config.Domain) error {
+	if err := os.MkdirAll(d.DataDir, 0o755); err != nil {
+		return fmt.Errorf("domain %s: create data dir %s: %w", name, d.DataDir, err)
+	}
+	m.logger.Info("domain data dir ready", "domain", name, "path", d.DataDir)
+
+	if d.DB != "" && d.Schema != "" {
+		dbPath := d.DBPath()
+		if err := m.applySchema(dbPath, d.Schema); err != nil {
+			return fmt.Errorf("domain %s: apply schema: %w", name, err)
 		}
+		m.logger.Info("domain database ready", "domain", name, "db", dbPath)
+	}
 
-		// Create template DOMAIN.md if specified but missing
-		if d.DomainDoc != "" {
-			docPath := d.DomainDocPath()
-			if _, err := os.Stat(docPath); os.IsNotExist(err) {
-				content := m.generateDomainDocTemplate(d)
-				if err := os.WriteFile(docPath, []byte(content), 0o644); err != nil {
-					return fmt.Errorf("domain %s: create domain doc: %w", name, err)
-				}
-				m.logger.Info("domain doc template created", "domain", name, "path", docPath)
+	if d.DomainDoc != "" {
+		docPath := d.DomainDocPath()
+		if _, err := os.Stat(docPath); os.IsNotExist(err) {
+			content := m.generateDomainDocTemplate(d)
+			if err := os.WriteFile(docPath, []byte(content), 0o644); err != nil {
+				return fmt.Errorf("domain %s: create domain doc: %w", name, err)
 			}
+			m.logger.Info("domain doc template created", "domain", name, "path", docPath)
 		}
 	}
 	return nil

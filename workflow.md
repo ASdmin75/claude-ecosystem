@@ -320,6 +320,25 @@
 - `internal/mcpmanager/config_test.go`: env merging, nil env, delegation
 - `cmd/mcp/mcp-database/main_test.go`: query, execute, check_exists, insert, list_tables, describe_table, SQL injection prevention, deduplication
 
+### 2026-03-10 — Пайплайн export-by-aviation-to-ceo: sync + email + UI-фикс
+
+**Объединение sync в пайплайн export-by-aviation-to-ceo**
+- Добавлен `sync-export-by-catalog` как первый шаг пайплайна — данные всегда актуальны перед анализом
+- Убран `schedule: 0 7 * * 1,3,5` у задачи `sync-export-by-catalog` — sync теперь запускается только как часть основного пайплайна
+- Пайплайн `export-by-sync` оставлен без расписания для ручного запуска через API/CLI
+- Порядок шагов: sync → analyze → compile → deliver
+
+**Email-рассылка в deliver-шаге**
+- Добавлен MCP-сервер `email` в задачу `deliver-export-by-aviation-report`
+- Добавлен инструмент `mcp__email__send_report` в `allowed_tools`
+- Промпт обновлён: после отправки в Telegram — email через `send_report` с Excel-файлом и сводкой
+
+**Фикс: статус execution не обновлялся в реальном времени**
+- Баг: после завершения пайплайна/задачи статус в Execution History оставался "running" до ручного обновления страницы
+- Причина: `selected` state в `ExecutionHistory.tsx` — копия объекта на момент клика, не обновлялась при SSE-инвалидации кешей
+- Фикс: `useEffect` синхронизирует `selected` с актуальными данными из `executions` query при рефетче
+- Фикс: панель деталей использует `detailQuery.data ?? selected` — приоритет свежих данных с сервера
+
 ---
 
 ## Бэклог

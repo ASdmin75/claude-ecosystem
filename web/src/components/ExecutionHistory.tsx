@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '../api/client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { Execution } from '../types'
 
 const statusColor: Record<string, string> = {
@@ -19,6 +19,16 @@ export default function ExecutionHistory() {
     queryKey: ['executions'],
     queryFn: () => api.listExecutions({ limit: '50' }),
   })
+
+  // Sync selected state with fresh query data so status updates in real-time
+  useEffect(() => {
+    if (selected && executions) {
+      const fresh = executions.find((e) => e.id === selected.id)
+      if (fresh && fresh.status !== selected.status) {
+        setSelected(fresh)
+      }
+    }
+  }, [executions, selected])
 
   const detailQuery = useQuery({
     queryKey: ['execution', selected?.id],
@@ -139,17 +149,22 @@ export default function ExecutionHistory() {
                 <p className="text-sm mb-2 p-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded">{cancelMutation.error.message}</p>
               )}
 
-              <div className="grid grid-cols-2 gap-2 text-sm mb-4">
-                <div>
-                  <span className="text-gray-500 dark:text-gray-400">Status:</span>{' '}
-                  <span className={`inline-block px-2 py-0.5 rounded text-xs ${statusColor[selected.status] || ''}`}>{selected.status}</span>
-                </div>
-                <div><span className="text-gray-500 dark:text-gray-400">Trigger:</span> {selected.trigger}</div>
-                <div><span className="text-gray-500 dark:text-gray-400">Duration:</span> {selected.duration_ms ? `${(selected.duration_ms / 1000).toFixed(1)}s` : '-'}</div>
-                <div><span className="text-gray-500 dark:text-gray-400">Model:</span> {selected.model || '-'}</div>
-                <div><span className="text-gray-500 dark:text-gray-400">Cost:</span> {selected.cost_usd ? `$${selected.cost_usd.toFixed(4)}` : '-'}</div>
-                <div><span className="text-gray-500 dark:text-gray-400">Started:</span> {new Date(selected.started_at).toLocaleString()}</div>
-              </div>
+              {(() => {
+                const detail = detailQuery.data ?? selected
+                return (
+                  <div className="grid grid-cols-2 gap-2 text-sm mb-4">
+                    <div>
+                      <span className="text-gray-500 dark:text-gray-400">Status:</span>{' '}
+                      <span className={`inline-block px-2 py-0.5 rounded text-xs ${statusColor[detail.status] || ''}`}>{detail.status}</span>
+                    </div>
+                    <div><span className="text-gray-500 dark:text-gray-400">Trigger:</span> {detail.trigger}</div>
+                    <div><span className="text-gray-500 dark:text-gray-400">Duration:</span> {detail.duration_ms ? `${(detail.duration_ms / 1000).toFixed(1)}s` : '-'}</div>
+                    <div><span className="text-gray-500 dark:text-gray-400">Model:</span> {detail.model || '-'}</div>
+                    <div><span className="text-gray-500 dark:text-gray-400">Cost:</span> {detail.cost_usd ? `$${detail.cost_usd.toFixed(4)}` : '-'}</div>
+                    <div><span className="text-gray-500 dark:text-gray-400">Started:</span> {new Date(detail.started_at).toLocaleString()}</div>
+                  </div>
+                )
+              })()}
 
               {detailQuery.isLoading && <p className="text-gray-400 dark:text-gray-500 text-sm">Loading details...</p>}
 

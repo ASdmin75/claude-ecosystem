@@ -18,6 +18,7 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
 	"github.com/asdmin/claude-ecosystem/internal/task"
 	"github.com/asdmin/claude-ecosystem/internal/ui"
+	"github.com/asdmin/claude-ecosystem/internal/wizard"
 )
 
 // Server holds all dependencies required by the REST API handlers.
@@ -34,6 +35,8 @@ type Server struct {
 	bus         *events.Bus
 	logger      *slog.Logger
 	cancels     sync.Map // map[executionID]context.CancelFunc
+	wizardGen   *wizard.Generator
+	wizardStore *wizard.PlanStore
 }
 
 // NewServer creates a new Server with all required dependencies.
@@ -63,6 +66,8 @@ func NewServer(
 		bus:         bus,
 		logger:      logger,
 	}
+	s.wizardGen = wizard.NewGenerator(taskRunner, logger)
+	s.wizardStore = wizard.NewPlanStore()
 	s.cleanupStaleExecutions()
 	return s
 }
@@ -142,6 +147,13 @@ func (s *Server) Handler() http.Handler {
 
 	// Global SSE event stream
 	mux.HandleFunc("GET /api/v1/events", s.withAuth(s.handleEvents))
+
+	// Wizard
+	mux.HandleFunc("POST /api/v1/wizard/generate", s.withAuth(s.handleWizardGenerate))
+	mux.HandleFunc("GET /api/v1/wizard/plans/{id}", s.withAuth(s.handleWizardGetPlan))
+	mux.HandleFunc("PUT /api/v1/wizard/plans/{id}", s.withAuth(s.handleWizardUpdatePlan))
+	mux.HandleFunc("POST /api/v1/wizard/plans/{id}/apply", s.withAuth(s.handleWizardApply))
+	mux.HandleFunc("DELETE /api/v1/wizard/plans/{id}", s.withAuth(s.handleWizardDiscard))
 
 	// Dashboard
 	mux.HandleFunc("GET /api/v1/dashboard", s.withAuth(s.handleDashboard))
