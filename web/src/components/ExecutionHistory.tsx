@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { api } from '../api/client'
 import { useState, useEffect } from 'react'
 import type { Execution } from '../types'
+import ConfirmModal from './ConfirmModal'
 
 const statusColor: Record<string, string> = {
   running: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
@@ -18,6 +19,9 @@ export default function ExecutionHistory() {
   const { data: executions, isLoading } = useQuery({
     queryKey: ['executions'],
     queryFn: () => api.listExecutions({ limit: '50' }),
+    // Poll every 5s when there are running executions (fallback for missed SSE events)
+    refetchInterval: (query) =>
+      query.state.data?.some((e) => e.status === 'running') ? 5000 : false,
   })
 
   // Sync selected state with fresh query data so status updates in real-time
@@ -34,6 +38,8 @@ export default function ExecutionHistory() {
     queryKey: ['execution', selected?.id],
     queryFn: () => api.getExecution(selected!.id),
     enabled: !!selected,
+    refetchInterval: (query) =>
+      query.state.data?.status === 'running' ? 3000 : false,
   })
 
   const cancelMutation = useMutation({
@@ -43,6 +49,21 @@ export default function ExecutionHistory() {
       queryClient.invalidateQueries({ queryKey: ['execution', selected?.id] })
     },
   })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.deleteExecution(id),
+    onSuccess: (_data, deletedId) => {
+      if (selected?.id === deletedId) setSelected(null)
+      queryClient.invalidateQueries({ queryKey: ['executions'] })
+    },
+  })
+
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+
+  const confirmDelete = (id: string, ev?: React.MouseEvent) => {
+    ev?.stopPropagation()
+    setDeleteTarget(id)
+  }
 
   if (isLoading) return <p className="text-gray-500 dark:text-gray-400">Loading...</p>
 
@@ -89,13 +110,22 @@ export default function ExecutionHistory() {
                     <td className="px-4 py-2 text-gray-500 dark:text-gray-400">{e.trigger}</td>
                     <td className="px-4 py-2 text-gray-500 dark:text-gray-400">{e.duration_ms ? `${(e.duration_ms / 1000).toFixed(1)}s` : '-'}</td>
                     <td className="px-4 py-2 text-gray-500 dark:text-gray-400">{new Date(e.started_at).toLocaleString()}</td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2 flex gap-1">
                       {e.status === 'running' && (
                         <button
                           onClick={(ev) => { ev.stopPropagation(); cancelMutation.mutate(e.id) }}
                           className="px-2 py-0.5 bg-red-600 text-white text-xs rounded hover:bg-red-700"
                         >
                           Stop
+                        </button>
+                      )}
+                      {e.status !== 'running' && (
+                        <button
+                          onClick={(ev) => confirmDelete(e.id, ev)}
+                          className="px-2 py-0.5 text-gray-400 hover:text-red-500 dark:text-gray-500 dark:hover:text-red-400 text-xs"
+                          title="Delete"
+                        >
+                          ✕
                         </button>
                       )}
                     </td>
@@ -132,13 +162,23 @@ export default function ExecutionHistory() {
                   <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">ID: {selected.id}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  {(selected.status === 'running' || detailQuery.data?.status === 'running') && (
+                  {(detailQuery.data?.status ?? selected.status) === 'running' && (
                     <button
                       onClick={() => cancelMutation.mutate(selected.id)}
                       disabled={cancelMutation.isPending}
                       className="px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700 disabled:opacity-50"
                     >
                       {cancelMutation.isPending ? 'Stopping...' : 'Stop'}
+                    </button>
+                  )}
+                  {(detailQuery.data?.status ?? selected.status) !== 'running' && (
+                    <button
+                      onClick={() => confirmDelete(selected.id)}
+                      disabled={deleteMutation.isPending}
+                      className="px-3 py-1 text-gray-400 hover:text-red-500 dark:text-gray-500 dark:hover:text-red-400 text-xs border border-gray-200 dark:border-gray-600 rounded hover:border-red-300 dark:hover:border-red-700"
+                      title="Delete execution"
+                    >
+                      {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
                     </button>
                   )}
                   <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg">&times;</button>
@@ -191,6 +231,14 @@ export default function ExecutionHistory() {
           </div>
         )}
       </div>
+
+      <ConfirmModal
+        open={!!deleteTarget}
+        title="Delete execution"
+        message="This execution record will be permanently deleted."
+        onConfirm={() => { if (deleteTarget) deleteMutation.mutate(deleteTarget); setDeleteTarget(null) }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   )
 }

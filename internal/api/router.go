@@ -137,6 +137,7 @@ func (s *Server) Handler() http.Handler {
 	// Executions
 	mux.HandleFunc("GET /api/v1/executions", s.withAuth(s.handleListExecutions))
 	mux.HandleFunc("GET /api/v1/executions/{id}", s.withAuth(s.handleGetExecution))
+	mux.HandleFunc("DELETE /api/v1/executions/{id}", s.withAuth(s.handleDeleteExecution))
 	mux.HandleFunc("GET /api/v1/executions/{id}/stream", s.withAuth(s.handleExecutionStream))
 	mux.HandleFunc("POST /api/v1/executions/{id}/cancel", s.withAuth(s.handleCancelExecution))
 

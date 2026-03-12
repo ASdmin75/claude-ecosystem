@@ -62,11 +62,16 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 	var lastOutput string
 	var iterations int
 
+	s.logger.Info("pipeline started", "pipeline", pipelineName, "execution_id", execID, "steps", len(p.Steps), "max_iterations", maxIter)
+
 	for i := 0; i < maxIter; i++ {
 		iterations = i + 1
-		for _, step := range p.Steps {
+		s.logger.Info("pipeline iteration", "pipeline", pipelineName, "iteration", iterations, "max", maxIter)
+
+		for stepIdx, step := range p.Steps {
 			t := s.findTask(step.Task)
 			if t == nil {
+				s.logger.Error("pipeline step task not found", "pipeline", pipelineName, "step", step.Task)
 				return pipelineRunResponse{
 					ExecutionID: execID,
 					Pipeline:    pipelineName,
@@ -79,6 +84,7 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 
 			opts, cleanup, resolveErr := task.ResolveRunOptions(*t, s.subagentMgr, s.mcpMgr, s.domainMgr)
 			if resolveErr != nil {
+				s.logger.Error("pipeline step resolve failed", "pipeline", pipelineName, "step", step.Task, "error", resolveErr)
 				return pipelineRunResponse{
 					ExecutionID: execID,
 					Pipeline:    pipelineName,
@@ -93,16 +99,25 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 				defer cleanup()
 			}
 
+			now := time.Now()
 			vars := map[string]string{
 				"PrevOutput": lastOutput,
-				"Date":       time.Now().Format("2006-01-02"),
+				"Date":       now.Format("2006-01-02"),
+				"DateTime":   now.Format("2006-01-02_15-04"),
 			}
+
+			s.logger.Info("pipeline step starting", "pipeline", pipelineName, "step", stepIdx+1, "task", step.Task, "iteration", iterations)
 
 			// Apply per-task timeout.
 			stepCtx, stepCancel := context.WithTimeout(ctx, t.ParsedTimeout())
+			stepStart := time.Now()
 			result := s.taskRunner.Run(stepCtx, *t, opts, vars)
 			stepCancel()
+
+			stepDuration := time.Since(stepStart)
+
 			if result.Error != "" {
+				s.logger.Error("pipeline step failed", "pipeline", pipelineName, "step", stepIdx+1, "task", step.Task, "error", result.Error, "duration", stepDuration)
 				return pipelineRunResponse{
 					ExecutionID: execID,
 					Pipeline:    pipelineName,
@@ -114,10 +129,13 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 				}
 			}
 
+			s.logger.Info("pipeline step completed", "pipeline", pipelineName, "step", stepIdx+1, "task", step.Task, "output_length", len(result.Output), "duration", stepDuration)
+
 			lastOutput = result.Output
 
 			// Check for stop signal.
 			if p.StopSignal != "" && strings.Contains(lastOutput, p.StopSignal) {
+				s.logger.Info("pipeline stop signal detected", "pipeline", pipelineName, "step", step.Task, "signal", p.StopSignal)
 				return pipelineRunResponse{
 					ExecutionID: execID,
 					Pipeline:    pipelineName,

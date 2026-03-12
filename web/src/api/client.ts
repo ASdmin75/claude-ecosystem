@@ -10,7 +10,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...(options?.headers as Record<string, string> || {}),
   }
 
-  const res = await fetch(`${BASE}${path}`, { ...options, headers })
+  const res = await fetch(`${BASE}${path}`, { ...options, headers, cache: 'no-store' })
 
   if (res.status === 401) {
     localStorage.removeItem('token')
@@ -86,6 +86,8 @@ export const api = {
   getExecution: (id: string) => request<Execution>(`/executions/${id}`),
   cancelExecution: (id: string) =>
     request<{ status: string }>(`/executions/${id}/cancel`, { method: 'POST' }),
+  deleteExecution: (id: string) =>
+    request<{ status: string }>(`/executions/${id}`, { method: 'DELETE' }),
 
   // MCP Servers
   listMCPServers: () => request<MCPServer[]>('/mcp-servers'),

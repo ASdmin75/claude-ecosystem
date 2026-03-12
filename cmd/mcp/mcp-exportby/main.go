@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -126,6 +127,33 @@ var tools = []tool{
 			"properties": map[string]any{},
 		},
 	},
+	{
+		Name:        "mark_exported",
+		Description: "Помечает все лиды со статусом 'new' как 'reported' в таблице companies. Вызывай после успешной отправки отчёта.",
+		InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	},
+	{
+		Name:        "reject_companies",
+		Description: "Помечает компании как отклонённые (импортёры, сервисные и т.д.). Они больше не будут появляться в get_unanalyzed. Вызывай для КАЖДОЙ отклонённой компании после анализа.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"names": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Массив названий компаний для отклонения.",
+				},
+				"reason": map[string]any{
+					"type":        "string",
+					"description": "Причина отклонения (importer, service, distributor и т.д.).",
+				},
+			},
+			"required": []string{"names"},
+		},
+	},
 }
 
 const (
@@ -221,6 +249,12 @@ func ensureSchema() error {
 			companies_added INTEGER DEFAULT 0,
 			scanned_at TEXT NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS rejected_companies (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			reason TEXT,
+			rejected_at TEXT NOT NULL
+		);
 		CREATE INDEX IF NOT EXISTS idx_raw_companies_export_by_id ON raw_companies(export_by_id);
 		CREATE INDEX IF NOT EXISTS idx_raw_companies_products_fetched ON raw_companies(products_fetched);
 	`)
@@ -242,6 +276,10 @@ func handleToolCall(params json.RawMessage) toolResult {
 		return handleCheckNew(p.Arguments)
 	case "get_stats":
 		return handleGetStats()
+	case "mark_exported":
+		return handleMarkExported()
+	case "reject_companies":
+		return handleRejectCompanies(p.Arguments)
 	default:
 		return errorResult("unknown tool: " + p.Name)
 	}
@@ -402,6 +440,29 @@ func saveScanProgress(lastPage, totalPages, totalCompanies, companiesAdded int) 
 
 // --- get_unanalyzed ---
 
+// importerKeywords — ключевые слова в description, означающие импортёра/дистрибьютора/сервисную компанию.
+// Такие компании автоматически отклоняются без участия LLM.
+var importerKeywords = []string{
+	"дистрибьютор", "дистрибутор", "дилер", "импортёр", "импортер",
+	"официальный представитель", "официальный дилер",
+	"импорт и продажа", "представительство",
+	"салон красоты", "парикмахерская", "барбершоп",
+	"ресторан", "кафе ", "бар ",
+	"автосервис", "автомойка", "шиномонтаж",
+	"ремонт телефонов", "ремонт техники",
+	"репетитор", "языковые курсы", "курсы обучения", "центр обучения", "школа обучения", "услуги обучения",
+}
+
+func containsImporterKeyword(desc string) bool {
+	lower := strings.ToLower(desc)
+	for _, kw := range importerKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 func handleGetUnanalyzed(args json.RawMessage) toolResult {
 	var a struct {
 		Limit  int `json:"limit"`
@@ -413,45 +474,76 @@ func handleGetUnanalyzed(args json.RawMessage) toolResult {
 		a.Limit = 100
 	}
 
+	// Fetch more than needed to compensate for auto-rejected importers
+	fetchLimit := a.Limit * 3
+
 	rows, err := db.Query(`
-		SELECT r.export_by_id, r.name, r.description, r.country
+		SELECT MIN(r.export_by_id) AS export_by_id, r.name, r.description, r.country
 		FROM raw_companies r
 		LEFT JOIN companies c ON r.name = c.name
-		WHERE c.id IS NULL
-		ORDER BY r.id
+		LEFT JOIN rejected_companies rej ON r.name = rej.name
+		WHERE c.id IS NULL AND rej.id IS NULL
+		GROUP BY r.name
+		ORDER BY MIN(r.id)
 		LIMIT ? OFFSET ?
-	`, a.Limit, a.Offset)
+	`, fetchLimit, a.Offset)
 	if err != nil {
 		return errorResult("query error: " + err.Error())
 	}
 	defer rows.Close()
 
 	var companies []map[string]any
+	var autoRejected []string
 	for rows.Next() {
 		var exportByID int
 		var name, country string
 		var description sql.NullString
 		rows.Scan(&exportByID, &name, &description, &country)
-		companies = append(companies, map[string]any{
-			"export_by_id": exportByID,
-			"name":         name,
-			"description":  nullStrVal(sql.NullString{String: description.String, Valid: description.Valid}),
-			"country":      country,
-		})
+
+		desc := ""
+		if description.Valid {
+			desc = description.String
+		}
+
+		// Auto-reject obvious importers/service companies
+		if containsImporterKeyword(desc) {
+			autoRejected = append(autoRejected, name)
+			continue
+		}
+
+		if len(companies) < a.Limit {
+			companies = append(companies, map[string]any{
+				"export_by_id": exportByID,
+				"name":         name,
+				"description":  nullStrVal(description),
+				"country":      country,
+				"url":          fmt.Sprintf("https://export.by/company/%d", exportByID),
+			})
+		}
 	}
 
-	// Also get total unanalyzed count
+	// Persist auto-rejected companies so they don't appear again
+	if len(autoRejected) > 0 {
+		now := time.Now().Format("2006-01-02 15:04:05")
+		for _, name := range autoRejected {
+			db.Exec(`INSERT OR IGNORE INTO rejected_companies (name, reason, rejected_at) VALUES (?, 'auto:importer_keyword', ?)`, name, now)
+		}
+	}
+
+	// Total unanalyzed count (excluding both companies and rejected)
 	var totalUnanalyzed int
 	db.QueryRow(`
-		SELECT COUNT(*) FROM raw_companies r
+		SELECT COUNT(DISTINCT r.name) FROM raw_companies r
 		LEFT JOIN companies c ON r.name = c.name
-		WHERE c.id IS NULL
+		LEFT JOIN rejected_companies rej ON r.name = rej.name
+		WHERE c.id IS NULL AND rej.id IS NULL
 	`).Scan(&totalUnanalyzed)
 
 	result := map[string]any{
 		"companies":        companies,
 		"returned":         len(companies),
 		"total_unanalyzed": totalUnanalyzed,
+		"auto_rejected":    len(autoRejected),
 	}
 	data, _ := json.Marshal(result)
 	return textResult(string(data))
@@ -536,6 +628,52 @@ func handleGetStats() toolResult {
 		"last_scan_date":    nullStrVal(lastScanDate),
 		"scan_complete":     scanComplete,
 	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+// --- mark_exported ---
+
+func handleMarkExported() toolResult {
+	res, err := db.Exec(`UPDATE companies SET status = 'reported' WHERE status = 'new'`)
+	if err != nil {
+		return errorResult("update error: " + err.Error())
+	}
+	affected, _ := res.RowsAffected()
+	result := map[string]any{
+		"updated": affected,
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+// --- reject_companies ---
+
+func handleRejectCompanies(args json.RawMessage) toolResult {
+	var a struct {
+		Names  []string `json:"names"`
+		Reason string   `json:"reason"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return errorResult("invalid params: " + err.Error())
+	}
+	if len(a.Names) == 0 {
+		return errorResult("names array is required")
+	}
+	if a.Reason == "" {
+		a.Reason = "manual"
+	}
+
+	now := time.Now().Format("2006-01-02 15:04:05")
+	rejected := 0
+	for _, name := range a.Names {
+		_, err := db.Exec(`INSERT OR IGNORE INTO rejected_companies (name, reason, rejected_at) VALUES (?, ?, ?)`, name, a.Reason, now)
+		if err == nil {
+			rejected++
+		}
+	}
+
+	result := map[string]any{"rejected": rejected}
 	data, _ := json.Marshal(result)
 	return textResult(string(data))
 }

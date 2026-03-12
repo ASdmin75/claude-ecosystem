@@ -339,6 +339,54 @@
 - Фикс: `useEffect` синхронизирует `selected` с актуальными данными из `executions` query при рефетче
 - Фикс: панель деталей использует `detailQuery.data ?? selected` — приоритет свежих данных с сервера
 
+### 2026-03-12 — mcp-exportby: отклонение компаний + auto-filtering + улучшения пайплайнов
+
+**mcp-exportby: новые инструменты и авто-фильтрация**
+- Новый инструмент `mark_exported` — помечает все компании со статусом `new` как `reported` после отправки отчёта
+- Новый инструмент `reject_companies` — помечает компании как отклонённые (импортёры, сервисные и т.д.) с указанием причины; они больше не появляются в `get_unanalyzed`
+- Новая таблица `rejected_companies` (name UNIQUE, reason, rejected_at)
+- Авто-фильтрация импортёров по ключевым словам в description (`containsImporterKeyword`) — дистрибьюторы, дилеры, салоны красоты, рестораны и т.д. автоматически отклоняются без участия LLM
+- `get_unanalyzed`: запрашивает 3x лимит для компенсации авто-отклонённых, исключает `rejected_companies` через LEFT JOIN, группирует дубликаты по имени, добавлено поле `url` в ответ
+- Обновлена схема в `tasks.yaml` (domains.export-by-aviation.schema): добавлена таблица `rejected_companies`
+
+**Улучшение промптов задач**
+- `analyze-export-by-catalog`: двухэтапная оценка (тип компании → приоритет авиаперевозки), явные критерии отклонения (импортёры, сервисные), обязательный вызов `reject_companies` для отклонённых, `max_turns: 20→50`, `max_budget_usd: 0.3→0.5`
+- `compile-export-by-aviation-excel`: переписан в пошаговый формат, убран лист «Сводка» (сводка отправляется отдельно)
+- `deliver-export-by-aviation-report`: пошаговый формат с точным шаблоном сводки, добавлен `mcp__exportby__mark_exported`, убраны `mcp__filesystem` и `mcp__database__execute`
+- `deliver-leads-report`: аналогичный пошаговый формат с точным шаблоном сводки
+- `compile-leads-excel`: `{{.Date}}` → `{{.DateTime}}` в имени файла
+- Суб-агент `delivery-agent`: добавлены правила единого формата сводки (побайтовая идентичность TG и email)
+
+**Шаблонная переменная `{{.DateTime}}`**
+- Новая переменная `{{.DateTime}}` (формат `2006-01-02_15-04`) в пайплайнах и scheduler — для уникальных имён файлов при множественных запусках в день
+- Добавлена в `internal/api/pipelines.go` и `internal/scheduler/scheduler.go`
+- Scheduler теперь передаёт `Date` и `DateTime` в шаблоны (ранее передавал `nil`)
+
+**Удаление execution через API и UI**
+- Новый эндпоинт `DELETE /api/v1/executions/{id}` — удаление записи execution
+- `internal/store/store.go`: метод `DeleteExecution` в интерфейсе `ExecutionStore`
+- `internal/store/sqlite/queries.go`: реализация `DeleteExecution` с проверкой affected rows
+- Web UI: кнопка удаления (✕) в таблице и панели деталей, компонент `ConfirmModal` для подтверждения
+
+**Стабильность subprocess (task runner)**
+- `setupCmdEnv()` — фильтрует `CLAUDECODE` из env дочерних процессов (предотвращает ошибку «nested session» в Claude CLI)
+- Устанавливает `GIT_TERMINAL_PROMPT=0`, `GIT_SSH_COMMAND=ssh -o BatchMode=yes`, пустые `SSH_ASKPASS` и `DISPLAY` — подавление интерактивных SSH/git промптов в автоматических задачах
+- Применяется в `Run()` и `RunStream()`
+
+**Логирование пайплайнов**
+- Детальное логирование каждого шага пайплайна: старт, завершение, ошибки, длительность, номер шага
+- Логирование ошибок при resolve и task not found
+
+**Кеширование и polling**
+- `Cache-Control: no-store` на всех JSON-ответах API (`internal/api/helpers.go`)
+- `cache: 'no-store'` в fetch-клиенте Web UI
+- Восстановлен polling fallback: `refetchInterval: 5000` для списка (когда есть running), `refetchInterval: 3000` для деталей running execution — страховка на случай пропущенных SSE
+
+**Логирование сервера**
+- `server.log_file: logs/server.log` — логи пишутся в файл
+- Автосоздание директории для лог-файла (`os.MkdirAll`)
+- Исправлено переназначение logger после `setupLogger()` (ранее новый logger не использовался)
+
 ---
 
 ## Бэклог
@@ -357,12 +405,14 @@
 - [ ] mcp-google: Google Docs/Sheets API
 - [x] mcp-database: SQLite-реализация (query, execute, check_exists, insert, list_tables, describe_table) — интеграция через domain system
 - [x] mcp-telegram: отправка сообщений и файлов через Telegram Bot API
+- [x] mcp-exportby: каталог export.by — scan, analyze, reject, mark_exported
 
 ### Web UI — доработки
 - [x] Динамическое обновление UI через SSE (real-time, без polling)
 - [x] Toast-уведомления при завершении задач/пайплайнов
 - [ ] Детальный просмотр execution с SSE-стримингом (live output)
 - [x] Редактирование задач через UI (CSV-поля исправлены)
+- [x] Удаление execution записей (с подтверждением)
 - [ ] Конфигурация scheduler/watcher через UI
 - [ ] Управление MCP-серверами через UI
 - [x] Тёмная тема

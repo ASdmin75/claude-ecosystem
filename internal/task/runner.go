@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"text/template"
@@ -13,6 +14,26 @@ import (
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
 )
+
+// setupCmdEnv configures the subprocess environment to suppress interactive
+// SSH/git prompts that can hang non-interactive claude -p executions.
+// It also removes CLAUDECODE to prevent "nested session" detection by the CLI.
+func setupCmdEnv(cmd *exec.Cmd) {
+	// Filter out CLAUDECODE from parent env to avoid nested session error.
+	var env []string
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "CLAUDECODE=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	cmd.Env = append(env,
+		"GIT_TERMINAL_PROMPT=0",              // disable git credential prompts
+		"GIT_SSH_COMMAND=ssh -o BatchMode=yes", // SSH fails instead of prompting for passphrase
+		"SSH_ASKPASS=",                         // disable SSH askpass GUI dialogs
+		"DISPLAY=",                             // prevent X11 passphrase dialogs
+	)
+}
 
 // Runner executes tasks by invoking the claude CLI as a subprocess.
 type Runner struct {
@@ -47,6 +68,7 @@ func (r *Runner) Run(ctx context.Context, t config.Task, opts RunOptions, templa
 	if t.WorkDir != "" {
 		cmd.Dir = t.WorkDir
 	}
+	setupCmdEnv(cmd)
 	cmd.Stdin = strings.NewReader(prompt)
 
 	var stdout, stderr bytes.Buffer
@@ -94,6 +116,7 @@ func (r *Runner) RunStream(ctx context.Context, t config.Task, opts RunOptions, 
 	if t.WorkDir != "" {
 		cmd.Dir = t.WorkDir
 	}
+	setupCmdEnv(cmd)
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdoutPipe, err := cmd.StdoutPipe()

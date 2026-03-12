@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/domain"
@@ -72,7 +73,12 @@ func (s *Scheduler) Register(t config.Task) error {
 		timeout := t.ParsedTimeout()
 		ctx, cancel := context.WithTimeout(parentCtx, timeout)
 		defer cancel()
-		result := s.runner.Run(ctx, t, opts, nil)
+		now := time.Now()
+		vars := map[string]string{
+			"Date":     now.Format("2006-01-02"),
+			"DateTime": now.Format("2006-01-02_15-04"),
+		}
+		result := s.runner.Run(ctx, t, opts, vars)
 
 		if result.Error != "" {
 			s.logger.Error("task failed", "task", t.Name, "error", result.Error)

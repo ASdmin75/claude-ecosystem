@@ -40,6 +40,7 @@ type ExecutionStore interface {
 	UpdateExecution(ctx context.Context, exec *Execution) error
 	GetExecution(ctx context.Context, id string) (*Execution, error)
 	ListExecutions(ctx context.Context, filter ExecutionFilter) ([]Execution, error)
+	DeleteExecution(ctx context.Context, id string) error
 }
 
 // User represents an authenticated user.

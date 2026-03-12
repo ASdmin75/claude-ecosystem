@@ -144,6 +144,22 @@ func (s *Store) ListExecutions(ctx context.Context, filter store.ExecutionFilter
 	return executions, nil
 }
 
+// DeleteExecution removes a single execution record by ID.
+func (s *Store) DeleteExecution(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM executions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete execution: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete execution rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("execution not found: %s", id)
+	}
+	return nil
+}
+
 // MarkStaleRunning updates all executions stuck in "running" status to "failed".
 // This handles cases where the server restarted or a task timed out without updating the DB.
 func (s *Store) MarkStaleRunning(ctx context.Context) (int64, error) {

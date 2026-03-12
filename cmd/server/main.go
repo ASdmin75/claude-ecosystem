@@ -46,11 +46,12 @@ func main() {
 	}
 
 	// Reconfigure logger based on config (log_level, log_file).
-	logger, logCleanup, err := setupLogger(cfg.Server)
+	newLogger, logCleanup, err := setupLogger(cfg.Server)
 	if err != nil {
 		logger.Error("failed to setup logger", "error", err)
 		os.Exit(1)
 	}
+	logger = newLogger
 	if logCleanup != nil {
 		defer logCleanup()
 	}
@@ -274,6 +275,11 @@ func setupLogger(sc config.ServerConfig) (*slog.Logger, func(), error) {
 	var cleanup func()
 
 	if sc.LogFile != "" {
+		if dir := filepath.Dir(sc.LogFile); dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, nil, fmt.Errorf("creating log directory %s: %w", dir, err)
+			}
+		}
 		f, err := os.OpenFile(sc.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return nil, nil, fmt.Errorf("opening log file %s: %w", sc.LogFile, err)

@@ -60,3 +60,16 @@ func (s *Server) handleGetExecution(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, exec)
 }
+
+// handleDeleteExecution removes a single execution record.
+// DELETE /api/v1/executions/{id}
+func (s *Server) handleDeleteExecution(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	if err := s.store.DeleteExecution(r.Context(), id); err != nil {
+		writeError(w, http.StatusNotFound, "execution not found: "+id)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}

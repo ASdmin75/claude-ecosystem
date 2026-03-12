@@ -141,7 +141,7 @@ pipelines:
 | Параметр | Описание |
 |----------|----------|
 | `name` | Уникальное имя задачи (обязательно) |
-| `prompt` | Go-шаблон промпта (обязательно). Переменные: `{{.PrevOutput}}`, `{{.File}}`, `{{.Iteration}}` |
+| `prompt` | Go-шаблон промпта (обязательно). Переменные: `{{.PrevOutput}}`, `{{.File}}`, `{{.Iteration}}`, `{{.Date}}`, `{{.DateTime}}` |
 | `work_dir` | Рабочая директория для claude |
 | `schedule` | Cron-выражение для автозапуска |
 | `watch` | Настройки fsnotify: `paths`, `extensions`, `debounce` |
@@ -252,6 +252,8 @@ prompt: |
 - `{{.File}}` — путь к изменённому файлу (watcher)
 - `{{.PrevOutput}}` — вывод предыдущего шага (pipeline)
 - `{{.Iteration}}` — номер итерации (pipeline)
+- `{{.Date}}` — текущая дата `YYYY-MM-DD` (pipeline, scheduler)
+- `{{.DateTime}}` — текущие дата и время `YYYY-MM-DD_HH-MM` (pipeline, scheduler) — удобно для уникальных имён файлов
 
 ---
 
@@ -398,7 +400,8 @@ mcp_servers:
 | **mcp-word** | — | Stub |
 | **mcp-pdf** | — | Stub |
 | **mcp-google** | — | Stub |
-| **mcp-database** | — | Stub |
+| **mcp-database** | `query`, `execute`, `list_tables`, `describe_table`, `check_exists`, `insert` | Реализован |
+| **mcp-exportby** | `scan_catalog`, `get_unanalyzed`, `save_company`, `check_new`, `get_stats`, `mark_exported`, `reject_companies` | Реализован |
 
 ### Привязка к задачам
 
@@ -493,6 +496,7 @@ curl -X POST -H "Authorization: Bearer <token>" \
 |-------|------|----------|
 | GET | `/executions` | Список (фильтры: task, status, trigger, limit, offset) |
 | GET | `/executions/:id` | Детали исполнения |
+| DELETE | `/executions/:id` | Удалить запись |
 | GET | `/executions/:id/stream` | SSE-стрим |
 
 ### MCP-серверы

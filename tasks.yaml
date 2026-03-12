@@ -115,7 +115,7 @@ tasks:
         Получи все лиды из базы данных через mcp__database__query.
         SQL: SELECT * FROM leads WHERE status = 'new' ORDER BY found_at DESC
 
-        Создай Excel-отчёт для CEO: workspace/leads/leads-report-{{.Date}}.xlsx
+        Создай Excel-отчёт для CEO: workspace/leads/leads-report-{{.DateTime}}.xlsx
         Используй инструменты create_spreadsheet и add_styled_table.
         Добавь лист 'Leads' с таблицей всех лидов и лист 'Summary' с итогами по источникам.
         Верни только путь к созданному файлу.
@@ -138,13 +138,7 @@ tasks:
       permission_mode: dontAsk
     - name: deliver-leads-report
       domain: leads
-      prompt: |
-        Файл отчёта: {{.PrevOutput}}
-
-        Выполни доставку отчёта CEO:
-        1. Отправь email на alexstav1975@yandex.by с темой "Отчёт по лидам" и вложением файла
-        2. Скопируй файл в workspace/ceo/reports/
-        3. Отправь уведомление в Telegram с файлом и подписью "Новый отчёт по лидам"
+      prompt: "Доставь отчёт по лидам. Файл: {{.PrevOutput}}\n\nШаг 1. Одним запросом получи данные:\nSELECT COUNT(*) AS total FROM leads WHERE status='new';\nSELECT COUNT(DISTINCT source_url) AS sources FROM leads WHERE status='new';\nSELECT name, industry FROM leads WHERE status='new' ORDER BY found_at DESC LIMIT 5;\n\nШаг 2. Составь сводку ТОЧНО в этом формате (подставь данные):\n\U0001F4CA Отчёт по лидам — {{.Date}}\nНовых: {total}\nИсточников: {sources}\nТоп:\n• {name} — {industry}\n\U0001F4CE Excel-файл с деталями приложен.\n\nШаг 3. Отправь эту сводку через send_message в Telegram.\nШаг 4. Отправь Excel через send_document в Telegram.\nШаг 5. Отправь email на alexstav1975@yandex.by, тема \"\U0001F4CA Отчёт по лидам — {{.Date}}\", тело = та же сводка, вложение = Excel.\nШаг 6. Скопируй файл в workspace/ceo/reports/.\n\nСводка в TG и email ИДЕНТИЧНА. Ничего лишнего не добавляй.\n"
       work_dir: .
       tags:
         - leads
@@ -156,10 +150,13 @@ tasks:
         - email
         - filesystem
         - telegram
+        - database
       allowed_tools:
         - mcp__email__send_email
         - mcp__filesystem__copy_file
+        - mcp__telegram__send_message
         - mcp__telegram__send_document
+        - mcp__database__query
       permission_mode: dontAsk
     - name: sync-export-by-catalog
       domain: export-by-aviation
@@ -202,10 +199,35 @@ tasks:
 
         Работай ТОЛЬКО с данными в БД — НЕ используй WebFetch.
 
-        1. Вызови mcp__exportby__get_unanalyzed с limit=100 — получишь компании, которых ещё нет в таблице companies.
+        1. Вызови mcp__exportby__get_unanalyzed с limit=25 — получишь компании, которых ещё нет в таблице companies.
            Если unanalyzed = 0, выведи "НОВЫХ ЛИДОВ: 0" и заверши.
 
-        2. Для каждой компании оцени потребность в авиаперевозке по описанию:
+        2. Для каждой компании выполни ДВУХЭТАПНУЮ оценку СТРОГО по описанию компании (поле description).
+           ВАЖНО: поле products может содержать мусорные данные от других компаний — НЕ доверяй ему, если products противоречит description.
+           Оценивай ТОЛЬКО основную деятельность компании.
+
+           === ЭТАП 1: ТИП КОМПАНИИ (производитель vs импортёр) ===
+
+           ✓ ПРОИЗВОДИТЕЛЬ/ЭКСПОРТЁР → переходи к этапу 2:
+           Сигналы: "производитель", "производство", "завод", "фабрика", "экспорт", "собственное производство", "выпускает", "изготавливает"
+
+           ✗ ИМПОРТЁР/ДИСТРИБЬЮТОР → ОТКАЗ (aviation_priority = 0, НЕ вставлять):
+           Сигналы: "дистрибьютор", "дилер", "импортёр", "официальный представитель", "поставщик [иностранных брендов]",
+           перечисление иностранных брендов (HIKVISION, Bosch, Siemens, и т.д.), "импорт и продажа", "представительство"
+
+           ✗ СЕРВИСНЫЕ КОМПАНИИ → ОТКАЗ (aviation_priority = 0, НЕ вставлять):
+           - Салоны красоты, парикмахерские, барбершопы, SPA, фитнес, спортзалы
+           - Рестораны, кафе, бары, общепит (если не производят продукцию на экспорт)
+           - Розничная торговля без экспорта (магазины, бутики)
+           - Образовательные учреждения, репетиторы
+           - Юридические, бухгалтерские, консалтинговые услуги
+           - Ремонтные мастерские, автосервисы
+           - Любые локальные услуги без физических товаров на экспорт
+
+           ПРИНЦИП: если неясно, производитель это или импортёр — склоняйся к ОТКАЗУ.
+
+           === ЭТАП 2: ПРИОРИТЕТ АВИАПЕРЕВОЗКИ (только для производителей/экспортёров) ===
+
            - aviation_priority = 2 (высокий): скоропортящееся, электроника, медтехника, фармацевтика, точные приборы, высокоценные грузы, авиа-логистика
            - aviation_priority = 1 (средний): экспорт в дальние страны (Азия, Америка, Австралия), малые партии, время-чувствительные товары
            - aviation_priority = 0 (низкий): стройматериалы, сырьё, тяжёлые/объёмные грузы, услуги без физических товаров
@@ -213,14 +235,23 @@ tasks:
 
         3. Для компаний с aviation_priority >= 1 вставь в таблицу companies через mcp__database__execute:
            INSERT OR IGNORE INTO companies (name, url, description, products, needs_aviation, aviation_priority, found_date, status)
-           VALUES ('...', 'https://export.by/companies/{export_by_id}', '...', '', needs_aviation, priority, '{{.Date}}', 'new')
+           VALUES ('...', url, '...', '', needs_aviation, priority, '{{.Date}}', 'new')
+           ВАЖНО: бери поле url из ответа get_unanalyzed как есть — НЕ конструируй URL самостоятельно.
 
-        4. Запиши в scan_log итог сессии.
+        4. ОБЯЗАТЕЛЬНО вызови mcp__exportby__reject_companies для ВСЕХ отклонённых компаний (импортёры, сервисные, неясные).
+           Передай массив названий и причину. Это предотвращает повторный анализ при следующем запуске.
+           Пример: reject_companies(names=["ЛОКТ", "Фирма Б"], reason="importer")
 
-        ВАЖНО: Обрабатывай компании батчами — группируй INSERT в одном SQL-запросе (INSERT INTO ... VALUES (...), (...), ...) для эффективности.
+        5. Запиши в scan_log итог сессии.
+
+        ВАЖНО: НЕ выводи текстовый анализ каждой компании. Сразу вызывай tool calls:
+        - Для подходящих компаний: mcp__database__execute с INSERT
+        - Для отклонённых: mcp__exportby__reject_companies
+        Группируй по несколько компаний за один вызов. Текстовый вывод — только финальная статистика.
 
         Формат вывода:
         НОВЫХ ЛИДОВ: N
+        ОТКЛОНЕНО: N
         ПРИОРИТЕТНЫЕ ЛИДЫ:
         - [Название] | [Описание 30 символов] | priority=N
       work_dir: .
@@ -236,15 +267,16 @@ tasks:
         - exportby
       allowed_tools:
         - mcp__exportby__get_unanalyzed
+        - mcp__exportby__reject_companies
         - mcp__database__query
         - mcp__database__execute
         - mcp__database__insert
-      max_turns: 20
-      max_budget_usd: 0.3
+      max_turns: 50
+      max_budget_usd: 0.5
       permission_mode: bypassPermissions
     - name: compile-export-by-aviation-excel
       domain: export-by-aviation
-      prompt: "Сегодня {{.Date}}. Сформируй Excel-отчёт по лидам из export.by для авиаперевозок.\n\nПредыдущий этап:\n{{.PrevOutput}}\n\nДействия:\n1. Запроси из БД все компании со статусом 'new', отсортированные по aviation_priority DESC, found_date DESC\n2. Создай Excel-файл data/export-by-aviation/leads_{{.Date}}.xlsx со следующими столбцами:\n   - Приоритет (\U0001F534 Высокий / \U0001F7E1 Средний / \U0001F7E2 Низкий)\n   - Название компании\n   - Описание / Продукция\n   - Направления экспорта\n   - Потребность в авиа\n   - Контактная информация\n   - URL профиля\n   - Дата обнаружения\n   - Статус\n3. Выдели строки с aviation_priority=2 красным цветом, aviation_priority=1 — жёлтым\n4. Добавь лист 'Сводка' с общей статистикой\n\nВыведи путь к созданному файлу."
+      prompt: "Сформируй Excel-отчёт. Файл: data/export-by-aviation/leads_{{.DateTime}}.xlsx\n\nШаг 1. Запроси ВСЕ компании из БД:\nSELECT name, description, products, export_destinations, contact_info, url, aviation_priority, found_date, status\nFROM companies WHERE status='new' ORDER BY aviation_priority DESC, found_date DESC;\n\nШаг 2. Создай Excel-файл. Первый лист \"Лиды\" — таблица через add_styled_table со столбцами:\nПриоритет | Компания | Описание | Продукция | Экспорт | Контакты | URL | Дата | Статус\nКаждая строка = одна компания из результата запроса. Приоритет: \U0001F534 Высокий (2), \U0001F7E1 Средний (1), \U0001F7E2 Низкий (0).\nЭто ГЛАВНЫЙ лист — в нём ВСЕ компании, по одной на строку.\n\nНЕ создавай лист \"Сводка\" — сводка отправляется отдельно в Telegram/email.\n\nВыведи ТОЛЬКО путь к файлу.\n"
       work_dir: .
       tags:
         - leads
@@ -267,7 +299,7 @@ tasks:
       permission_mode: bypassPermissions
     - name: deliver-export-by-aviation-report
       domain: export-by-aviation
-      prompt: "Сегодня {{.Date}}. Доставь отчёт по авиационным лидам с export.by руководству.\n\nРезультат предыдущего этапа:\n{{.PrevOutput}}\n\nДействия:\n1. Определи путь к Excel-файлу из результата выше (data/export-by-aviation/leads_{{.Date}}.xlsx)\n2. Запроси из БД топ-лиды (aviation_priority=2, статус 'new') для краткой сводки\n3. Отправь Telegram-сообщение со сводкой:\n   - Заголовок: \U0001F6EB Новые авиационные лиды с export.by — {{.Date}}\n   - Количество новых лидов\n   - Топ-приоритетные компании (не более 5) с описанием\n   - Примечание о приложенном Excel\n4. Прикрепи Excel-файл к Telegram-сообщению\n5. Отправь email через mcp__email__send_report с Excel-файлом и той же сводкой\n\nПосле отправки обнови статус отправленных лидов на 'reported' в БД."
+      prompt: "Доставь отчёт по авиационным лидам. Файл: data/export-by-aviation/leads_{{.DateTime}}.xlsx\n\nШаг 1. Одним запросом получи данные:\nSELECT COUNT(*) AS total, SUM(CASE WHEN aviation_priority=2 THEN 1 ELSE 0 END) AS priority FROM companies WHERE status='new';\nSELECT name, description FROM companies WHERE status='new' ORDER BY aviation_priority DESC LIMIT 5;\n\nШаг 2. Составь сводку ТОЧНО в этом формате (подставь данные):\n\U0001F4CA Авиационные лиды — {{.Date}}\nНовых: {total}\nПриоритетных (\U0001F534): {priority}\nТоп:\n• {name} — {description обрезать до 50 символов}\n\U0001F4CE Excel-файл с деталями приложен.\n\nШаг 3. Отправь эту сводку через send_message в Telegram.\nШаг 4. Отправь Excel через send_document в Telegram.\nШаг 5. Отправь email через send_report на alexstav1975@yandex.by, тема \"\U0001F4CA Авиационные лиды — {{.Date}}\", тело = та же сводка, вложение = Excel.\nШаг 6. Вызови mark_exported.\n\nСводка в TG и email ИДЕНТИЧНА. Ничего лишнего не добавляй.\n"
       work_dir: .
       tags:
         - leads
@@ -280,15 +312,14 @@ tasks:
         - database
         - telegram
         - email
-        - filesystem
+        - exportby
       allowed_tools:
         - mcp__database__query
-        - mcp__database__execute
         - mcp__telegram__send_message
         - mcp__telegram__send_document
         - mcp__email__send_report
-        - mcp__filesystem__read_file
-      max_turns: 15
+        - mcp__exportby__mark_exported
+      max_turns: 25
       permission_mode: bypassPermissions
 pipelines:
     - name: review-fix
@@ -383,6 +414,13 @@ domains:
               companies_added INTEGER DEFAULT 0,
               scanned_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS rejected_companies (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT UNIQUE NOT NULL,
+              reason TEXT,
+              rejected_at TEXT NOT NULL
+            );
         domain_doc: DOMAIN.md
         tasks:
             - sync-export-by-catalog
@@ -446,4 +484,4 @@ server:
     addr: :3580
     data_dir: data
     log_level: ""
-    log_file: ""
+    log_file: logs/server.log
