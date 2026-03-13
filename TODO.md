@@ -54,3 +54,15 @@
 - [x] Health check для server (`/api/v1/dashboard`)
 - [x] `make docker-build`, `make docker-up`, `make docker-down` в Makefile
 - [x] `.dockerignore` для чистой сборки
+
+## 6. Источник cci.by (БелТПП) для pipeline авиа-лидов
+> Добавлено: 2026-03-13
+
+Добавить второй источник компаний — каталог членов БелТПП (https://www.cci.by/o-chlenstve/chleny-beltpp/, 2339 компаний, 117 страниц). Дедупликация с export.by по названию, сайту, телефону.
+
+- [ ] Добавить таблицы `raw_companies_cci` и `cci_scan_progress` в схему домена `export-by-aviation`
+- [ ] Добавить колонки `source`, `phone`, `website`, `address` в таблицу `companies`
+- [ ] Создать задачу `sync-cci-catalog` (скрапинг через `chrome-devtools` с `initScript` для обхода бот-защиты `navigator.webdriver`)
+- [ ] Создать pipeline `cci-sync`
+- [ ] Обновить промпт `process-export-by-leads` — дедупликация между источниками (нормализация названий, доменов, телефонов)
+- [ ] Обновить `DOMAIN.md` — документация новых таблиц, поля `source`, правил дедупликации
