@@ -9,10 +9,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/xuri/excelize/v2"
 	_ "modernc.org/sqlite"
 )
 
@@ -129,7 +131,7 @@ var tools = []tool{
 	},
 	{
 		Name:        "mark_exported",
-		Description: "Помечает все лиды со статусом 'new' как 'reported' в таблице companies. Вызывай после успешной отправки отчёта.",
+		Description: "Помечает все лиды со статусом 'new' как 'sent' в таблице companies и записывает sent_at. Вызывай после успешной отправки отчёта.",
 		InputSchema: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{},
@@ -152,6 +154,22 @@ var tools = []tool{
 				},
 			},
 			"required": []string{"names"},
+		},
+	},
+	{
+		Name:        "get_pending_count",
+		Description: "Возвращает количество лидов со статусом 'new' в таблице companies (готовых к отправке).",
+		InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	},
+	{
+		Name:        "export_leads_excel",
+		Description: "Генерирует Excel-файл из всех лидов со статусом 'new'. Возвращает путь к файлу и количество лидов. Вызывай перед отправкой в Telegram/email.",
+		InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
 		},
 	},
 }
@@ -258,7 +276,14 @@ func ensureSchema() error {
 		CREATE INDEX IF NOT EXISTS idx_raw_companies_export_by_id ON raw_companies(export_by_id);
 		CREATE INDEX IF NOT EXISTS idx_raw_companies_products_fetched ON raw_companies(products_fetched);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration: add sent_at column to companies table (ignore error if already exists)
+	db.Exec(`ALTER TABLE companies ADD COLUMN sent_at TEXT`)
+
+	return nil
 }
 
 func handleToolCall(params json.RawMessage) toolResult {
@@ -280,6 +305,10 @@ func handleToolCall(params json.RawMessage) toolResult {
 		return handleMarkExported()
 	case "reject_companies":
 		return handleRejectCompanies(p.Arguments)
+	case "get_pending_count":
+		return handleGetPendingCount()
+	case "export_leads_excel":
+		return handleExportLeadsExcel()
 	default:
 		return errorResult("unknown tool: " + p.Name)
 	}
@@ -507,7 +536,7 @@ func handleGetUnanalyzed(args json.RawMessage) toolResult {
 		}
 
 		// Auto-reject non-Belarusian companies
-		if country != "" && country != "BY" {
+		if country != "" && country != "BY" && country != "Беларусь" {
 			autoRejected = append(autoRejected, name)
 			autoRejectedReasons[name] = "auto:non_by_country"
 			continue
@@ -648,13 +677,15 @@ func handleGetStats() toolResult {
 // --- mark_exported ---
 
 func handleMarkExported() toolResult {
-	res, err := db.Exec(`UPDATE companies SET status = 'reported' WHERE status = 'new'`)
+	now := time.Now().Format("2006-01-02 15:04:05")
+	res, err := db.Exec(`UPDATE companies SET status = 'sent', sent_at = ? WHERE status = 'new'`, now)
 	if err != nil {
 		return errorResult("update error: " + err.Error())
 	}
 	affected, _ := res.RowsAffected()
 	result := map[string]any{
-		"updated": affected,
+		"updated":  affected,
+		"sent_at":  now,
 	}
 	data, _ := json.Marshal(result)
 	return textResult(string(data))
@@ -689,6 +720,141 @@ func handleRejectCompanies(args json.RawMessage) toolResult {
 	result := map[string]any{"rejected": rejected}
 	data, _ := json.Marshal(result)
 	return textResult(string(data))
+}
+
+// --- get_pending_count ---
+
+func handleGetPendingCount() toolResult {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM companies WHERE status = 'new'`).Scan(&count)
+	if err != nil {
+		return errorResult("query error: " + err.Error())
+	}
+	result := map[string]any{
+		"pending_count": count,
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+// --- export_leads_excel ---
+
+func handleExportLeadsExcel() toolResult {
+	dataDir := os.Getenv("DOMAIN_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "."
+	}
+
+	rows, err := db.Query(`
+		SELECT name, url, description, products, contact_info, export_destinations,
+		       aviation_priority, found_date
+		FROM companies WHERE status = 'new'
+		ORDER BY aviation_priority DESC, found_date DESC
+	`)
+	if err != nil {
+		return errorResult("query error: " + err.Error())
+	}
+	defer rows.Close()
+
+	type lead struct {
+		Name, URL, Description, Products, ContactInfo, ExportDest string
+		Priority                                                  int
+		FoundDate                                                 string
+	}
+	var leads []lead
+	for rows.Next() {
+		var l lead
+		var url, desc, products, contact, export sql.NullString
+		if err := rows.Scan(&l.Name, &url, &desc, &products, &contact, &export, &l.Priority, &l.FoundDate); err != nil {
+			continue
+		}
+		l.URL = nullStr(url)
+		l.Description = nullStr(desc)
+		l.Products = nullStr(products)
+		l.ContactInfo = nullStr(contact)
+		l.ExportDest = nullStr(export)
+		leads = append(leads, l)
+	}
+
+	if len(leads) == 0 {
+		return errorResult("no pending leads to export")
+	}
+
+	f := excelize.NewFile()
+	sheet := "Лиды"
+	f.SetSheetName("Sheet1", sheet)
+
+	// Headers
+	headers := []string{"Приоритет", "Компания", "Описание", "Продукция", "Экспорт", "Контакты", "URL", "Дата"}
+	headerStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "FFFFFF", Size: 11},
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"2F5496"}},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "bottom", Color: "000000", Style: 2},
+		},
+	})
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		f.SetCellValue(sheet, cell, h)
+		f.SetCellStyle(sheet, cell, cell, headerStyle)
+	}
+
+	// Priority labels
+	priorityLabel := map[int]string{2: "🔴 Высокий", 1: "🟡 Средний", 0: "🟢 Низкий"}
+
+	// Data rows
+	for i, l := range leads {
+		row := i + 2
+		pLabel := priorityLabel[l.Priority]
+		if pLabel == "" {
+			pLabel = fmt.Sprintf("%d", l.Priority)
+		}
+		vals := []any{pLabel, l.Name, l.Description, l.Products, l.ExportDest, l.ContactInfo, l.URL, l.FoundDate}
+		for j, v := range vals {
+			cell, _ := excelize.CoordinatesToCellName(j+1, row)
+			f.SetCellValue(sheet, cell, v)
+		}
+	}
+
+	// Column widths
+	widths := map[string]float64{"A": 16, "B": 30, "C": 40, "D": 30, "E": 20, "F": 25, "G": 35, "H": 12}
+	for col, w := range widths {
+		f.SetColWidth(sheet, col, col, w)
+	}
+
+	// Count by priority
+	var high, medium int
+	for _, l := range leads {
+		switch l.Priority {
+		case 2:
+			high++
+		case 1:
+			medium++
+		}
+	}
+
+	filename := fmt.Sprintf("leads_%s.xlsx", time.Now().Format("2006-01-02_150405"))
+	outPath := filepath.Join(dataDir, filename)
+	if err := f.SaveAs(outPath); err != nil {
+		return errorResult("save excel error: " + err.Error())
+	}
+
+	result := map[string]any{
+		"file_path":     outPath,
+		"total_leads":   len(leads),
+		"high_priority": high,
+		"med_priority":  medium,
+	}
+	data, _ := json.Marshal(result)
+	return textResult(string(data))
+}
+
+func nullStr(s sql.NullString) string {
+	if s.Valid {
+		return s.String
+	}
+	return ""
 }
 
 // --- helpers ---

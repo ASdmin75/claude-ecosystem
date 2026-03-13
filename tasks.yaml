@@ -189,159 +189,118 @@ tasks:
     max_turns: 15
     max_budget_usd: 0.05
     permission_mode: bypassPermissions
-  - name: analyze-export-by-aviation
+  - name: process-export-by-leads
     domain: export-by-aviation
     prompt: |-
-      Сегодня {{.Date}}. Проанализируй компании из каталога export.by и определи потенциальных лидов для авиаперевозки.
+      Сегодня {{.Date}}. Обработай лиды для авиаперевозки.
+      Порог отправки: 15 лидов.
 
-      Предыдущий этап:
-      {{.PrevOutput}}
+      === АЛГОРИТМ ===
 
-      Работай с данными в БД. WebFetch разрешён ТОЛЬКО для обогащения профиля компании (этап 1.5).
+      ШАГ 1. Вызови mcp__exportby__get_pending_count — узнай количество готовых лидов (status='new').
 
-      1. Вызови mcp__exportby__get_unanalyzed с limit=50 — получишь компании, которых ещё нет в таблице companies.
-         Если unanalyzed = 0, выведи "НОВЫХ ЛИДОВ: 0" и заверши.
+      ШАГ 2. ЕСЛИ pending >= 15 → переходи к ОТПРАВКЕ (шаг 4).
 
-      2. Для каждой компании выполни ДВУХЭТАПНУЮ оценку СТРОГО по описанию компании (поле description).
-         ВАЖНО: поле products может содержать мусорные данные от других компаний — НЕ доверяй ему, если products противоречит description.
-         Оценивай ТОЛЬКО основную деятельность компании.
+      ШАГ 3. ЕСЛИ pending < 15 → выполни АНАЛИЗ новой порции:
 
-         === ЭТАП 1: ТИП КОМПАНИИ ===
+        3.1. Вызови mcp__exportby__get_unanalyzed с limit=50.
+             Если unanalyzed = 0, выведи "Неотправленных: {pending}, новых для анализа нет." и ЗАВЕРШИ.
 
-         Определи по контексту описания: компания САМА производит товары или перепродаёт/импортирует чужие?
+        3.2. Для каждой компании выполни ДВУХЭТАПНУЮ оценку СТРОГО по описанию компании (поле description).
+             ВАЖНО: поле products может содержать мусорные данные — НЕ доверяй ему, если products противоречит description.
 
-         ✗ ИНОСТРАННАЯ КОМПАНИЯ → ОТКАЗ:
-         Если из описания или названия видно, что компания НЕ белорусская (город в России, Китае и т.д.,
-         иностранное название без белорусской привязки) — ОТКАЗ. Каталог export.by для белорусских экспортёров,
-         но иностранные компании тоже регистрируются. Нас интересуют только белорусские.
+             === ЭТАП 1: ТИП КОМПАНИИ ===
 
-         ✓ ПРОИЗВОДИТЕЛЬ/ЭКСПОРТЁР → переходи к этапу 2:
-         Признаки: собственное производство, завод, фабрика, экспорт своей продукции.
-         Это ориентиры, а не исчерпывающий список — оценивай смысл описания целиком.
+             ✗ ИНОСТРАННАЯ КОМПАНИЯ → ОТКАЗ:
+             Если из описания или названия видно, что компания НЕ белорусская — ОТКАЗ.
 
-         ✗ ИМПОРТЁР/ДИСТРИБЬЮТОР → ОТКАЗ:
-         Признаки: перепродажа чужих брендов, представительство иностранных компаний, «импорт и продажа».
+             ✓ ПРОИЗВОДИТЕЛЬ/ЭКСПОРТЁР → переходи к этапу 2:
+             Признаки: собственное производство, завод, фабрика, экспорт своей продукции.
 
-         ✗ СЕРВИСНЫЕ/ЛОКАЛЬНЫЕ КОМПАНИИ → ОТКАЗ:
-         Компании без физических товаров на экспорт: услуги, общепит, розница, образование, ремонт и т.д.
+             ✗ ИМПОРТЁР/ДИСТРИБЬЮТОР → ОТКАЗ:
+             Признаки: перепродажа чужих брендов, представительство иностранных компаний.
 
-         ПРИНЦИП: если неясно, производитель это или импортёр — склоняйся к ОТКАЗУ.
+             ✗ СЕРВИСНЫЕ/ЛОКАЛЬНЫЕ КОМПАНИИ → ОТКАЗ:
+             Компании без физических товаров на экспорт: услуги, общепит, розница.
 
-         === ЭТАП 1.5: ОБОГАЩЕНИЕ (опционально) ===
+             ПРИНЦИП: если неясно, производитель это или импортёр — склоняйся к ОТКАЗУ.
 
-         Если description слишком короткое (< 50 символов) или неоднозначное, И у компании есть url —
-         используй WebFetch чтобы получить главную страницу сайта компании для уточнения профиля.
-         НЕ делай это для каждой компании — только когда описания недостаточно для уверенной оценки.
+             === ЭТАП 1.5: ОБОГАЩЕНИЕ (опционально) ===
 
-         === ЭТАП 2: ПРИОРИТЕТ АВИАПЕРЕВОЗКИ (только для производителей/экспортёров) ===
+             Если description слишком короткое (< 50 символов) И у компании есть url —
+             используй WebFetch для уточнения. НЕ для каждой компании.
 
-         Задай себе вопрос: «Есть ли объективная экономическая причина отправлять этот товар самолётом
-         (платить x5–x10 от наземной/морской перевозки)?»
+             === ЭТАП 2: ПРИОРИТЕТ АВИАПЕРЕВОЗКИ ===
 
-         aviation_priority = 2 (высокий):
-         Товары, которые РЕАЛЬНО летают: свежие цветы, живые организмы, срочная фармацевтика/вакцины,
-         медоборудование, высокоценная электроника и приборы, образцы для выставок, запчасти для простоя,
-         оптика, ювелирные изделия. Общий признак — высокая ценность за кг ИЛИ критичность сроков доставки.
+             aviation_priority = 2 (высокий): свежие цветы, фармацевтика, медоборудование,
+             электроника, оптика, ювелирные изделия. Высокая ценность/кг ИЛИ критичность сроков.
 
-         aviation_priority = 1 (средний):
-         Товары, которые МОГУТ лететь при определённых условиях: малые партии лёгких товаров,
-         срочные заказы, экспорт в труднодоступные регионы без морского сообщения.
+             aviation_priority = 1 (средний): малые партии, срочные заказы, труднодоступные регионы.
 
-         aviation_priority = 0 (низкий → ОТКАЗ, НЕ вставлять):
-         Товары, которые экономически перевозятся наземным/морским транспортом: замороженные продукты,
-         консервы, сушёные товары, сырьё, стройматериалы, тяжёлые/объёмные грузы, мебель, текстиль навалом.
-         Заморозка — это СПОСОБ сохранения, исключающий потребность в срочной авиадоставке.
+             aviation_priority = 0 (низкий → ОТКАЗ): замороженные продукты, консервы, сырьё,
+             стройматериалы, тяжёлые грузы, мебель, текстиль. НЕ вставлять в companies.
 
-         needs_aviation = 1 если aviation_priority >= 1
+             needs_aviation = 1 если aviation_priority >= 1
 
-      3. Для компаний с aviation_priority >= 1 вставь в таблицу companies через mcp__database__execute:
-         INSERT OR IGNORE INTO companies (name, url, description, products, needs_aviation, aviation_priority, found_date, status)
-         VALUES ('...', url, '...', '', needs_aviation, priority, '{{.Date}}', 'new')
-         ВАЖНО: бери поле url из ответа get_unanalyzed как есть — НЕ конструируй URL самостоятельно.
+        3.3. Для подходящих: mcp__database__execute с INSERT OR IGNORE INTO companies
+             (name, url, description, products, needs_aviation, aviation_priority, found_date, status)
+             VALUES ('...', url, '...', '', needs_aviation, priority, '{{.Date}}', 'new')
+             Бери url из ответа get_unanalyzed как есть.
 
-      4. ОБЯЗАТЕЛЬНО вызови mcp__exportby__reject_companies для ВСЕХ отклонённых компаний (импортёры, сервисные, неясные).
-         Передай массив названий и причину. Это предотвращает повторный анализ при следующем запуске.
-         Пример: reject_companies(names=["ЛОКТ", "Фирма Б"], reason="importer")
+        3.4. ОБЯЗАТЕЛЬНО вызови mcp__exportby__reject_companies для ВСЕХ отклонённых.
 
-      5. Запиши в scan_log итог сессии.
+        3.5. Запиши в scan_log итог через mcp__database__execute.
 
-      ВАЖНО: НЕ выводи текстовый анализ каждой компании. Сразу вызывай tool calls:
-      - Для подходящих компаний: mcp__database__execute с INSERT
-      - Для отклонённых: mcp__exportby__reject_companies
+        3.6. Вызови mcp__exportby__get_pending_count повторно.
+             Если pending >= 15 → переходи к ОТПРАВКЕ (шаг 4).
+             Иначе → выведи "Накоплено: {pending} лидов из 15. Отправка отложена." и ЗАВЕРШИ.
+
+      ШАГ 4. ОТПРАВКА:
+
+        4.1. Вызови mcp__exportby__export_leads_excel — получишь путь к Excel и статистику.
+
+        4.2. Составь сводку ТОЧНО в формате:
+             📊 Авиационные лиды — {{.Date}}
+             Новых: {total_leads}
+             Приоритетных (🔴): {high_priority}
+             📎 Excel-файл с деталями приложен.
+
+        4.3. Отправь сводку через mcp__telegram__send_message.
+        4.4. Отправь Excel через mcp__telegram__send_document (file_path из 4.1).
+        4.5. Отправь email через mcp__email__send_report на alexstav1975@yandex.by,
+             тема "📊 Авиационные лиды — {{.Date}}", тело = сводка, вложение = Excel.
+        4.6. Вызови mcp__exportby__mark_exported.
+
+      ВАЖНО: НЕ выводи текстовый анализ каждой компании. Сразу вызывай tool calls.
       Группируй по несколько компаний за один вызов. Текстовый вывод — только финальная статистика.
-
-      Формат вывода:
-      НОВЫХ ЛИДОВ: N
-      ОТКЛОНЕНО: N
-      ПРИОРИТЕТНЫЕ ЛИДЫ:
-      - [Название] | [Описание 30 символов] | priority=N
     work_dir: .
     tags:
       - leads
       - aviation
       - export-by
-      - analysis
-    model: sonnet
-    timeout: 15m
-    mcp_servers:
-      - database
-      - exportby
-    allowed_tools:
-      - mcp__exportby__get_unanalyzed
-      - mcp__exportby__reject_companies
-      - mcp__database__query
-      - mcp__database__execute
-      - mcp__database__insert
-      - WebFetch
-    max_turns: 50
-    max_budget_usd: 0.5
-    permission_mode: bypassPermissions
-  - name: compile-export-by-aviation-excel
-    domain: export-by-aviation
-    prompt: "Сформируй Excel-отчёт. Файл: data/export-by-aviation/leads_{{.DateTime}}.xlsx\n\nШаг 1. Запроси ВСЕ компании из БД:\nSELECT name, description, products, export_destinations, contact_info, url, aviation_priority, found_date, status\nFROM companies WHERE status='new' ORDER BY aviation_priority DESC, found_date DESC;\n\nШаг 2. Создай Excel-файл. Первый лист \"Лиды\" — таблица через add_styled_table со столбцами:\nПриоритет | Компания | Описание | Продукция | Экспорт | Контакты | URL | Дата | Статус\nКаждая строка = одна компания из результата запроса. Приоритет: \U0001F534 Высокий (2), \U0001F7E1 Средний (1), \U0001F7E2 Низкий (0).\nЭто ГЛАВНЫЙ лист — в нём ВСЕ компании, по одной на строку.\n\nНЕ создавай лист \"Сводка\" — сводка отправляется отдельно в Telegram/email.\n\nВыведи ТОЛЬКО путь к файлу.\n"
-    work_dir: .
-    tags:
-      - leads
-      - aviation
-      - excel
-      - report
+      - process
     model: sonnet
     timeout: 20m
     mcp_servers:
       - database
-      - excel
-    allowed_tools:
-      - mcp__database__query
-      - mcp__database__describe_table
-      - mcp__excel__create_spreadsheet
-      - mcp__excel__add_styled_table
-      - mcp__excel__write_spreadsheet
-      - mcp__excel__read_spreadsheet
-    max_turns: 25
-    permission_mode: bypassPermissions
-  - name: deliver-export-by-aviation-report
-    domain: export-by-aviation
-    prompt: "Доставь отчёт по авиационным лидам. Файл: data/export-by-aviation/leads_{{.DateTime}}.xlsx\n\nШаг 1. Одним запросом получи данные:\nSELECT COUNT(*) AS total, SUM(CASE WHEN aviation_priority=2 THEN 1 ELSE 0 END) AS priority FROM companies WHERE status='new';\nSELECT name, description FROM companies WHERE status='new' ORDER BY aviation_priority DESC LIMIT 5;\n\nШаг 2. Составь сводку ТОЧНО в этом формате (подставь данные):\n\U0001F4CA Авиационные лиды — {{.Date}}\nНовых: {total}\nПриоритетных (\U0001F534): {priority}\nТоп:\n• {name} — {description обрезать до 50 символов}\n\U0001F4CE Excel-файл с деталями приложен.\n\nШаг 3. Отправь эту сводку через send_message в Telegram.\nШаг 4. Отправь Excel через send_document в Telegram.\nШаг 5. Отправь email через send_report на alexstav1975@yandex.by, тема \"\U0001F4CA Авиационные лиды — {{.Date}}\", тело = та же сводка, вложение = Excel.\nШаг 6. Вызови mark_exported.\n\nСводка в TG и email ИДЕНТИЧНА. Ничего лишнего не добавляй.\n"
-    work_dir: .
-    tags:
-      - leads
-      - aviation
-      - delivery
-      - telegram
-    model: haiku
-    timeout: 15m
-    mcp_servers:
-      - database
+      - exportby
       - telegram
       - email
-      - exportby
     allowed_tools:
+      - mcp__exportby__get_pending_count
+      - mcp__exportby__get_unanalyzed
+      - mcp__exportby__reject_companies
+      - mcp__exportby__export_leads_excel
+      - mcp__exportby__mark_exported
       - mcp__database__query
+      - mcp__database__execute
+      - mcp__database__insert
       - mcp__telegram__send_message
       - mcp__telegram__send_document
       - mcp__email__send_report
-      - mcp__exportby__mark_exported
-    max_turns: 25
+      - WebFetch
+    max_turns: 50
+    max_budget_usd: 0.5
     permission_mode: bypassPermissions
 pipelines:
   - name: review-fix
@@ -367,11 +326,8 @@ pipelines:
     mode: sequential
     steps:
       - task: sync-export-by-catalog
-      - task: analyze-export-by-aviation
-      - task: compile-export-by-aviation-excel
-      - task: deliver-export-by-aviation-report
+      - task: process-export-by-leads
     max_iterations: 1
-    stop_signal: "НОВЫХ ЛИДОВ: 0"
 mcp_servers:
   - name: database
     command: ./bin/mcp-database
@@ -403,6 +359,7 @@ domains:
         aviation_priority INTEGER DEFAULT 0,
         found_date TEXT NOT NULL,
         status TEXT DEFAULT 'new',
+        sent_at TEXT,
         notes TEXT,
         UNIQUE(name)
       );
@@ -446,9 +403,7 @@ domains:
     domain_doc: DOMAIN.md
     tasks:
       - sync-export-by-catalog
-      - analyze-export-by-aviation
-      - compile-export-by-aviation-excel
-      - deliver-export-by-aviation-report
+      - process-export-by-leads
     pipelines:
       - export-by-aviation-to-ceo
       - export-by-sync
@@ -457,7 +412,7 @@ domains:
     mcp_servers:
       - database
       - exportby
-      - excel
+      - telegram
       - email
   leads:
     description: B2B logistics leads for EAEU market

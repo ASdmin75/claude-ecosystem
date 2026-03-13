@@ -407,6 +407,35 @@
 - Критерии приоритетов синхронизированы с новым контекстным подходом
 - Добавлено явное правило: замороженное ≠ скоропортящееся
 
+### 2026-03-13 — Batch-накопление лидов и единый процесс обработки
+
+**Проблема:** пайплайн из 4 шагов (sync → analyze → compile Excel → deliver) отправлял отчёт при каждом запуске, даже если найден всего 1 лид. Неэффективно для получателя и тратит ресурсы на генерацию/отправку малых порций.
+
+**Новая архитектура: accumulate & flush**
+- Лиды накапливаются в таблице `companies` (status='new') между запусками
+- Отправка срабатывает только при достижении порога (15 лидов, настраивается в промпте задачи)
+- Excel генерируется программно в Go (mcp-exportby), без отдельного вызова Claude
+
+**Изменения в mcp-exportby (cmd/mcp/mcp-exportby/main.go):**
+- Новый инструмент `get_pending_count` — возвращает количество лидов со status='new'
+- Новый инструмент `export_leads_excel` — генерирует стилизованный Excel (excelize) из всех pending лидов, возвращает путь к файлу + статистику (total, high_priority, med_priority)
+- `mark_exported` обновлён: status='new' → 'sent' (вместо 'reported'), записывает `sent_at`
+- Миграция: `ALTER TABLE companies ADD COLUMN sent_at TEXT` в `ensureSchema()`
+
+**Изменения в tasks.yaml:**
+- Удалены 3 задачи: `analyze-export-by-aviation`, `compile-export-by-aviation-excel`, `deliver-export-by-aviation-report`
+- Новая задача `process-export-by-leads` — единый процесс с условной логикой:
+  1. Проверяет pending count
+  2. Если >= порог → export Excel → отправка TG + email → mark sent
+  3. Если < порог → анализ новой порции raw_companies → повторная проверка → отправка если >= порог
+- Пайплайн `export-by-aviation-to-ceo` упрощён до 2 шагов: `sync-export-by-catalog` → `process-export-by-leads`
+- Схема companies: добавлено поле `sent_at TEXT`
+- Домен: убран `excel` из mcp_servers (Excel теперь генерит exportby), добавлен `telegram`
+
+**Обновлена документация:**
+- DOMAIN.md: новая архитектура, статусы new/sent, новые инструменты
+- workflow.md, user-guide.md
+
 ---
 
 ## Бэклог

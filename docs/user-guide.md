@@ -401,7 +401,7 @@ mcp_servers:
 | **mcp-pdf** | — | Stub |
 | **mcp-google** | — | Stub |
 | **mcp-database** | `query`, `execute`, `list_tables`, `describe_table`, `check_exists`, `insert` | Реализован |
-| **mcp-exportby** | `scan_catalog`, `get_unanalyzed`, `save_company`, `check_new`, `get_stats`, `mark_exported`, `reject_companies` | Реализован |
+| **mcp-exportby** | `sync_catalog`, `get_unanalyzed`, `check_new`, `get_stats`, `get_pending_count`, `export_leads_excel`, `mark_exported`, `reject_companies` | Реализован |
 
 ### Привязка к задачам
 
