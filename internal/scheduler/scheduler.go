@@ -103,6 +103,35 @@ func (s *Scheduler) Register(t config.Task) error {
 	return nil
 }
 
+// RegisterPipeline registers a pipeline to run on a cron schedule.
+// The runFn callback is invoked with a context for each scheduled execution.
+func (s *Scheduler) RegisterPipeline(p config.Pipeline, runFn func(ctx context.Context)) error {
+	if p.Schedule == "" {
+		return nil
+	}
+
+	_, err := s.cron.AddFunc(p.Schedule, func() {
+		if s.IsPaused(p.Name) {
+			s.logger.Info("scheduled pipeline is paused, skipping", "pipeline", p.Name)
+			return
+		}
+
+		s.logger.Info("scheduled pipeline starting", "pipeline", p.Name)
+
+		s.ctxMu.RLock()
+		parentCtx := s.runCtx
+		s.ctxMu.RUnlock()
+
+		runFn(parentCtx)
+	})
+	if err != nil {
+		return err
+	}
+
+	s.logger.Info("registered scheduled pipeline", "pipeline", p.Name, "schedule", p.Schedule)
+	return nil
+}
+
 // Pause marks a task as paused so its cron callback will be skipped.
 func (s *Scheduler) Pause(taskName string) error {
 	s.pauseMu.Lock()

@@ -388,3 +388,58 @@ func (s *Server) handleRunPipelineAsync(w http.ResponseWriter, r *http.Request) 
 		Status:      "running",
 	})
 }
+
+// RunPipelineByName runs a pipeline asynchronously with the given trigger label.
+// It creates the execution record, publishes events, and runs in a goroutine.
+func (s *Server) RunPipelineByName(ctx context.Context, name string, trigger string) {
+	p := s.findPipeline(name)
+	if p == nil {
+		s.logger.Error("scheduled pipeline not found", "pipeline", name)
+		return
+	}
+
+	execID := uuid.New().String()
+	now := time.Now().UTC()
+
+	exec := &store.Execution{
+		ID:           execID,
+		PipelineName: p.Name,
+		Status:       "running",
+		Trigger:      trigger,
+		StartedAt:    now,
+	}
+	if err := s.store.CreateExecution(ctx, exec); err != nil {
+		s.logger.Error("failed to create pipeline execution record", "error", err)
+		return
+	}
+
+	s.bus.Publish(events.Event{
+		Type: "pipeline.started",
+		Payload: map[string]string{
+			"execution_id": execID,
+			"pipeline":     name,
+		},
+	})
+
+	resp := s.runPipeline(ctx, name, execID)
+
+	completedAt := time.Now().UTC()
+	exec.Status = resp.Status
+	exec.Output = resp.Output
+	exec.Error = resp.Error
+	exec.DurationMS = resp.DurationMS
+	exec.CompletedAt = &completedAt
+
+	if err := s.store.UpdateExecution(ctx, exec); err != nil {
+		s.logger.Error("failed to update pipeline execution record", "error", err)
+	}
+
+	s.bus.Publish(events.Event{
+		Type: "pipeline.completed",
+		Payload: map[string]string{
+			"execution_id": execID,
+			"pipeline":     name,
+			"status":       resp.Status,
+		},
+	})
+}

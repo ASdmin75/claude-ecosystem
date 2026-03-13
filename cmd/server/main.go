@@ -207,16 +207,28 @@ func main() {
 		}
 	}
 
-	sched.Start(ctx)
-	defer sched.Stop()
-	go w.Start(ctx)
-
 	// Initialize REST API
 	apiServer := api.NewServer(
 		cfg, taskRunner, subagentMgr, mcpMgr, domainMgr,
 		db, db, authMw, pasetoMgr,
 		bus, logger,
 	)
+
+	// Register pipeline schedules (needs apiServer for execution logic)
+	for _, p := range cfg.Pipelines {
+		if p.Schedule != "" {
+			pName := p.Name
+			if err := sched.RegisterPipeline(p, func(ctx context.Context) {
+				apiServer.RunPipelineByName(ctx, pName, "schedule")
+			}); err != nil {
+				logger.Error("failed to register scheduled pipeline", "pipeline", p.Name, "error", err)
+			}
+		}
+	}
+
+	sched.Start(ctx)
+	defer sched.Stop()
+	go w.Start(ctx)
 
 	httpServer := &http.Server{
 		Addr:         cfg.Server.Addr,

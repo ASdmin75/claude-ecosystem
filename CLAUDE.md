@@ -37,7 +37,7 @@ Requires Go 1.26+. The `claude` CLI must be on PATH (or set `claude_bin` in task
 - **`pipeline/`** — Runs sequential (loop with `{{.PrevOutput}}`) or parallel (errgroup) pipelines. Factory `Run()` dispatches by mode.
 - **`subagent/`** — CRUD manager for `.claude/agents/*.md` files. Parses YAML frontmatter + markdown. Generates `--agents` JSON for task runner.
 - **`mcpmanager/`** — Process lifecycle for MCP servers (lazy start, SIGTERM/SIGKILL shutdown, health). Generates `--mcp-config` temp files.
-- **`scheduler/`** — Cron scheduler with pause/resume per task.
+- **`scheduler/`** — Cron scheduler with pause/resume per task and pipeline.
 - **`watcher/`** — fsnotify file watcher with extension filtering and debounce.
 - **`events/`** — Pub/sub event bus for decoupling task completion from logging/SSE.
 - **`auth/`** — PASETO v4.local tokens + bearer token fallback + HTTP middleware.
@@ -49,7 +49,7 @@ Requires Go 1.26+. The `claude` CLI must be on PATH (or set `claude_bin` in task
 
 Each task has: `name`, `prompt` (Go template), `work_dir`, and either `schedule` (cron) or `watch` (paths + extensions). Optional: `tags`, `model`, `timeout`, `agents` (sub-agent names), `mcp_servers`, `allowed_tools`, `json_schema`, `max_turns`, `max_budget_usd`, `output_format`, `domain`.
 
-Pipelines chain tasks in sequential loops or parallel execution. Template variables available in pipeline steps: `{{.PrevOutput}}` (output from previous step), `{{.Date}}` (current date YYYY-MM-DD). When using `allowed_tools` with sub-agents, include `Agent` in the list so Claude can delegate to them. Each pipeline step enforces the task's `timeout`. Config also includes `server`, `auth`, `mcp_servers`, and `domains` sections.
+Pipelines chain tasks in sequential loops or parallel execution. Pipelines support `schedule` (cron) for automatic periodic execution. Template variables available in pipeline steps: `{{.PrevOutput}}` (output from previous step), `{{.Date}}` (current date YYYY-MM-DD). When using `allowed_tools` with sub-agents, include `Agent` in the list so Claude can delegate to them. Each pipeline step enforces the task's `timeout`. Config also includes `server`, `auth`, `mcp_servers`, and `domains` sections.
 
 ### Domains
 

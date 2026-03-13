@@ -55,6 +55,7 @@ export interface Pipeline {
   max_iterations: number
   stop_signal?: string
   collector?: string
+  schedule?: string
 }
 
 export interface Execution {

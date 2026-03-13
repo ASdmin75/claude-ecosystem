@@ -4,7 +4,7 @@ import { useState } from 'react'
 import type { Pipeline } from '../types'
 
 const emptyForm: Partial<Pipeline> = {
-  name: '', mode: 'sequential', steps: [{ task: '' }], max_iterations: 1, stop_signal: '', collector: '',
+  name: '', mode: 'sequential', steps: [{ task: '' }], max_iterations: 1, stop_signal: '', collector: '', schedule: '',
 }
 
 export default function PipelineList() {
@@ -101,6 +101,7 @@ export default function PipelineList() {
                       <span>Max iterations: {p.max_iterations}</span>
                       {p.stop_signal && <span>Stop: "{p.stop_signal}"</span>}
                       {p.collector && <span>Collector: {p.collector}</span>}
+                      {p.schedule && <span>Schedule: {p.schedule}</span>}
                     </div>
                   </div>
                   <div className="flex gap-2">
@@ -246,6 +247,15 @@ function PipelineEditor({ pipeline, isNew, onChange, onSave, onCancel, saving }:
             value={pipeline.collector || ''}
             onChange={(e) => set('collector', e.target.value)}
             placeholder="Optional collector task"
+            className={inputClass}
+          />
+        </Field>
+
+        <Field label="Schedule (cron)">
+          <input
+            value={pipeline.schedule || ''}
+            onChange={(e) => set('schedule', e.target.value)}
+            placeholder="e.g. 0 9 * * 1-5"
             className={inputClass}
           />
         </Field>

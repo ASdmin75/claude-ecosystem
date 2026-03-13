@@ -455,6 +455,34 @@
 **Очистка данных:**
 - «Агрокомбинат Несвижский» удалён из `companies`, перенесён в `rejected_companies` (reason: `food_agriculture_producer`)
 
+### 2026-03-13 — Cron-расписание для пайплайнов
+
+**Проблема:** пайплайны можно было запускать только вручную (через API, CLI или Web UI). Поле `schedule` было доступно только для задач (tasks), но не для пайплайнов.
+
+**Изменения:**
+
+**Backend:**
+- `internal/config/pipeline.go`: добавлено поле `Schedule string` в структуру `Pipeline`
+- `internal/scheduler/scheduler.go`: новый метод `RegisterPipeline(p, runFn)` — принимает pipeline config и callback-функцию для запуска; поддерживает pause/resume по имени пайплайна
+- `internal/api/pipelines.go`: новый публичный метод `RunPipelineByName(ctx, name, trigger)` — создаёт execution record, публикует SSE-события, выполняет пайплайн; trigger записывается как "schedule"
+- `cmd/server/main.go`: пайплайны с `schedule != ""` регистрируются в cron-шедулере после инициализации API-сервера
+
+**Frontend:**
+- `web/src/types/index.ts`: добавлено `schedule?: string` в интерфейс `Pipeline`
+- `web/src/components/PipelineList.tsx`: поле "Schedule (cron)" в форме редактирования, отображение расписания в карточке пайплайна
+
+**Использование в tasks.yaml:**
+```yaml
+pipelines:
+  - name: export-by-aviation-to-ceo
+    mode: sequential
+    steps:
+      - task: sync-export-by-catalog
+      - task: process-export-by-leads
+    max_iterations: 1
+    schedule: "0 9 * * 1-5"   # каждый будний день в 9:00
+```
+
 ---
 
 ## Бэклог

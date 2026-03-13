@@ -322,6 +322,7 @@ pipelines:
       - task: code-fixer
     max_iterations: 10
     stop_signal: "LGTM"
+    # schedule: "0 9 * * 1-5"  # опционально: cron-расписание
 ```
 
 ### Sequential single-pass (линейная цепочка)
@@ -340,6 +341,23 @@ pipelines:
 ```
 
 Каждый шаг получает вывод предыдущего через `{{.PrevOutput}}`.
+
+### Расписание (schedule)
+
+Пайплайны, как и задачи, поддерживают cron-расписание для автоматического запуска:
+
+```yaml
+pipelines:
+  - name: export-by-aviation-to-ceo
+    mode: sequential
+    steps:
+      - task: sync-export-by-catalog
+      - task: process-export-by-leads
+    max_iterations: 1
+    schedule: "0 9 * * 1-5"   # каждый будний день в 9:00
+```
+
+Расписание можно задать через UI (поле "Schedule (cron)" в форме редактирования пайплайна) или в `tasks.yaml`. Формат — стандартный 5-полевой cron. Пайплайн по расписанию можно приостановить/возобновить через API pause/resume (аналогично задачам).
 
 ### Parallel (параллельный)
 
