@@ -1,504 +1,509 @@
 claude_bin: claude
 tasks:
-    - name: code-review
-      prompt: |
-        Review the Go code in the working directory.
-        Focus on: error handling, concurrency safety, and idiomatic Go patterns.
-        Output a brief summary of findings.
+  - name: code-review
+    prompt: |
+      Review the Go code in the working directory.
+      Focus on: error handling, concurrency safety, and idiomatic Go patterns.
+      Output a brief summary of findings.
 
-        Rate each finding as High, Medium, or Low severity.
+      Rate each finding as High, Medium, or Low severity.
 
-        If there are no High or Medium severity findings remaining, output the
-        exact line "LGTM" at the end of your response to signal that the code
-        is in good shape.
+      If there are no High or Medium severity findings remaining, output the
+      exact line "LGTM" at the end of your response to signal that the code
+      is in good shape.
 
-        {{if .PrevOutput}}
-        Previous review/fix context from the last iteration:
-        ---
-        {{.PrevOutput}}
-        ---
-        Focus on whether previous issues were fixed and look for any new issues
-        introduced by the fixes. Do not repeat issues that have already been fixed.
-        {{end}}
-      work_dir: .
-      schedule: 0 9 * * 1-5
-      tags:
-        - review
-        - quality
-    - name: code-fixer
-      prompt: |
-        You are a code fixer. Apply the fixes described in the review below.
-        Only fix High and Medium severity issues. Leave Low severity issues alone.
-        Make minimal, targeted changes — do not refactor or restructure beyond
-        what is needed to fix the specific issues.
+      {{if .PrevOutput}}
+      Previous review/fix context from the last iteration:
+      ---
+      {{.PrevOutput}}
+      ---
+      Focus on whether previous issues were fixed and look for any new issues
+      introduced by the fixes. Do not repeat issues that have already been fixed.
+      {{end}}
+    work_dir: .
+    schedule: 0 9 * * 1-5
+    tags:
+      - review
+      - quality
+  - name: code-fixer
+    prompt: |
+      You are a code fixer. Apply the fixes described in the review below.
+      Only fix High and Medium severity issues. Leave Low severity issues alone.
+      Make minimal, targeted changes — do not refactor or restructure beyond
+      what is needed to fix the specific issues.
 
-        Review findings to fix:
-        ---
-        {{.PrevOutput}}
-        ---
-      work_dir: .
-      tags:
-        - fix
-        - quality
-      timeout: 10m
-    - name: test-generator
-      prompt: |
-        Analyze the Go source files and generate missing unit tests.
-        Use table-driven tests where appropriate.
-        Only output the test code, no explanations.
-      work_dir: .
-      schedule: 0 12 * * 1-5
-      tags:
-        - tests
-    - name: on-save-lint
-      prompt: |
-        Review the recently changed file: {{.File}}
-        Check for common Go mistakes, suggest improvements.
-        Be concise - max 5 bullet points.
-      work_dir: .
-      watch:
-        paths:
-            - .
-        extensions:
-            - .go
-        debounce: 3s
-      tags:
-        - lint
-        - realtime
-    - name: todo-tracker
-      prompt: |
-        Find all TODO, FIXME, HACK comments in the codebase.
-        Categorize by priority and suggest an action plan.
-      work_dir: .
-      schedule: 0 */4 * * *
-      tags:
-        - tracking
-    - name: find-new-eaeu-logistics-lead
-      prompt: "Найди 100 новых потенциальных клиентов для логистическо-экспедиционной компании из РБ работающей на рынке ЕАЭС с ледующих отраслях:\n- фарма\n- электроника\nКомапнии должны быть резидентами РБ. \nИспользуй сабагента eaeu-logistics-lead-finder"
-      work_dir: .
-      model: sonnet
-      timeout: 60m
-      permission_mode: dontAsk
-    - name: find-leads
-      domain: leads
-      prompt: |
-        Найди 50 новых потенциальных клиентов для логистическо-экспедиционной компании из РБ работающей на рынке ЕАЭС с ледующих отраслях:
-        - фарма
-        - электроника
-        - химическая и нефтехимическая промышленность
-        - деревообрабатывающая и целлюлозно-бумажная промышленность
-        - машиностроение и металлообработка
-        Комапнии должны быть резидентами РБ.
-        Используй сабагента eaeu-logistics-lead-finder
-      work_dir: .
-      tags:
-        - leads
-        - sales
-      model: sonnet
-      timeout: 60m
-      agents:
-        - eaeu-logistics-lead-finder
-      mcp_servers:
-        - database
-      allowed_tools:
-        - Agent
-        - WebSearch
-        - WebFetch
-        - mcp__database__check_exists
-        - mcp__database__insert
-        - mcp__database__query
-      max_turns: 50
-      permission_mode: dontAsk
-    - name: compile-leads-excel
-      domain: leads
-      prompt: |
-        Получи все лиды из базы данных через mcp__database__query.
-        SQL: SELECT * FROM leads WHERE status = 'new' ORDER BY found_at DESC
+      Review findings to fix:
+      ---
+      {{.PrevOutput}}
+      ---
+    work_dir: .
+    tags:
+      - fix
+      - quality
+    timeout: 10m
+  - name: test-generator
+    prompt: |
+      Analyze the Go source files and generate missing unit tests.
+      Use table-driven tests where appropriate.
+      Only output the test code, no explanations.
+    work_dir: .
+    schedule: 0 12 * * 1-5
+    tags:
+      - tests
+  - name: on-save-lint
+    prompt: |
+      Review the recently changed file: {{.File}}
+      Check for common Go mistakes, suggest improvements.
+      Be concise - max 5 bullet points.
+    work_dir: .
+    watch:
+      paths:
+        - .
+      extensions:
+        - .go
+      debounce: 3s
+    tags:
+      - lint
+      - realtime
+  - name: todo-tracker
+    prompt: |
+      Find all TODO, FIXME, HACK comments in the codebase.
+      Categorize by priority and suggest an action plan.
+    work_dir: .
+    schedule: 0 */4 * * *
+    tags:
+      - tracking
+  - name: find-new-eaeu-logistics-lead
+    prompt: "Найди 100 новых потенциальных клиентов для логистическо-экспедиционной компании из РБ работающей на рынке ЕАЭС с ледующих отраслях:\n- фарма\n- электроника\nКомапнии должны быть резидентами РБ. \nИспользуй сабагента eaeu-logistics-lead-finder"
+    work_dir: .
+    model: sonnet
+    timeout: 60m
+    permission_mode: dontAsk
+  - name: find-leads
+    domain: leads
+    prompt: |
+      Найди 50 новых потенциальных клиентов для логистическо-экспедиционной компании из РБ работающей на рынке ЕАЭС с ледующих отраслях:
+      - фарма
+      - электроника
+      - химическая и нефтехимическая промышленность
+      - деревообрабатывающая и целлюлозно-бумажная промышленность
+      - машиностроение и металлообработка
+      Комапнии должны быть резидентами РБ.
+      Используй сабагента eaeu-logistics-lead-finder
+    work_dir: .
+    tags:
+      - leads
+      - sales
+    model: sonnet
+    timeout: 60m
+    agents:
+      - eaeu-logistics-lead-finder
+    mcp_servers:
+      - database
+    allowed_tools:
+      - Agent
+      - WebSearch
+      - WebFetch
+      - mcp__database__check_exists
+      - mcp__database__insert
+      - mcp__database__query
+    max_turns: 50
+    permission_mode: dontAsk
+  - name: compile-leads-excel
+    domain: leads
+    prompt: |
+      Получи все лиды из базы данных через mcp__database__query.
+      SQL: SELECT * FROM leads WHERE status = 'new' ORDER BY found_at DESC
 
-        Создай Excel-отчёт для CEO: workspace/leads/leads-report-{{.DateTime}}.xlsx
-        Используй инструменты create_spreadsheet и add_styled_table.
-        Добавь лист 'Leads' с таблицей всех лидов и лист 'Summary' с итогами по источникам.
-        Верни только путь к созданному файлу.
-      work_dir: .
-      tags:
-        - leads
-        - excel
-      timeout: 10m
-      agents:
-        - leads-report-compiler
-      mcp_servers:
-        - excel
-        - database
-      allowed_tools:
-        - mcp__excel__create_spreadsheet
-        - mcp__excel__add_styled_table
-        - mcp__excel__write_spreadsheet
-        - mcp__excel__read_spreadsheet
-        - mcp__database__query
-      permission_mode: dontAsk
-    - name: deliver-leads-report
-      domain: leads
-      prompt: "Доставь отчёт по лидам. Файл: {{.PrevOutput}}\n\nШаг 1. Одним запросом получи данные:\nSELECT COUNT(*) AS total FROM leads WHERE status='new';\nSELECT COUNT(DISTINCT source_url) AS sources FROM leads WHERE status='new';\nSELECT name, industry FROM leads WHERE status='new' ORDER BY found_at DESC LIMIT 5;\n\nШаг 2. Составь сводку ТОЧНО в этом формате (подставь данные):\n\U0001F4CA Отчёт по лидам — {{.Date}}\nНовых: {total}\nИсточников: {sources}\nТоп:\n• {name} — {industry}\n\U0001F4CE Excel-файл с деталями приложен.\n\nШаг 3. Отправь эту сводку через send_message в Telegram.\nШаг 4. Отправь Excel через send_document в Telegram.\nШаг 5. Отправь email на alexstav1975@yandex.by, тема \"\U0001F4CA Отчёт по лидам — {{.Date}}\", тело = та же сводка, вложение = Excel.\nШаг 6. Скопируй файл в workspace/ceo/reports/.\n\nСводка в TG и email ИДЕНТИЧНА. Ничего лишнего не добавляй.\n"
-      work_dir: .
-      tags:
-        - leads
-        - delivery
-      timeout: 10m
-      agents:
-        - delivery-agent
-      mcp_servers:
-        - email
-        - filesystem
-        - telegram
-        - database
-      allowed_tools:
-        - mcp__email__send_email
-        - mcp__filesystem__copy_file
-        - mcp__telegram__send_message
-        - mcp__telegram__send_document
-        - mcp__database__query
-      permission_mode: dontAsk
-    - name: sync-export-by-catalog
-      domain: export-by-aviation
-      prompt: |-
-        Сегодня {{.Date}}. Синхронизируй каталог компаний с export.by в локальную БД.
+      Создай Excel-отчёт для CEO: workspace/leads/leads-report-{{.DateTime}}.xlsx
+      Используй инструменты create_spreadsheet и add_styled_table.
+      Добавь лист 'Leads' с таблицей всех лидов и лист 'Summary' с итогами по источникам.
+      Верни только путь к созданному файлу.
+    work_dir: .
+    tags:
+      - leads
+      - excel
+    timeout: 10m
+    agents:
+      - leads-report-compiler
+    mcp_servers:
+      - excel
+      - database
+    allowed_tools:
+      - mcp__excel__create_spreadsheet
+      - mcp__excel__add_styled_table
+      - mcp__excel__write_spreadsheet
+      - mcp__excel__read_spreadsheet
+      - mcp__database__query
+    permission_mode: dontAsk
+  - name: deliver-leads-report
+    domain: leads
+    prompt: "Доставь отчёт по лидам. Файл: {{.PrevOutput}}\n\nШаг 1. Одним запросом получи данные:\nSELECT COUNT(*) AS total FROM leads WHERE status='new';\nSELECT COUNT(DISTINCT source_url) AS sources FROM leads WHERE status='new';\nSELECT name, industry FROM leads WHERE status='new' ORDER BY found_at DESC LIMIT 5;\n\nШаг 2. Составь сводку ТОЧНО в этом формате (подставь данные):\n\U0001F4CA Отчёт по лидам — {{.Date}}\nНовых: {total}\nИсточников: {sources}\nТоп:\n• {name} — {industry}\n\U0001F4CE Excel-файл с деталями приложен.\n\nШаг 3. Отправь эту сводку через send_message в Telegram.\nШаг 4. Отправь Excel через send_document в Telegram.\nШаг 5. Отправь email на alexstav1975@yandex.by, тема \"\U0001F4CA Отчёт по лидам — {{.Date}}\", тело = та же сводка, вложение = Excel.\nШаг 6. Скопируй файл в workspace/ceo/reports/.\n\nСводка в TG и email ИДЕНТИЧНА. Ничего лишнего не добавляй.\n"
+    work_dir: .
+    tags:
+      - leads
+      - delivery
+    timeout: 10m
+    agents:
+      - delivery-agent
+    mcp_servers:
+      - email
+      - filesystem
+      - telegram
+      - database
+    allowed_tools:
+      - mcp__email__send_email
+      - mcp__filesystem__copy_file
+      - mcp__telegram__send_message
+      - mcp__telegram__send_document
+      - mcp__database__query
+    permission_mode: dontAsk
+  - name: sync-export-by-catalog
+    domain: export-by-aviation
+    prompt: |-
+      Сегодня {{.Date}}. Синхронизируй каталог компаний с export.by в локальную БД.
 
-        1. Вызови mcp__exportby__get_stats — проверь текущий прогресс.
-        2. Если каталог ещё не полностью просканирован, вызови mcp__exportby__sync_catalog с max_pages=100 для продолжения.
-        3. Если каталог уже полный, вызови mcp__exportby__check_new для проверки новых записей.
-        4. Проверь финальную статистику через mcp__exportby__get_stats.
+      1. Вызови mcp__exportby__get_stats — проверь текущий прогресс.
+      2. Если каталог ещё не полностью просканирован, вызови mcp__exportby__sync_catalog с max_pages=100 для продолжения.
+      3. Если каталог уже полный, вызови mcp__exportby__check_new для проверки новых записей.
+      4. Проверь финальную статистику через mcp__exportby__get_stats.
 
-        Формат вывода:
-        СИНХРОНИЗАЦИЯ: страниц N/N, компаний в БД N из N
-        НОВЫХ КОМПАНИЙ: N
-        СТАТУС: [завершено/в процессе]
-      work_dir: .
-      tags:
-        - leads
-        - aviation
-        - export-by
-        - sync
-      model: haiku
-      timeout: 10m
-      mcp_servers:
-        - exportby
-      allowed_tools:
-        - mcp__exportby__sync_catalog
-        - mcp__exportby__check_new
-        - mcp__exportby__get_stats
-      max_turns: 15
-      max_budget_usd: 0.05
-      permission_mode: bypassPermissions
-    - name: analyze-export-by-aviation
-      domain: export-by-aviation
-      prompt: |-
-        Сегодня {{.Date}}. Проанализируй компании из каталога export.by и определи потенциальных лидов для авиаперевозки.
+      Формат вывода:
+      СИНХРОНИЗАЦИЯ: страниц N/N, компаний в БД N из N
+      НОВЫХ КОМПАНИЙ: N
+      СТАТУС: [завершено/в процессе]
+    work_dir: .
+    tags:
+      - leads
+      - aviation
+      - export-by
+      - sync
+    model: haiku
+    timeout: 10m
+    mcp_servers:
+      - exportby
+    allowed_tools:
+      - mcp__exportby__sync_catalog
+      - mcp__exportby__check_new
+      - mcp__exportby__get_stats
+    max_turns: 15
+    max_budget_usd: 0.05
+    permission_mode: bypassPermissions
+  - name: analyze-export-by-aviation
+    domain: export-by-aviation
+    prompt: |-
+      Сегодня {{.Date}}. Проанализируй компании из каталога export.by и определи потенциальных лидов для авиаперевозки.
 
-        Предыдущий этап:
-        {{.PrevOutput}}
+      Предыдущий этап:
+      {{.PrevOutput}}
 
-        Работай с данными в БД. WebFetch разрешён ТОЛЬКО для обогащения профиля компании (этап 1.5).
+      Работай с данными в БД. WebFetch разрешён ТОЛЬКО для обогащения профиля компании (этап 1.5).
 
-        1. Вызови mcp__exportby__get_unanalyzed с limit=25 — получишь компании, которых ещё нет в таблице companies.
-           Если unanalyzed = 0, выведи "НОВЫХ ЛИДОВ: 0" и заверши.
+      1. Вызови mcp__exportby__get_unanalyzed с limit=50 — получишь компании, которых ещё нет в таблице companies.
+         Если unanalyzed = 0, выведи "НОВЫХ ЛИДОВ: 0" и заверши.
 
-        2. Для каждой компании выполни ДВУХЭТАПНУЮ оценку СТРОГО по описанию компании (поле description).
-           ВАЖНО: поле products может содержать мусорные данные от других компаний — НЕ доверяй ему, если products противоречит description.
-           Оценивай ТОЛЬКО основную деятельность компании.
+      2. Для каждой компании выполни ДВУХЭТАПНУЮ оценку СТРОГО по описанию компании (поле description).
+         ВАЖНО: поле products может содержать мусорные данные от других компаний — НЕ доверяй ему, если products противоречит description.
+         Оценивай ТОЛЬКО основную деятельность компании.
 
-           === ЭТАП 1: ТИП КОМПАНИИ ===
+         === ЭТАП 1: ТИП КОМПАНИИ ===
 
-           Определи по контексту описания: компания САМА производит товары или перепродаёт/импортирует чужие?
+         Определи по контексту описания: компания САМА производит товары или перепродаёт/импортирует чужие?
 
-           ✓ ПРОИЗВОДИТЕЛЬ/ЭКСПОРТЁР → переходи к этапу 2:
-           Признаки: собственное производство, завод, фабрика, экспорт своей продукции.
-           Это ориентиры, а не исчерпывающий список — оценивай смысл описания целиком.
+         ✗ ИНОСТРАННАЯ КОМПАНИЯ → ОТКАЗ:
+         Если из описания или названия видно, что компания НЕ белорусская (город в России, Китае и т.д.,
+         иностранное название без белорусской привязки) — ОТКАЗ. Каталог export.by для белорусских экспортёров,
+         но иностранные компании тоже регистрируются. Нас интересуют только белорусские.
 
-           ✗ ИМПОРТЁР/ДИСТРИБЬЮТОР → ОТКАЗ:
-           Признаки: перепродажа чужих брендов, представительство иностранных компаний, «импорт и продажа».
+         ✓ ПРОИЗВОДИТЕЛЬ/ЭКСПОРТЁР → переходи к этапу 2:
+         Признаки: собственное производство, завод, фабрика, экспорт своей продукции.
+         Это ориентиры, а не исчерпывающий список — оценивай смысл описания целиком.
 
-           ✗ СЕРВИСНЫЕ/ЛОКАЛЬНЫЕ КОМПАНИИ → ОТКАЗ:
-           Компании без физических товаров на экспорт: услуги, общепит, розница, образование, ремонт и т.д.
+         ✗ ИМПОРТЁР/ДИСТРИБЬЮТОР → ОТКАЗ:
+         Признаки: перепродажа чужих брендов, представительство иностранных компаний, «импорт и продажа».
 
-           ПРИНЦИП: если неясно, производитель это или импортёр — склоняйся к ОТКАЗУ.
+         ✗ СЕРВИСНЫЕ/ЛОКАЛЬНЫЕ КОМПАНИИ → ОТКАЗ:
+         Компании без физических товаров на экспорт: услуги, общепит, розница, образование, ремонт и т.д.
 
-           === ЭТАП 1.5: ОБОГАЩЕНИЕ (опционально) ===
+         ПРИНЦИП: если неясно, производитель это или импортёр — склоняйся к ОТКАЗУ.
 
-           Если description слишком короткое (< 50 символов) или неоднозначное, И у компании есть url —
-           используй WebFetch чтобы получить главную страницу сайта компании для уточнения профиля.
-           НЕ делай это для каждой компании — только когда описания недостаточно для уверенной оценки.
+         === ЭТАП 1.5: ОБОГАЩЕНИЕ (опционально) ===
 
-           === ЭТАП 2: ПРИОРИТЕТ АВИАПЕРЕВОЗКИ (только для производителей/экспортёров) ===
+         Если description слишком короткое (< 50 символов) или неоднозначное, И у компании есть url —
+         используй WebFetch чтобы получить главную страницу сайта компании для уточнения профиля.
+         НЕ делай это для каждой компании — только когда описания недостаточно для уверенной оценки.
 
-           Задай себе вопрос: «Есть ли объективная экономическая причина отправлять этот товар самолётом
-           (платить x5–x10 от наземной/морской перевозки)?»
+         === ЭТАП 2: ПРИОРИТЕТ АВИАПЕРЕВОЗКИ (только для производителей/экспортёров) ===
 
-           aviation_priority = 2 (высокий):
-           Товары, которые РЕАЛЬНО летают: свежие цветы, живые организмы, срочная фармацевтика/вакцины,
-           медоборудование, высокоценная электроника и приборы, образцы для выставок, запчасти для простоя,
-           оптика, ювелирные изделия. Общий признак — высокая ценность за кг ИЛИ критичность сроков доставки.
+         Задай себе вопрос: «Есть ли объективная экономическая причина отправлять этот товар самолётом
+         (платить x5–x10 от наземной/морской перевозки)?»
 
-           aviation_priority = 1 (средний):
-           Товары, которые МОГУТ лететь при определённых условиях: малые партии лёгких товаров,
-           срочные заказы, экспорт в труднодоступные регионы без морского сообщения.
+         aviation_priority = 2 (высокий):
+         Товары, которые РЕАЛЬНО летают: свежие цветы, живые организмы, срочная фармацевтика/вакцины,
+         медоборудование, высокоценная электроника и приборы, образцы для выставок, запчасти для простоя,
+         оптика, ювелирные изделия. Общий признак — высокая ценность за кг ИЛИ критичность сроков доставки.
 
-           aviation_priority = 0 (низкий → ОТКАЗ, НЕ вставлять):
-           Товары, которые экономически перевозятся наземным/морским транспортом: замороженные продукты,
-           консервы, сушёные товары, сырьё, стройматериалы, тяжёлые/объёмные грузы, мебель, текстиль навалом.
-           Заморозка — это СПОСОБ сохранения, исключающий потребность в срочной авиадоставке.
+         aviation_priority = 1 (средний):
+         Товары, которые МОГУТ лететь при определённых условиях: малые партии лёгких товаров,
+         срочные заказы, экспорт в труднодоступные регионы без морского сообщения.
 
-           needs_aviation = 1 если aviation_priority >= 1
+         aviation_priority = 0 (низкий → ОТКАЗ, НЕ вставлять):
+         Товары, которые экономически перевозятся наземным/морским транспортом: замороженные продукты,
+         консервы, сушёные товары, сырьё, стройматериалы, тяжёлые/объёмные грузы, мебель, текстиль навалом.
+         Заморозка — это СПОСОБ сохранения, исключающий потребность в срочной авиадоставке.
 
-        3. Для компаний с aviation_priority >= 1 вставь в таблицу companies через mcp__database__execute:
-           INSERT OR IGNORE INTO companies (name, url, description, products, needs_aviation, aviation_priority, found_date, status)
-           VALUES ('...', url, '...', '', needs_aviation, priority, '{{.Date}}', 'new')
-           ВАЖНО: бери поле url из ответа get_unanalyzed как есть — НЕ конструируй URL самостоятельно.
+         needs_aviation = 1 если aviation_priority >= 1
 
-        4. ОБЯЗАТЕЛЬНО вызови mcp__exportby__reject_companies для ВСЕХ отклонённых компаний (импортёры, сервисные, неясные).
-           Передай массив названий и причину. Это предотвращает повторный анализ при следующем запуске.
-           Пример: reject_companies(names=["ЛОКТ", "Фирма Б"], reason="importer")
+      3. Для компаний с aviation_priority >= 1 вставь в таблицу companies через mcp__database__execute:
+         INSERT OR IGNORE INTO companies (name, url, description, products, needs_aviation, aviation_priority, found_date, status)
+         VALUES ('...', url, '...', '', needs_aviation, priority, '{{.Date}}', 'new')
+         ВАЖНО: бери поле url из ответа get_unanalyzed как есть — НЕ конструируй URL самостоятельно.
 
-        5. Запиши в scan_log итог сессии.
+      4. ОБЯЗАТЕЛЬНО вызови mcp__exportby__reject_companies для ВСЕХ отклонённых компаний (импортёры, сервисные, неясные).
+         Передай массив названий и причину. Это предотвращает повторный анализ при следующем запуске.
+         Пример: reject_companies(names=["ЛОКТ", "Фирма Б"], reason="importer")
 
-        ВАЖНО: НЕ выводи текстовый анализ каждой компании. Сразу вызывай tool calls:
-        - Для подходящих компаний: mcp__database__execute с INSERT
-        - Для отклонённых: mcp__exportby__reject_companies
-        Группируй по несколько компаний за один вызов. Текстовый вывод — только финальная статистика.
+      5. Запиши в scan_log итог сессии.
 
-        Формат вывода:
-        НОВЫХ ЛИДОВ: N
-        ОТКЛОНЕНО: N
-        ПРИОРИТЕТНЫЕ ЛИДЫ:
-        - [Название] | [Описание 30 символов] | priority=N
-      work_dir: .
-      tags:
-        - leads
-        - aviation
-        - export-by
-        - analysis
-      model: sonnet
-      timeout: 15m
-      mcp_servers:
-        - database
-        - exportby
-      allowed_tools:
-        - mcp__exportby__get_unanalyzed
-        - mcp__exportby__reject_companies
-        - mcp__database__query
-        - mcp__database__execute
-        - mcp__database__insert
-        - WebFetch
-      max_turns: 50
-      max_budget_usd: 0.5
-      permission_mode: bypassPermissions
-    - name: compile-export-by-aviation-excel
-      domain: export-by-aviation
-      prompt: "Сформируй Excel-отчёт. Файл: data/export-by-aviation/leads_{{.DateTime}}.xlsx\n\nШаг 1. Запроси ВСЕ компании из БД:\nSELECT name, description, products, export_destinations, contact_info, url, aviation_priority, found_date, status\nFROM companies WHERE status='new' ORDER BY aviation_priority DESC, found_date DESC;\n\nШаг 2. Создай Excel-файл. Первый лист \"Лиды\" — таблица через add_styled_table со столбцами:\nПриоритет | Компания | Описание | Продукция | Экспорт | Контакты | URL | Дата | Статус\nКаждая строка = одна компания из результата запроса. Приоритет: \U0001F534 Высокий (2), \U0001F7E1 Средний (1), \U0001F7E2 Низкий (0).\nЭто ГЛАВНЫЙ лист — в нём ВСЕ компании, по одной на строку.\n\nНЕ создавай лист \"Сводка\" — сводка отправляется отдельно в Telegram/email.\n\nВыведи ТОЛЬКО путь к файлу.\n"
-      work_dir: .
-      tags:
-        - leads
-        - aviation
-        - excel
-        - report
-      model: sonnet
-      timeout: 20m
-      mcp_servers:
-        - database
-        - excel
-      allowed_tools:
-        - mcp__database__query
-        - mcp__database__describe_table
-        - mcp__excel__create_spreadsheet
-        - mcp__excel__add_styled_table
-        - mcp__excel__write_spreadsheet
-        - mcp__excel__read_spreadsheet
-      max_turns: 25
-      permission_mode: bypassPermissions
-    - name: deliver-export-by-aviation-report
-      domain: export-by-aviation
-      prompt: "Доставь отчёт по авиационным лидам. Файл: data/export-by-aviation/leads_{{.DateTime}}.xlsx\n\nШаг 1. Одним запросом получи данные:\nSELECT COUNT(*) AS total, SUM(CASE WHEN aviation_priority=2 THEN 1 ELSE 0 END) AS priority FROM companies WHERE status='new';\nSELECT name, description FROM companies WHERE status='new' ORDER BY aviation_priority DESC LIMIT 5;\n\nШаг 2. Составь сводку ТОЧНО в этом формате (подставь данные):\n\U0001F4CA Авиационные лиды — {{.Date}}\nНовых: {total}\nПриоритетных (\U0001F534): {priority}\nТоп:\n• {name} — {description обрезать до 50 символов}\n\U0001F4CE Excel-файл с деталями приложен.\n\nШаг 3. Отправь эту сводку через send_message в Telegram.\nШаг 4. Отправь Excel через send_document в Telegram.\nШаг 5. Отправь email через send_report на alexstav1975@yandex.by, тема \"\U0001F4CA Авиационные лиды — {{.Date}}\", тело = та же сводка, вложение = Excel.\nШаг 6. Вызови mark_exported.\n\nСводка в TG и email ИДЕНТИЧНА. Ничего лишнего не добавляй.\n"
-      work_dir: .
-      tags:
-        - leads
-        - aviation
-        - delivery
-        - telegram
-      model: haiku
-      timeout: 15m
-      mcp_servers:
-        - database
-        - telegram
-        - email
-        - exportby
-      allowed_tools:
-        - mcp__database__query
-        - mcp__telegram__send_message
-        - mcp__telegram__send_document
-        - mcp__email__send_report
-        - mcp__exportby__mark_exported
-      max_turns: 25
-      permission_mode: bypassPermissions
+      ВАЖНО: НЕ выводи текстовый анализ каждой компании. Сразу вызывай tool calls:
+      - Для подходящих компаний: mcp__database__execute с INSERT
+      - Для отклонённых: mcp__exportby__reject_companies
+      Группируй по несколько компаний за один вызов. Текстовый вывод — только финальная статистика.
+
+      Формат вывода:
+      НОВЫХ ЛИДОВ: N
+      ОТКЛОНЕНО: N
+      ПРИОРИТЕТНЫЕ ЛИДЫ:
+      - [Название] | [Описание 30 символов] | priority=N
+    work_dir: .
+    tags:
+      - leads
+      - aviation
+      - export-by
+      - analysis
+    model: sonnet
+    timeout: 15m
+    mcp_servers:
+      - database
+      - exportby
+    allowed_tools:
+      - mcp__exportby__get_unanalyzed
+      - mcp__exportby__reject_companies
+      - mcp__database__query
+      - mcp__database__execute
+      - mcp__database__insert
+      - WebFetch
+    max_turns: 50
+    max_budget_usd: 0.5
+    permission_mode: bypassPermissions
+  - name: compile-export-by-aviation-excel
+    domain: export-by-aviation
+    prompt: "Сформируй Excel-отчёт. Файл: data/export-by-aviation/leads_{{.DateTime}}.xlsx\n\nШаг 1. Запроси ВСЕ компании из БД:\nSELECT name, description, products, export_destinations, contact_info, url, aviation_priority, found_date, status\nFROM companies WHERE status='new' ORDER BY aviation_priority DESC, found_date DESC;\n\nШаг 2. Создай Excel-файл. Первый лист \"Лиды\" — таблица через add_styled_table со столбцами:\nПриоритет | Компания | Описание | Продукция | Экспорт | Контакты | URL | Дата | Статус\nКаждая строка = одна компания из результата запроса. Приоритет: \U0001F534 Высокий (2), \U0001F7E1 Средний (1), \U0001F7E2 Низкий (0).\nЭто ГЛАВНЫЙ лист — в нём ВСЕ компании, по одной на строку.\n\nНЕ создавай лист \"Сводка\" — сводка отправляется отдельно в Telegram/email.\n\nВыведи ТОЛЬКО путь к файлу.\n"
+    work_dir: .
+    tags:
+      - leads
+      - aviation
+      - excel
+      - report
+    model: sonnet
+    timeout: 20m
+    mcp_servers:
+      - database
+      - excel
+    allowed_tools:
+      - mcp__database__query
+      - mcp__database__describe_table
+      - mcp__excel__create_spreadsheet
+      - mcp__excel__add_styled_table
+      - mcp__excel__write_spreadsheet
+      - mcp__excel__read_spreadsheet
+    max_turns: 25
+    permission_mode: bypassPermissions
+  - name: deliver-export-by-aviation-report
+    domain: export-by-aviation
+    prompt: "Доставь отчёт по авиационным лидам. Файл: data/export-by-aviation/leads_{{.DateTime}}.xlsx\n\nШаг 1. Одним запросом получи данные:\nSELECT COUNT(*) AS total, SUM(CASE WHEN aviation_priority=2 THEN 1 ELSE 0 END) AS priority FROM companies WHERE status='new';\nSELECT name, description FROM companies WHERE status='new' ORDER BY aviation_priority DESC LIMIT 5;\n\nШаг 2. Составь сводку ТОЧНО в этом формате (подставь данные):\n\U0001F4CA Авиационные лиды — {{.Date}}\nНовых: {total}\nПриоритетных (\U0001F534): {priority}\nТоп:\n• {name} — {description обрезать до 50 символов}\n\U0001F4CE Excel-файл с деталями приложен.\n\nШаг 3. Отправь эту сводку через send_message в Telegram.\nШаг 4. Отправь Excel через send_document в Telegram.\nШаг 5. Отправь email через send_report на alexstav1975@yandex.by, тема \"\U0001F4CA Авиационные лиды — {{.Date}}\", тело = та же сводка, вложение = Excel.\nШаг 6. Вызови mark_exported.\n\nСводка в TG и email ИДЕНТИЧНА. Ничего лишнего не добавляй.\n"
+    work_dir: .
+    tags:
+      - leads
+      - aviation
+      - delivery
+      - telegram
+    model: haiku
+    timeout: 15m
+    mcp_servers:
+      - database
+      - telegram
+      - email
+      - exportby
+    allowed_tools:
+      - mcp__database__query
+      - mcp__telegram__send_message
+      - mcp__telegram__send_document
+      - mcp__email__send_report
+      - mcp__exportby__mark_exported
+    max_turns: 25
+    permission_mode: bypassPermissions
 pipelines:
-    - name: review-fix
-      mode: sequential
-      steps:
-        - task: code-review
-        - task: code-fixer
-      max_iterations: 10
-      stop_signal: LGTM
-    - name: leads-to-ceo
-      mode: sequential
-      steps:
-        - task: find-leads
-        - task: compile-leads-excel
-        - task: deliver-leads-report
-      max_iterations: 1
-    - name: export-by-sync
-      mode: sequential
-      steps:
-        - task: sync-export-by-catalog
-      max_iterations: 1
-    - name: export-by-aviation-to-ceo
-      mode: sequential
-      steps:
-        - task: sync-export-by-catalog
-        - task: analyze-export-by-aviation
-        - task: compile-export-by-aviation-excel
-        - task: deliver-export-by-aviation-report
-      max_iterations: 1
-      stop_signal: 'НОВЫХ ЛИДОВ: 0'
+  - name: review-fix
+    mode: sequential
+    steps:
+      - task: code-review
+      - task: code-fixer
+    max_iterations: 10
+    stop_signal: LGTM
+  - name: leads-to-ceo
+    mode: sequential
+    steps:
+      - task: find-leads
+      - task: compile-leads-excel
+      - task: deliver-leads-report
+    max_iterations: 1
+  - name: export-by-sync
+    mode: sequential
+    steps:
+      - task: sync-export-by-catalog
+    max_iterations: 1
+  - name: export-by-aviation-to-ceo
+    mode: sequential
+    steps:
+      - task: sync-export-by-catalog
+      - task: analyze-export-by-aviation
+      - task: compile-export-by-aviation-excel
+      - task: deliver-export-by-aviation-report
+    max_iterations: 1
+    stop_signal: "НОВЫХ ЛИДОВ: 0"
 mcp_servers:
-    - name: database
-      command: ./bin/mcp-database
-    - name: excel
-      command: ./bin/mcp-excel
-    - name: email
-      command: ./bin/mcp-email
-    - name: telegram
-      command: ./bin/mcp-telegram
-    - name: filesystem
-      command: ./bin/mcp-filesystem
-    - name: exportby
-      command: ./bin/mcp-exportby
+  - name: database
+    command: ./bin/mcp-database
+  - name: excel
+    command: ./bin/mcp-excel
+  - name: email
+    command: ./bin/mcp-email
+  - name: telegram
+    command: ./bin/mcp-telegram
+  - name: filesystem
+    command: ./bin/mcp-filesystem
+  - name: exportby
+    command: ./bin/mcp-exportby
 domains:
-    export-by-aviation:
-        description: Лиды с export.by — белорусские экспортёры, нуждающиеся в авиаперевозке грузов. MCP-сервер exportby выполняет скрейпинг сайта и хранит сырые данные в raw_companies. Задача analyze оценивает aviation_priority на основе данных в БД без обращения к сайту.
-        data_dir: data/export-by-aviation
-        db: leads.db
-        schema: |-
-            CREATE TABLE IF NOT EXISTS companies (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              name TEXT NOT NULL,
-              url TEXT,
-              description TEXT,
-              products TEXT,
-              contact_info TEXT,
-              export_destinations TEXT,
-              needs_aviation INTEGER DEFAULT 0,
-              aviation_priority INTEGER DEFAULT 0,
-              found_date TEXT NOT NULL,
-              status TEXT DEFAULT 'new',
-              notes TEXT,
-              UNIQUE(name)
-            );
+  export-by-aviation:
+    description: Лиды с export.by — белорусские экспортёры, нуждающиеся в авиаперевозке грузов. MCP-сервер exportby выполняет скрейпинг сайта и хранит сырые данные в raw_companies. Задача analyze оценивает aviation_priority на основе данных в БД без обращения к сайту.
+    data_dir: data/export-by-aviation
+    db: leads.db
+    schema: |-
+      CREATE TABLE IF NOT EXISTS companies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        url TEXT,
+        description TEXT,
+        products TEXT,
+        contact_info TEXT,
+        export_destinations TEXT,
+        needs_aviation INTEGER DEFAULT 0,
+        aviation_priority INTEGER DEFAULT 0,
+        found_date TEXT NOT NULL,
+        status TEXT DEFAULT 'new',
+        notes TEXT,
+        UNIQUE(name)
+      );
 
-            CREATE TABLE IF NOT EXISTS scan_log (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              scanned_at TEXT NOT NULL,
-              pages_scanned INTEGER,
-              new_leads_found INTEGER,
-              notes TEXT
-            );
+      CREATE TABLE IF NOT EXISTS scan_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scanned_at TEXT NOT NULL,
+        pages_scanned INTEGER,
+        new_leads_found INTEGER,
+        notes TEXT
+      );
 
-            CREATE TABLE IF NOT EXISTS raw_companies (
-              id INTEGER PRIMARY KEY,
-              export_by_id INTEGER UNIQUE NOT NULL,
-              name TEXT NOT NULL,
-              description TEXT,
-              country TEXT,
-              logo TEXT,
-              products TEXT,
-              products_fetched INTEGER DEFAULT 0,
-              scraped_at TEXT NOT NULL,
-              updated_at TEXT
-            );
+      CREATE TABLE IF NOT EXISTS raw_companies (
+        id INTEGER PRIMARY KEY,
+        export_by_id INTEGER UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        country TEXT,
+        logo TEXT,
+        products TEXT,
+        products_fetched INTEGER DEFAULT 0,
+        scraped_at TEXT NOT NULL,
+        updated_at TEXT
+      );
 
-            CREATE TABLE IF NOT EXISTS scan_progress (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              last_page INTEGER NOT NULL,
-              total_pages INTEGER,
-              total_companies INTEGER,
-              companies_added INTEGER DEFAULT 0,
-              scanned_at TEXT NOT NULL
-            );
+      CREATE TABLE IF NOT EXISTS scan_progress (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        last_page INTEGER NOT NULL,
+        total_pages INTEGER,
+        total_companies INTEGER,
+        companies_added INTEGER DEFAULT 0,
+        scanned_at TEXT NOT NULL
+      );
 
-            CREATE TABLE IF NOT EXISTS rejected_companies (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              name TEXT UNIQUE NOT NULL,
-              reason TEXT,
-              rejected_at TEXT NOT NULL
-            );
-        domain_doc: DOMAIN.md
-        tasks:
-            - sync-export-by-catalog
-            - analyze-export-by-aviation
-            - compile-export-by-aviation-excel
-            - deliver-export-by-aviation-report
-        pipelines:
-            - export-by-aviation-to-ceo
-            - export-by-sync
-        agents:
-            - export-by-scraper
-        mcp_servers:
-            - database
-            - exportby
-            - excel
-            - email
-    leads:
-        description: B2B logistics leads for EAEU market
-        data_dir: data/leads
-        db: leads.db
-        schema: |
-            CREATE TABLE IF NOT EXISTS leads (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              name TEXT NOT NULL,
-              tax_id TEXT,
-              country TEXT,
-              industry TEXT,
-              city TEXT,
-              website TEXT,
-              contact_person TEXT,
-              contact_email TEXT,
-              contact_phone TEXT,
-              source_url TEXT,
-              status TEXT DEFAULT 'new',
-              notes TEXT,
-              raw_json TEXT,
-              found_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tax_id ON leads(tax_id) WHERE tax_id IS NOT NULL;
-            CREATE INDEX IF NOT EXISTS idx_leads_name ON leads(name);
-        domain_doc: DOMAIN.md
-        tasks:
-            - find-leads
-            - compile-leads-excel
-            - deliver-leads-report
-        pipelines:
-            - leads-to-ceo
-        agents:
-            - eaeu-logistics-lead-finder
-            - leads-report-compiler
-        mcp_servers:
-            - database
-            - excel
+      CREATE TABLE IF NOT EXISTS rejected_companies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        reason TEXT,
+        rejected_at TEXT NOT NULL
+      );
+    domain_doc: DOMAIN.md
+    tasks:
+      - sync-export-by-catalog
+      - analyze-export-by-aviation
+      - compile-export-by-aviation-excel
+      - deliver-export-by-aviation-report
+    pipelines:
+      - export-by-aviation-to-ceo
+      - export-by-sync
+    agents:
+      - export-by-scraper
+    mcp_servers:
+      - database
+      - exportby
+      - excel
+      - email
+  leads:
+    description: B2B logistics leads for EAEU market
+    data_dir: data/leads
+    db: leads.db
+    schema: |
+      CREATE TABLE IF NOT EXISTS leads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        tax_id TEXT,
+        country TEXT,
+        industry TEXT,
+        city TEXT,
+        website TEXT,
+        contact_person TEXT,
+        contact_email TEXT,
+        contact_phone TEXT,
+        source_url TEXT,
+        status TEXT DEFAULT 'new',
+        notes TEXT,
+        raw_json TEXT,
+        found_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tax_id ON leads(tax_id) WHERE tax_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_leads_name ON leads(name);
+    domain_doc: DOMAIN.md
+    tasks:
+      - find-leads
+      - compile-leads-excel
+      - deliver-leads-report
+    pipelines:
+      - leads-to-ceo
+    agents:
+      - eaeu-logistics-lead-finder
+      - leads-report-compiler
+    mcp_servers:
+      - database
+      - excel
 auth:
-    paseto_key: ""
-    users:
-        - username: admin
-          password: $2b$10$1WWjnBvMGpdunC9GlJOtM.yrwGuptF5/J65631hRz2vgCA/pYyZbO
+  paseto_key: ""
+  users:
+    - username: admin
+      password: $2b$10$1WWjnBvMGpdunC9GlJOtM.yrwGuptF5/J65631hRz2vgCA/pYyZbO
 server:
-    addr: :3580
-    data_dir: data
-    log_level: ""
-    log_file: logs/server.log
+  addr: :3580
+  data_dir: data
+  log_level: ""
+  log_file: logs/server.log

@@ -494,6 +494,7 @@ func handleGetUnanalyzed(args json.RawMessage) toolResult {
 
 	var companies []map[string]any
 	var autoRejected []string
+	autoRejectedReasons := make(map[string]string)
 	for rows.Next() {
 		var exportByID int
 		var name, country string
@@ -505,9 +506,17 @@ func handleGetUnanalyzed(args json.RawMessage) toolResult {
 			desc = description.String
 		}
 
+		// Auto-reject non-Belarusian companies
+		if country != "" && country != "BY" {
+			autoRejected = append(autoRejected, name)
+			autoRejectedReasons[name] = "auto:non_by_country"
+			continue
+		}
+
 		// Auto-reject obvious importers/service companies
 		if containsImporterKeyword(desc) {
 			autoRejected = append(autoRejected, name)
+			autoRejectedReasons[name] = "auto:importer_keyword"
 			continue
 		}
 
@@ -526,7 +535,11 @@ func handleGetUnanalyzed(args json.RawMessage) toolResult {
 	if len(autoRejected) > 0 {
 		now := time.Now().Format("2006-01-02 15:04:05")
 		for _, name := range autoRejected {
-			db.Exec(`INSERT OR IGNORE INTO rejected_companies (name, reason, rejected_at) VALUES (?, 'auto:importer_keyword', ?)`, name, now)
+			reason := autoRejectedReasons[name]
+			if reason == "" {
+				reason = "auto:importer_keyword"
+			}
+			db.Exec(`INSERT OR IGNORE INTO rejected_companies (name, reason, rejected_at) VALUES (?, ?, ?)`, name, reason, now)
 		}
 	}
 
