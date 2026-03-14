@@ -25,7 +25,7 @@ Requires Go 1.26+. The `claude` CLI must be on PATH (or set `claude_bin` in task
 
 ### Binaries
 
-- **`cmd/server`** — Main binary. HTTP server (REST API + embedded React SPA), scheduler, watcher. Supports `-run <task>` and `-pipeline <name>` for CLI mode.
+- **`cmd/server`** — Main binary. HTTP server (REST API + embedded React SPA), scheduler, watcher. Hot-reloads `tasks.yaml` on file changes (tasks, pipelines, schedules). Supports `-run <task>` and `-pipeline <name>` for CLI mode.
 - **`cmd/hook`** — Claude Code hook binary. Reads JSON from stdin, blocks dangerous commands, logs file edits.
 - **`cmd/mcp/*`** — MCP servers (JSON-RPC 2.0 stdio). Implemented: filesystem (CRUD + copy), excel (excelize), email (gomail SMTP), telegram (telebot), database (SQLite via domain system). Stubs: word, pdf, google.
 
@@ -38,8 +38,8 @@ Requires Go 1.26+. The `claude` CLI must be on PATH (or set `claude_bin` in task
 - **`subagent/`** — CRUD manager for `.claude/agents/*.md` files. Parses YAML frontmatter + markdown. Generates `--agents` JSON for task runner.
 - **`mcpmanager/`** — Process lifecycle for MCP servers (lazy start, SIGTERM/SIGKILL shutdown, health). Generates `--mcp-config` temp files.
 - **`runguard/`** — Concurrency guard: prevents overlapping runs of tasks/pipelines when `allow_concurrent: false`. Shared across scheduler, watcher, and API.
-- **`scheduler/`** — Cron scheduler with pause/resume per task and pipeline.
-- **`watcher/`** — fsnotify file watcher with extension filtering and debounce.
+- **`scheduler/`** — Cron scheduler with pause/resume per task and pipeline. Supports `Reset()` for hot reload.
+- **`watcher/`** — fsnotify file watcher with extension filtering and debounce. Supports `Reset()` for hot reload.
 - **`events/`** — Pub/sub event bus for decoupling task completion from logging/SSE.
 - **`auth/`** — PASETO v4.local tokens + bearer token fallback + HTTP middleware.
 - **`store/sqlite/`** — SQLite storage for execution history and users (pure Go, no CGo).

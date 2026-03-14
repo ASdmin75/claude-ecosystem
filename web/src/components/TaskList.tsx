@@ -272,6 +272,18 @@ function TaskEditor({ task, isNew, onChange, onSave, onCancel, saving }: {
               className={inputClass}
             />
           </Field>
+
+          <Field label="Concurrency">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={task.allow_concurrent !== false}
+                onChange={(e) => set('allow_concurrent', e.target.checked ? undefined : false)}
+                className="rounded border-gray-300 dark:border-gray-600"
+              />
+              Allow concurrent runs
+            </label>
+          </Field>
         </div>
 
         <Field label="Tags (comma-separated)">

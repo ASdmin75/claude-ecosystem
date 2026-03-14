@@ -534,6 +534,23 @@ pipelines:
       - task: step-two
 ```
 
+### 2026-03-14 — UI: allow_concurrent + Hot reload конфига
+
+**UI: настройка allow_concurrent**
+- Добавлено поле `allow_concurrent?: boolean` в TypeScript-интерфейсы `Task` и `Pipeline` (`web/src/types/index.ts`)
+- Чекбокс "Allow concurrent runs" в `TaskEditor` (сетка настроек, рядом с Max Budget)
+- Чекбокс "Allow concurrent runs" в `PipelineEditor` (после поля Schedule)
+- Логика: включен по умолчанию (соответствует бэкенду где `nil` = `true`); при снятии галочки отправляется `allow_concurrent: false`; при установке — поле убирается из JSON (`undefined`)
+
+**Hot reload tasks.yaml**
+- `internal/scheduler/scheduler.go`: новый метод `Reset()` — останавливает текущий cron, создаёт новый, запускает; pause-состояния сохраняются
+- `internal/watcher/watcher.go`: новый метод `Reset()` — очищает список задач и убирает все fsnotify-watch'и
+- `cmd/server/main.go`: новая горутина `watchConfigFile()` — следит за директорией конфиг-файла через fsnotify, фильтрует по имени файла, debounce 1 секунда
+- `cmd/server/main.go`: функция `reloadConfig()` — перечитывает `tasks.yaml` через `config.Load()` (с валидацией), обновляет `cfg.Tasks` и `cfg.Pipelines` на shared pointer, пересоздаёт scheduler (все cron-задачи и пайплайны перерегистрируются), пересоздаёт watcher (все file-watch задачи перерегистрируются)
+- Публикуется SSE-событие `config.reloaded` с количеством задач и пайплайнов
+- Следит за директорией (не за файлом) для корректной работы со стратегиями сохранения редакторов (vim: write-rename)
+- Изменения через API (`POST /tasks`, `PUT /tasks/:name`) автоматически подхватываются: API сохраняет на диск → fsnotify → reload → scheduler/watcher обновлены
+
 ---
 
 ## Бэклог
@@ -560,7 +577,8 @@ pipelines:
 - [ ] Детальный просмотр execution с SSE-стримингом (live output)
 - [x] Редактирование задач через UI (CSV-поля исправлены)
 - [x] Удаление execution записей (с подтверждением)
-- [ ] Конфигурация scheduler/watcher через UI
+- [x] Конфигурация allow_concurrent через UI (чекбокс в TaskEditor и PipelineEditor)
+- [x] Hot reload tasks.yaml (fsnotify + debounce → scheduler/watcher перерегистрация)
 - [ ] Управление MCP-серверами через UI
 - [x] Тёмная тема
 

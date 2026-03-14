@@ -196,3 +196,14 @@ func (s *Scheduler) Stop() {
 	ctx := s.cron.Stop()
 	<-ctx.Done()
 }
+
+// Reset stops the current cron scheduler, creates a fresh one, and starts it.
+// Callers must re-register all tasks and pipelines after calling Reset.
+// Pause states are preserved.
+func (s *Scheduler) Reset() {
+	stopCtx := s.cron.Stop()
+	<-stopCtx.Done()
+
+	s.cron = cron.New()
+	s.cron.Start()
+}

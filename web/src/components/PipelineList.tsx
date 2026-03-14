@@ -260,6 +260,18 @@ function PipelineEditor({ pipeline, isNew, onChange, onSave, onCancel, saving }:
           />
         </Field>
 
+        <Field label="Concurrency">
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={pipeline.allow_concurrent !== false}
+              onChange={(e) => set('allow_concurrent', e.target.checked ? undefined : false)}
+              className="rounded border-gray-300 dark:border-gray-600"
+            />
+            Allow concurrent runs
+          </label>
+        </Field>
+
         <div className="flex gap-2 pt-2">
           <button
             type="submit"

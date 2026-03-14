@@ -29,6 +29,7 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
 	"github.com/asdmin/claude-ecosystem/internal/task"
 	"github.com/asdmin/claude-ecosystem/internal/watcher"
+	"github.com/fsnotify/fsnotify"
 )
 
 func main() {
@@ -250,6 +251,9 @@ func main() {
 		}
 	}()
 
+	// Watch config file for hot reload
+	go watchConfigFile(cfg, sched, w, apiServer, bus, logger)
+
 	// Wait for shutdown signal
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -265,6 +269,116 @@ func main() {
 	}
 
 	bus.Wait()
+}
+
+// watchConfigFile monitors the config file for changes and triggers a hot reload.
+// It watches the parent directory to survive file renames (editor save strategies).
+func watchConfigFile(cfg *config.Config, sched *scheduler.Scheduler, w *watcher.Watcher, apiServer *api.Server, bus *events.Bus, logger *slog.Logger) {
+	absPath, err := filepath.Abs(cfg.FilePath)
+	if err != nil {
+		logger.Error("failed to resolve config file path", "error", err)
+		return
+	}
+
+	fsw, err := fsnotify.NewWatcher()
+	if err != nil {
+		logger.Error("failed to create config file watcher", "error", err)
+		return
+	}
+	defer fsw.Close()
+
+	dir := filepath.Dir(absPath)
+	base := filepath.Base(absPath)
+	if err := fsw.Add(dir); err != nil {
+		logger.Error("failed to watch config directory", "path", dir, "error", err)
+		return
+	}
+
+	logger.Info("watching config file for hot reload", "path", absPath)
+
+	var debounceTimer *time.Timer
+	for {
+		select {
+		case event, ok := <-fsw.Events:
+			if !ok {
+				return
+			}
+			if filepath.Base(event.Name) != base {
+				continue
+			}
+			if event.Op&(fsnotify.Write|fsnotify.Create) == 0 {
+				continue
+			}
+
+			// Debounce: wait for writes to settle (editors may do multiple writes)
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
+			debounceTimer = time.AfterFunc(time.Second, func() {
+				reloadConfig(cfg, sched, w, apiServer, bus, logger)
+			})
+
+		case err, ok := <-fsw.Errors:
+			if !ok {
+				return
+			}
+			logger.Error("config watcher error", "error", err)
+		}
+	}
+}
+
+// reloadConfig re-reads the config file and re-registers tasks/pipelines
+// in the scheduler and watcher.
+func reloadConfig(cfg *config.Config, sched *scheduler.Scheduler, w *watcher.Watcher, apiServer *api.Server, bus *events.Bus, logger *slog.Logger) {
+	newCfg, err := config.Load(cfg.FilePath)
+	if err != nil {
+		logger.Error("config reload failed", "error", err)
+		return
+	}
+
+	// Update shared config (tasks and pipelines only).
+	cfg.Tasks = newCfg.Tasks
+	cfg.Pipelines = newCfg.Pipelines
+
+	// Reset and re-register scheduler.
+	sched.Reset()
+	for _, t := range cfg.Tasks {
+		if t.Schedule != "" {
+			if err := sched.Register(t); err != nil {
+				logger.Error("reload: failed to register scheduled task", "task", t.Name, "error", err)
+			}
+		}
+	}
+	for _, p := range cfg.Pipelines {
+		if p.Schedule != "" {
+			pName := p.Name
+			if err := sched.RegisterPipeline(p, func(ctx context.Context) {
+				apiServer.RunPipelineByName(ctx, pName, "schedule")
+			}); err != nil {
+				logger.Error("reload: failed to register scheduled pipeline", "pipeline", p.Name, "error", err)
+			}
+		}
+	}
+
+	// Reset and re-register watcher.
+	w.Reset()
+	for _, t := range cfg.Tasks {
+		if t.Watch != nil {
+			if err := w.Register(t); err != nil {
+				logger.Error("reload: failed to register watcher task", "task", t.Name, "error", err)
+			}
+		}
+	}
+
+	bus.Publish(events.Event{
+		Type: "config.reloaded",
+		Payload: map[string]string{
+			"tasks":     fmt.Sprintf("%d", len(cfg.Tasks)),
+			"pipelines": fmt.Sprintf("%d", len(cfg.Pipelines)),
+		},
+	})
+
+	logger.Info("config reloaded", "tasks", len(cfg.Tasks), "pipelines", len(cfg.Pipelines))
 }
 
 // parseLogLevel converts a string log level name to slog.Level.

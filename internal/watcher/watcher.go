@@ -206,6 +206,18 @@ func (w *Watcher) Close() error {
 	return err
 }
 
+// Reset removes all watched paths and clears registered tasks.
+// Callers must re-register tasks after calling Reset.
+func (w *Watcher) Reset() {
+	w.mu.Lock()
+	w.tasks = nil
+	w.mu.Unlock()
+
+	for _, path := range w.fsw.WatchList() {
+		_ = w.fsw.Remove(path)
+	}
+}
+
 func matchesExtensions(file string, exts []string) bool {
 	if len(exts) == 0 {
 		return true

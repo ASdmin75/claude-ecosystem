@@ -31,6 +31,7 @@ export interface Task {
   max_budget_usd?: number
   output_format?: string
   permission_mode?: string
+  allow_concurrent?: boolean
   notify?: NotifyConfig
 }
 
@@ -56,6 +57,7 @@ export interface Pipeline {
   stop_signal?: string
   collector?: string
   schedule?: string
+  allow_concurrent?: boolean
 }
 
 export interface Execution {
