@@ -270,6 +270,14 @@ func (s *Server) handleRunPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !p.ConcurrentAllowed() {
+		if !s.guard.TryAcquire("pipeline:" + p.Name) {
+			writeError(w, http.StatusConflict, "pipeline is already running: "+p.Name)
+			return
+		}
+		defer s.guard.Release("pipeline:" + p.Name)
+	}
+
 	execID := uuid.New().String()
 	now := time.Now().UTC()
 
@@ -329,6 +337,13 @@ func (s *Server) handleRunPipelineAsync(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if !p.ConcurrentAllowed() {
+		if !s.guard.TryAcquire("pipeline:" + p.Name) {
+			writeError(w, http.StatusConflict, "pipeline is already running: "+p.Name)
+			return
+		}
+	}
+
 	execID := uuid.New().String()
 	now := time.Now().UTC()
 
@@ -341,6 +356,9 @@ func (s *Server) handleRunPipelineAsync(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := s.store.CreateExecution(r.Context(), exec); err != nil {
 		s.logger.Error("failed to create pipeline execution record", "error", err)
+		if !p.ConcurrentAllowed() {
+			s.guard.Release("pipeline:" + p.Name)
+		}
 		writeError(w, http.StatusInternalServerError, "failed to create execution record")
 		return
 	}
@@ -353,7 +371,12 @@ func (s *Server) handleRunPipelineAsync(w http.ResponseWriter, r *http.Request) 
 		},
 	})
 
+	pipelineName := p.Name
+	concurrentAllowed := p.ConcurrentAllowed()
 	go func() {
+		if !concurrentAllowed {
+			defer s.guard.Release("pipeline:" + pipelineName)
+		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -389,13 +412,21 @@ func (s *Server) handleRunPipelineAsync(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// RunPipelineByName runs a pipeline asynchronously with the given trigger label.
-// It creates the execution record, publishes events, and runs in a goroutine.
+// RunPipelineByName runs a pipeline with the given trigger label.
+// It creates the execution record, publishes events, and runs synchronously.
 func (s *Server) RunPipelineByName(ctx context.Context, name string, trigger string) {
 	p := s.findPipeline(name)
 	if p == nil {
 		s.logger.Error("scheduled pipeline not found", "pipeline", name)
 		return
+	}
+
+	if !p.ConcurrentAllowed() {
+		if !s.guard.TryAcquire("pipeline:" + p.Name) {
+			s.logger.Info("pipeline is already running, skipping", "pipeline", p.Name, "trigger", trigger)
+			return
+		}
+		defer s.guard.Release("pipeline:" + p.Name)
 	}
 
 	execID := uuid.New().String()

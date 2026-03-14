@@ -11,6 +11,7 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/domain"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
+	"github.com/asdmin/claude-ecosystem/internal/runguard"
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
 	"github.com/asdmin/claude-ecosystem/internal/task"
 	"github.com/robfig/cron/v3"
@@ -23,6 +24,7 @@ type Scheduler struct {
 	mcpMgr    *mcpmanager.Manager
 	domainMgr *domain.Manager
 	bus       *events.Bus
+	guard     *runguard.Guard
 	logger    *slog.Logger
 	ctxMu     sync.RWMutex
 	runCtx    context.Context
@@ -30,7 +32,7 @@ type Scheduler struct {
 	paused    map[string]bool
 }
 
-func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus, logger *slog.Logger) *Scheduler {
+func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus, guard *runguard.Guard, logger *slog.Logger) *Scheduler {
 	return &Scheduler{
 		cron:      cron.New(),
 		runner:    runner,
@@ -38,6 +40,7 @@ func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manag
 		mcpMgr:    mcpMgr,
 		domainMgr: domainMgr,
 		bus:       bus,
+		guard:     guard,
 		logger:    logger,
 		runCtx:    context.Background(),
 		paused:    make(map[string]bool),
@@ -53,6 +56,14 @@ func (s *Scheduler) Register(t config.Task) error {
 		if s.IsPaused(t.Name) {
 			s.logger.Info("scheduled task is paused, skipping", "task", t.Name)
 			return
+		}
+
+		if !t.ConcurrentAllowed() {
+			if !s.guard.TryAcquire("task:" + t.Name) {
+				s.logger.Info("scheduled task is already running, skipping", "task", t.Name)
+				return
+			}
+			defer s.guard.Release("task:" + t.Name)
 		}
 
 		s.logger.Info("scheduled task starting", "task", t.Name)
@@ -114,6 +125,14 @@ func (s *Scheduler) RegisterPipeline(p config.Pipeline, runFn func(ctx context.C
 		if s.IsPaused(p.Name) {
 			s.logger.Info("scheduled pipeline is paused, skipping", "pipeline", p.Name)
 			return
+		}
+
+		if !p.ConcurrentAllowed() {
+			if !s.guard.TryAcquire("pipeline:" + p.Name) {
+				s.logger.Info("scheduled pipeline is already running, skipping", "pipeline", p.Name)
+				return
+			}
+			defer s.guard.Release("pipeline:" + p.Name)
 		}
 
 		s.logger.Info("scheduled pipeline starting", "pipeline", p.Name)

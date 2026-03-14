@@ -138,6 +138,14 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !t.ConcurrentAllowed() {
+		if !s.guard.TryAcquire("task:" + t.Name) {
+			writeError(w, http.StatusConflict, "task is already running: "+t.Name)
+			return
+		}
+		defer s.guard.Release("task:" + t.Name)
+	}
+
 	var req runTaskRequest
 	// Body is optional; ignore decode errors for empty bodies.
 	_ = readJSON(r, &req)
@@ -237,6 +245,13 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !t.ConcurrentAllowed() {
+		if !s.guard.TryAcquire("task:" + t.Name) {
+			writeError(w, http.StatusConflict, "task is already running: "+t.Name)
+			return
+		}
+	}
+
 	var req runTaskRequest
 	_ = readJSON(r, &req)
 
@@ -253,6 +268,9 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CreateExecution(r.Context(), exec); err != nil {
 		s.logger.Error("failed to create execution record", "error", err)
+		if !t.ConcurrentAllowed() {
+			s.guard.Release("task:" + t.Name)
+		}
 		writeError(w, http.StatusInternalServerError, "failed to create execution record")
 		return
 	}
@@ -261,6 +279,9 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 	asyncOpts, asyncCleanup, asyncResolveErr := task.ResolveRunOptions(*t, s.subagentMgr, s.mcpMgr, s.domainMgr)
 	if asyncResolveErr != nil {
 		s.logger.Error("failed to resolve run options", "task", t.Name, "error", asyncResolveErr)
+		if !t.ConcurrentAllowed() {
+			s.guard.Release("task:" + t.Name)
+		}
 		writeError(w, http.StatusInternalServerError, "failed to resolve run options: "+asyncResolveErr.Error())
 		return
 	}
@@ -277,6 +298,9 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 	taskCopy := *t
 	templateVars := req.TemplateVars
 	go func() {
+		if !taskCopy.ConcurrentAllowed() {
+			defer s.guard.Release("task:" + taskCopy.Name)
+		}
 		if asyncCleanup != nil {
 			defer asyncCleanup()
 		}

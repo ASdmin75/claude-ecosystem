@@ -8,12 +8,22 @@ type Pipeline struct {
 	MaxIterations int            `yaml:"max_iterations" json:"max_iterations"`
 	StopSignal    string         `yaml:"stop_signal,omitempty" json:"stop_signal,omitempty"`
 	Collector     string         `yaml:"collector,omitempty" json:"collector,omitempty"`
-	Schedule      string         `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	Schedule        string         `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	AllowConcurrent *bool          `yaml:"allow_concurrent,omitempty" json:"allow_concurrent,omitempty"`
 }
 
 // PipelineStep references a task by name.
 type PipelineStep struct {
 	Task string `yaml:"task" json:"task"`
+}
+
+// ConcurrentAllowed reports whether concurrent runs of this pipeline are permitted.
+// Defaults to true when AllowConcurrent is not explicitly set.
+func (p Pipeline) ConcurrentAllowed() bool {
+	if p.AllowConcurrent == nil {
+		return true
+	}
+	return *p.AllowConcurrent
 }
 
 // MaxIter returns MaxIterations with a default of 10.

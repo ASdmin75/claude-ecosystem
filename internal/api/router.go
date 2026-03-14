@@ -14,6 +14,7 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/domain"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
+	"github.com/asdmin/claude-ecosystem/internal/runguard"
 	"github.com/asdmin/claude-ecosystem/internal/store"
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
 	"github.com/asdmin/claude-ecosystem/internal/task"
@@ -35,6 +36,7 @@ type Server struct {
 	bus         *events.Bus
 	logger      *slog.Logger
 	cancels     sync.Map // map[executionID]context.CancelFunc
+	guard       *runguard.Guard
 	wizardGen   *wizard.Generator
 	wizardStore *wizard.PlanStore
 }
@@ -51,6 +53,7 @@ func NewServer(
 	authMw *auth.Middleware,
 	paseto *auth.PASETOManager,
 	bus *events.Bus,
+	guard *runguard.Guard,
 	logger *slog.Logger,
 ) *Server {
 	s := &Server{
@@ -64,6 +67,7 @@ func NewServer(
 		authMw:      authMw,
 		paseto:      paseto,
 		bus:         bus,
+		guard:       guard,
 		logger:      logger,
 	}
 	s.wizardGen = wizard.NewGenerator(taskRunner, logger)

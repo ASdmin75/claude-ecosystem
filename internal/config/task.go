@@ -30,6 +30,7 @@ type Task struct {
 	MaxBudgetUSD       float64       `yaml:"max_budget_usd,omitempty" json:"max_budget_usd,omitempty"`
 	OutputFormat       string        `yaml:"output_format,omitempty" json:"output_format,omitempty"`
 	PermissionMode     string        `yaml:"permission_mode,omitempty" json:"permission_mode,omitempty"`
+	AllowConcurrent    *bool         `yaml:"allow_concurrent,omitempty" json:"allow_concurrent,omitempty"`
 	Notify             *NotifyConfig `yaml:"notify,omitempty" json:"notify,omitempty"`
 }
 
@@ -59,6 +60,15 @@ func (n *NotifyConfig) ShouldNotify(status string) bool {
 	default:
 		return true
 	}
+}
+
+// ConcurrentAllowed reports whether concurrent runs of this task are permitted.
+// Defaults to true when AllowConcurrent is not explicitly set.
+func (t Task) ConcurrentAllowed() bool {
+	if t.AllowConcurrent == nil {
+		return true
+	}
+	return *t.AllowConcurrent
 }
 
 // ParsedTimeout returns the task timeout as a time.Duration.

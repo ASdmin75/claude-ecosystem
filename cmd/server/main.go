@@ -22,6 +22,7 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
 	"github.com/asdmin/claude-ecosystem/internal/notify"
 	"github.com/asdmin/claude-ecosystem/internal/pipeline"
+	"github.com/asdmin/claude-ecosystem/internal/runguard"
 	"github.com/asdmin/claude-ecosystem/internal/scheduler"
 	"github.com/asdmin/claude-ecosystem/internal/store"
 	"github.com/asdmin/claude-ecosystem/internal/store/sqlite"
@@ -185,9 +186,12 @@ func main() {
 	bearerAuth := auth.NewBearerAuth(cfg.Auth.BearerTokens)
 	authMw := auth.NewMiddleware(pasetoMgr, bearerAuth)
 
+	// Initialize concurrency guard (shared across scheduler, watcher, and API)
+	guard := runguard.New()
+
 	// Initialize scheduler and watcher
-	sched := scheduler.New(taskRunner, subagentMgr, mcpMgr, domainMgr, bus, logger)
-	w, err := watcher.New(taskRunner, subagentMgr, mcpMgr, domainMgr, bus, logger)
+	sched := scheduler.New(taskRunner, subagentMgr, mcpMgr, domainMgr, bus, guard, logger)
+	w, err := watcher.New(taskRunner, subagentMgr, mcpMgr, domainMgr, bus, guard, logger)
 	if err != nil {
 		logger.Error("failed to create watcher", "error", err)
 		os.Exit(1)
@@ -211,7 +215,7 @@ func main() {
 	apiServer := api.NewServer(
 		cfg, taskRunner, subagentMgr, mcpMgr, domainMgr,
 		db, db, authMw, pasetoMgr,
-		bus, logger,
+		bus, guard, logger,
 	)
 
 	// Register pipeline schedules (needs apiServer for execution logic)

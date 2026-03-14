@@ -12,6 +12,7 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/domain"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
+	"github.com/asdmin/claude-ecosystem/internal/runguard"
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
 	"github.com/asdmin/claude-ecosystem/internal/task"
 	"github.com/fsnotify/fsnotify"
@@ -26,6 +27,7 @@ type Watcher struct {
 	mcpMgr    *mcpmanager.Manager
 	domainMgr *domain.Manager
 	bus       *events.Bus
+	guard     *runguard.Guard
 	logger    *slog.Logger
 	mu        sync.RWMutex
 	tasks     []config.Task
@@ -33,7 +35,7 @@ type Watcher struct {
 	wg        sync.WaitGroup // tracks in-flight task goroutines
 }
 
-func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus, logger *slog.Logger) (*Watcher, error) {
+func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus, guard *runguard.Guard, logger *slog.Logger) (*Watcher, error) {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -45,6 +47,7 @@ func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr *mcpmanager.Manag
 		mcpMgr:    mcpMgr,
 		domainMgr: domainMgr,
 		bus:       bus,
+		guard:     guard,
 		logger:    logger,
 		sem:       make(chan struct{}, maxConcurrentTasks),
 	}, nil
@@ -118,10 +121,20 @@ func (w *Watcher) Start(ctx context.Context) {
 
 				w.logger.Info("file change detected, running task", "task", t.Name, "file", event.Name)
 
+				if !t.ConcurrentAllowed() {
+					if !w.guard.TryAcquire("task:" + t.Name) {
+						w.logger.Info("watched task is already running, skipping", "task", t.Name)
+						continue
+					}
+				}
+
 				// Acquire semaphore to limit concurrency
 				select {
 				case w.sem <- struct{}{}:
 				case <-ctx.Done():
+					if !t.ConcurrentAllowed() {
+						w.guard.Release("task:" + t.Name)
+					}
 					return
 				}
 
@@ -129,6 +142,9 @@ func (w *Watcher) Start(ctx context.Context) {
 				go func(t config.Task, file string) {
 					defer w.wg.Done()
 					defer func() { <-w.sem }()
+					if !t.ConcurrentAllowed() {
+						defer w.guard.Release("task:" + t.Name)
+					}
 
 					opts, cleanup, err := task.ResolveRunOptions(t, w.subMgr, w.mcpMgr, w.domainMgr)
 					if err != nil {

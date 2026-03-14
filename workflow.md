@@ -483,6 +483,57 @@ pipelines:
     schedule: "0 9 * * 1-5"   # каждый будний день в 9:00
 ```
 
+### 2026-03-14 — Защита от параллельного запуска (allow_concurrent)
+
+**Проблема:** при cron-расписании с коротким интервалом или ручном запуске задача/пайплайн могли запускаться повторно, пока предыдущий экземпляр ещё выполняется. Это приводило к двойной работе, конфликтам в БД и дублированию отчётов.
+
+**Решение: флаг `allow_concurrent`**
+
+Новое опциональное поле `allow_concurrent` (bool) для задач и пайплайнов. По умолчанию `true` (обратная совместимость). При `allow_concurrent: false` повторный запуск блокируется, если предыдущий ещё выполняется.
+
+**Изменения:**
+
+**Конфигурация (`internal/config/`):**
+- `task.go`: новое поле `AllowConcurrent *bool` + метод `ConcurrentAllowed()` (default true)
+- `pipeline.go`: аналогичное поле и метод
+
+**Новый пакет `internal/runguard/`:**
+- Mutex-based guard для отслеживания запущенных задач/пайплайнов
+- `TryAcquire(name)` / `Release(name)` — атомарная проверка и блокировка
+- Единый экземпляр `Guard` разделяется между scheduler, watcher и API
+- Namespace ключей: `task:<name>`, `pipeline:<name>` — исключает коллизии
+
+**Scheduler (`internal/scheduler/`):**
+- Cron-запуск проверяет guard перед выполнением: если задача/пайплайн уже запущены — пропускает с логом `"already running, skipping"`
+
+**API (`internal/api/`):**
+- `POST /tasks/:name/run` и `/run-async`: возвращают `409 Conflict` с сообщением `"task is already running"` при попытке параллельного запуска
+- `POST /pipelines/:name/run` и `/run-async`: аналогично для пайплайнов
+- `RunPipelineByName()` (вызов из scheduler): пропускает с логом
+
+**Watcher (`internal/watcher/`):**
+- При file-change проверяет guard: если задача уже выполняется — пропускает
+
+**Wiring (`cmd/server/main.go`):**
+- Создание `runguard.New()` и передача в scheduler, watcher и API server
+
+**Использование в `tasks.yaml`:**
+```yaml
+tasks:
+  - name: long-running-task
+    prompt: "..."
+    allow_concurrent: false
+    schedule: "*/5 * * * *"
+
+pipelines:
+  - name: daily-pipeline
+    allow_concurrent: false
+    schedule: "0 9 * * 1-5"
+    steps:
+      - task: step-one
+      - task: step-two
+```
+
 ---
 
 ## Бэклог

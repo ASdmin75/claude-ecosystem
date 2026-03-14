@@ -21,7 +21,6 @@ tasks:
         introduced by the fixes. Do not repeat issues that have already been fixed.
         {{end}}
       work_dir: .
-      schedule: 0 9 * * 1-5
       tags:
         - review
         - quality
@@ -47,7 +46,6 @@ tasks:
         Use table-driven tests where appropriate.
         Only output the test code, no explanations.
       work_dir: .
-      schedule: 0 12 * * 1-5
       tags:
         - tests
     - name: on-save-lint
@@ -70,7 +68,6 @@ tasks:
         Find all TODO, FIXME, HACK comments in the codebase.
         Categorize by priority and suggest an action plan.
       work_dir: .
-      schedule: 0 */4 * * *
       tags:
         - tracking
     - name: find-new-eaeu-logistics-lead
