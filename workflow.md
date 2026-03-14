@@ -534,6 +534,16 @@ pipelines:
       - task: step-two
 ```
 
+### 2026-03-14 — Исправление cron-запуска пайплайнов с allow_concurrent: false
+
+**Проблема:** пайплайн `export-by-aviation-to-ceo` с `allow_concurrent: false` и cron-расписанием `*/15 * * * *` никогда не выполнялся. В логах: `"scheduled pipeline starting"` → `"pipeline is already running, skipping"` — при каждом срабатывании cron.
+
+**Причина:** двойной `TryAcquire` на один и тот же ключ `"pipeline:<name>"`. Guard (runguard) не реентерабельный (`map[string]bool`):
+1. `scheduler.RegisterPipeline()` захватывал guard в cron-callback
+2. Вызывал `RunPipelineByName()`, которая пыталась захватить тот же guard повторно → всегда `false` → skip
+
+**Фикс:** убран guard из `RegisterPipeline` в `internal/scheduler/scheduler.go` — он избыточен, т.к. `RunPipelineByName` (в `internal/api/pipelines.go`) уже самостоятельно управляет concurrency guard. Для задач (tasks) проблемы не было: guard только в scheduler, `runner.Run()` его не дублирует.
+
 ### 2026-03-14 — UI: allow_concurrent + Hot reload конфига
 
 **UI: настройка allow_concurrent**

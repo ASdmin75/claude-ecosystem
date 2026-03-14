@@ -127,14 +127,6 @@ func (s *Scheduler) RegisterPipeline(p config.Pipeline, runFn func(ctx context.C
 			return
 		}
 
-		if !p.ConcurrentAllowed() {
-			if !s.guard.TryAcquire("pipeline:" + p.Name) {
-				s.logger.Info("scheduled pipeline is already running, skipping", "pipeline", p.Name)
-				return
-			}
-			defer s.guard.Release("pipeline:" + p.Name)
-		}
-
 		s.logger.Info("scheduled pipeline starting", "pipeline", p.Name)
 
 		s.ctxMu.RLock()
