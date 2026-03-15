@@ -561,6 +561,30 @@ pipelines:
 - Следит за директорией (не за файлом) для корректной работы со стратегиями сохранения редакторов (vim: write-rename)
 - Изменения через API (`POST /tasks`, `PUT /tasks/:name`) автоматически подхватываются: API сохраняет на диск → fsnotify → reload → scheduler/watcher обновлены
 
+### 2026-03-15 — Дедупликация по export_by_id + SSE reconnect + оптимизация промпта
+
+**Дедупликация компаний по export_by_id (mcp-exportby)**
+- Баг: дедупликация лидов в `get_unanalyzed` работала только по имени компании (`r.name = c.name`). Если компания меняла название на export.by, она обрабатывалась повторно
+- Фикс: добавлено поле `export_by_id INTEGER` в таблицу `companies` (миграция через `ALTER TABLE`)
+- `get_unanalyzed`: JOIN расширен до `r.name = c.name OR r.export_by_id = c.export_by_id` — дедупликация и по имени, и по ID каталога
+- Счётчик `totalUnanalyzed` использует тот же расширенный JOIN
+- Промпт `process-export-by-leads`: INSERT включает `export_by_id` из ответа `get_unanalyzed`
+- Схема домена `export-by-aviation` в `tasks.yaml`: добавлено поле `export_by_id INTEGER`
+
+**SSE: обновление данных при reconnect и возврате на вкладку (useSSE.ts)**
+- Баг: при разрыве SSE-соединения (потеря сети, спящий режим) события терялись — UI показывал устаревшие данные до следующего события
+- Фикс 1: при reconnect (если `wasConnected = true`) — автоматическая инвалидация кешей `executions` и `dashboard`
+- Фикс 2: `visibilitychange` listener — при возврате на вкладку браузера инвалидируются кеши (ловит случаи когда вкладка была неактивна)
+- Рефакторинг: `invalidateAll()` вынесен в `useCallback` для переиспользования
+
+**Оптимизация промпта process-export-by-leads**
+- Ранний выход: шаг 1 одновременно запрашивает `get_pending_count` и `get_unanalyzed(limit=1)` — если pending < 15 и unanalyzed = 0, завершается сразу без лишних tool calls
+- Точность имён: добавлена инструкция сохранять name точно как в `get_unanalyzed` (не сокращать «Открытое акционерное общество» до «ОАО»)
+- Нумерация шагов выровнена (убрана путаница 3→4)
+
+**Убрано cron-расписание пайплайна export-by-aviation-to-ceo**
+- Удалён `schedule: '*/15 * * * *'` — пайплайн запускается вручную или по необходимости
+
 ---
 
 ## Бэклог

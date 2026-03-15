@@ -13,6 +13,12 @@ export function useSSE(onEvent?: SSEHandler) {
   const esRef = useRef<EventSource | null>(null)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const reconnectDelay = useRef(1000)
+  const wasConnected = useRef(false)
+
+  const invalidateAll = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['executions'] })
+    queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+  }, [queryClient])
 
   const connect = useCallback(() => {
     const token = localStorage.getItem('token')
@@ -41,8 +47,7 @@ export function useSSE(onEvent?: SSEHandler) {
         const evt: SSEEvent = { type, data }
 
         // Invalidate relevant queries on any event
-        queryClient.invalidateQueries({ queryKey: ['executions'] })
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+        invalidateAll()
 
         if (data.execution_id) {
           queryClient.invalidateQueries({ queryKey: ['execution', data.execution_id] })
@@ -53,6 +58,11 @@ export function useSSE(onEvent?: SSEHandler) {
     }
 
     es.onopen = () => {
+      // On reconnect, refresh data to catch events missed during disconnection
+      if (wasConnected.current) {
+        invalidateAll()
+      }
+      wasConnected.current = true
       reconnectDelay.current = 1000
     }
 
@@ -65,13 +75,23 @@ export function useSSE(onEvent?: SSEHandler) {
       }, reconnectDelay.current)
       reconnectDelay.current = Math.min(reconnectDelay.current * 2, 30000)
     }
-  }, [queryClient, onEvent])
+  }, [queryClient, onEvent, invalidateAll])
 
   useEffect(() => {
     connect()
+
+    // Refresh data when tab becomes visible (SSE events may have been missed)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        invalidateAll()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+
     return () => {
       esRef.current?.close()
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
+      document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [connect])
+  }, [connect, invalidateAll])
 }

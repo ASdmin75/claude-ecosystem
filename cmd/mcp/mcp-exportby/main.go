@@ -283,6 +283,9 @@ func ensureSchema() error {
 	// Migration: add sent_at column to companies table (ignore error if already exists)
 	db.Exec(`ALTER TABLE companies ADD COLUMN sent_at TEXT`)
 
+	// Migration: add export_by_id column to companies table for deduplication
+	db.Exec(`ALTER TABLE companies ADD COLUMN export_by_id INTEGER`)
+
 	return nil
 }
 
@@ -509,7 +512,7 @@ func handleGetUnanalyzed(args json.RawMessage) toolResult {
 	rows, err := db.Query(`
 		SELECT MIN(r.export_by_id) AS export_by_id, r.name, r.description, r.country
 		FROM raw_companies r
-		LEFT JOIN companies c ON r.name = c.name
+		LEFT JOIN companies c ON r.name = c.name OR r.export_by_id = c.export_by_id
 		LEFT JOIN rejected_companies rej ON r.name = rej.name
 		WHERE c.id IS NULL AND rej.id IS NULL
 		GROUP BY r.name
@@ -576,7 +579,7 @@ func handleGetUnanalyzed(args json.RawMessage) toolResult {
 	var totalUnanalyzed int
 	db.QueryRow(`
 		SELECT COUNT(DISTINCT r.name) FROM raw_companies r
-		LEFT JOIN companies c ON r.name = c.name
+		LEFT JOIN companies c ON r.name = c.name OR r.export_by_id = c.export_by_id
 		LEFT JOIN rejected_companies rej ON r.name = rej.name
 		WHERE c.id IS NULL AND rej.id IS NULL
 	`).Scan(&totalUnanalyzed)
