@@ -244,6 +244,7 @@ pipelines:
         - task: sync-export-by-catalog
         - task: process-export-by-leads
       max_iterations: 1
+      schedule: '*/5 * * * *'
       allow_concurrent: false
 mcp_servers:
     - name: database

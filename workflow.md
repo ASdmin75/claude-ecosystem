@@ -561,6 +561,21 @@ pipelines:
 - Следит за директорией (не за файлом) для корректной работы со стратегиями сохранения редакторов (vim: write-rename)
 - Изменения через API (`POST /tasks`, `PUT /tasks/:name`) автоматически подхватываются: API сохраняет на диск → fsnotify → reload → scheduler/watcher обновлены
 
+### 2026-03-16 — Git: переход на ветку main + исправление credential helper
+
+**Переименование основной ветки `master` → `main`**
+- Локальная ветка `master` переименована в `main` (`git branch -m master main`)
+- `main` запушена на GitHub с force-with-lease (перезаписала старую `main` с единственным Initial commit)
+- Ветка `master` удалена с remote (`git push origin --delete master`)
+- Дефолтная ветка на GitHub — `main`
+- Причина расхождения: GitHub создал `main` при инициализации репозитория, а локальный `git init` (без `init.defaultBranch`) создал `master`. Вся разработка шла в `master`, `main` на GitHub содержала только 1 коммит
+
+**Исправление git credential helper**
+- Баг: предупреждение `git: 'credential-!gh' is not a git command` при каждой git-операции с remote
+- Причина: в `~/.gitconfig` была лишняя секция `[credential]` с `helper = \!gh auth git-credential` (без полного пути) — вероятно добавлена вручную
+- Секции для `github.com` и `gist.github.com` уже содержали корректный `helper = !/usr/bin/gh auth git-credential`
+- Фикс: удалена дублирующая глобальная секция `[credential]`
+
 ### 2026-03-15 — Дедупликация по export_by_id + SSE reconnect + оптимизация промпта
 
 **Дедупликация компаний по export_by_id (mcp-exportby)**
