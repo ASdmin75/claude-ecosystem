@@ -495,12 +495,16 @@ mcp_servers:
 |---|---|---|
 | `OPENAPI_SPEC_PATH` | **Да** | Путь к OpenAPI-спецификации (JSON/YAML) |
 | `OPENAPI_BASE_URL` | Нет | Переопределение base URL из спеки |
-| `OPENAPI_AUTH_TYPE` | Нет | `bearer`, `apikey`, `basic` |
+| `OPENAPI_AUTH_TYPE` | Нет | `bearer`, `apikey`, `basic`, `oauth2` |
 | `OPENAPI_AUTH_TOKEN` | Нет | Bearer token |
 | `OPENAPI_API_KEY` | Нет | API key |
 | `OPENAPI_API_KEY_NAME` | Нет | Имя заголовка/параметра (default: `X-API-Key`) |
 | `OPENAPI_API_KEY_IN` | Нет | `header` (default) или `query` |
 | `OPENAPI_BASIC_USER` / `OPENAPI_BASIC_PASS` | Нет | Basic auth |
+| `OPENAPI_AUTH_ENDPOINT` | Нет* | URL для получения токена (oauth2) |
+| `OPENAPI_REFRESH_ENDPOINT` | Нет | URL для refresh токена (oauth2) |
+| `OPENAPI_CLIENT_ID` | Нет* | Client ID (oauth2) |
+| `OPENAPI_CLIENT_SECRET` | Нет* | Client secret (oauth2) |
 | `OPENAPI_INCLUDE_TAGS` | Нет | Фильтр по тегам (через запятую) |
 | `OPENAPI_INCLUDE_PATHS` | Нет | Фильтр по path-префиксам |
 | `OPENAPI_INCLUDE_OPS` | Нет | Фильтр по operationId |
@@ -508,6 +512,33 @@ mcp_servers:
 | `OPENAPI_MAX_TOOLS` | Нет | Лимит инструментов (default: 50) |
 | `OPENAPI_TIMEOUT` | Нет | HTTP timeout (default: `30s`) |
 | `OPENAPI_EXTRA_HEADERS` | Нет | Доп. заголовки `Key:Value,Key2:Value2` |
+
+*\* Обязательны при `OPENAPI_AUTH_TYPE=oauth2`*
+
+#### OAuth2 (client credentials flow)
+
+Для API с динамической авторизацией (api_key + api_secret → access_token + refresh_token):
+
+```yaml
+mcp_servers:
+  - name: my-api
+    command: ./bin/mcp-openapi
+    env:
+      OPENAPI_SPEC_PATH: specs/my-api.yaml
+      OPENAPI_AUTH_TYPE: oauth2
+      OPENAPI_AUTH_ENDPOINT: https://api.example.com/auth/token
+      OPENAPI_REFRESH_ENDPOINT: https://api.example.com/auth/refresh
+      OPENAPI_CLIENT_ID: ${MY_API_KEY}
+      OPENAPI_CLIENT_SECRET: ${MY_API_SECRET}
+```
+
+Логика работы:
+1. При старте — POST на `AUTH_ENDPOINT` с `client_id` + `client_secret` → получение `access_token` + `refresh_token`
+2. Проактивный refresh — если токен истекает через < 30 сек, обновляет заранее
+3. Retry на 401 — автоматический refresh + повтор запроса
+4. Fallback — если refresh не удался, полная повторная авторизация
+
+Если `OPENAPI_REFRESH_ENDPOINT` не задан — при необходимости refresh используется полная re-авторизация через `AUTH_ENDPOINT`.
 
 #### Именование инструментов
 

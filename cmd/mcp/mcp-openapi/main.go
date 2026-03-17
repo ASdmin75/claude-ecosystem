@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pb33f/libopenapi"
@@ -85,6 +86,155 @@ type generatedTool struct {
 	operation apiOperation
 }
 
+// --- OAuth2 token manager ---
+
+type oauth2TokenManager struct {
+	mu              sync.Mutex
+	clientID        string
+	clientSecret    string
+	authEndpoint    string
+	refreshEndpoint string
+	accessToken     string
+	refreshToken    string
+	expiresAt       time.Time
+	httpClient      *http.Client
+}
+
+func newOAuth2TokenManager(clientID, clientSecret, authEndpoint, refreshEndpoint string, client *http.Client) *oauth2TokenManager {
+	return &oauth2TokenManager{
+		clientID:        clientID,
+		clientSecret:    clientSecret,
+		authEndpoint:    authEndpoint,
+		refreshEndpoint: refreshEndpoint,
+		httpClient:      client,
+	}
+}
+
+type tokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresIn    int    `json:"expires_in,omitempty"`
+	TokenType    string `json:"token_type,omitempty"`
+}
+
+// authenticate performs initial token exchange using client credentials.
+func (tm *oauth2TokenManager) authenticate() error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	body := map[string]string{
+		"client_id":     tm.clientID,
+		"client_secret": tm.clientSecret,
+		"grant_type":    "client_credentials",
+	}
+	return tm.doTokenRequest(tm.authEndpoint, body)
+}
+
+// refresh exchanges refresh_token for a new access_token.
+// If refresh endpoint is not configured, falls back to re-authentication.
+func (tm *oauth2TokenManager) refresh() error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if tm.refreshEndpoint == "" || tm.refreshToken == "" {
+		// Fall back to full re-auth
+		body := map[string]string{
+			"client_id":     tm.clientID,
+			"client_secret": tm.clientSecret,
+			"grant_type":    "client_credentials",
+		}
+		return tm.doTokenRequest(tm.authEndpoint, body)
+	}
+
+	body := map[string]string{
+		"client_id":     tm.clientID,
+		"client_secret": tm.clientSecret,
+		"grant_type":    "refresh_token",
+		"refresh_token": tm.refreshToken,
+	}
+	err := tm.doTokenRequest(tm.refreshEndpoint, body)
+	if err != nil {
+		// Refresh failed — try full re-auth
+		fmt.Fprintf(os.Stderr, "mcp-openapi: refresh failed (%v), re-authenticating\n", err)
+		reAuthBody := map[string]string{
+			"client_id":     tm.clientID,
+			"client_secret": tm.clientSecret,
+			"grant_type":    "client_credentials",
+		}
+		return tm.doTokenRequest(tm.authEndpoint, reAuthBody)
+	}
+	return nil
+}
+
+func (tm *oauth2TokenManager) doTokenRequest(endpoint string, body map[string]string) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal token request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("create token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := tm.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("token request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return fmt.Errorf("read token response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var tr tokenResponse
+	if err := json.Unmarshal(respBody, &tr); err != nil {
+		return fmt.Errorf("parse token response: %w", err)
+	}
+
+	if tr.AccessToken == "" {
+		return fmt.Errorf("token endpoint returned empty access_token")
+	}
+
+	tm.accessToken = tr.AccessToken
+	if tr.RefreshToken != "" {
+		tm.refreshToken = tr.RefreshToken
+	}
+	if tr.ExpiresIn > 0 {
+		tm.expiresAt = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
+	} else {
+		tm.expiresAt = time.Time{} // unknown expiry
+	}
+
+	return nil
+}
+
+// getToken returns a valid access token, proactively refreshing if near expiry.
+func (tm *oauth2TokenManager) getToken() (string, error) {
+	tm.mu.Lock()
+	needsRefresh := !tm.expiresAt.IsZero() && time.Until(tm.expiresAt) < 30*time.Second
+	token := tm.accessToken
+	tm.mu.Unlock()
+
+	if needsRefresh {
+		if err := tm.refresh(); err != nil {
+			return "", err
+		}
+		tm.mu.Lock()
+		token = tm.accessToken
+		tm.mu.Unlock()
+	}
+
+	return token, nil
+}
+
 // --- Globals ---
 
 var (
@@ -100,6 +250,7 @@ var (
 	basicUser      string
 	basicPass      string
 	extraHeaders   map[string]string
+	tokenManager   *oauth2TokenManager
 )
 
 func main() {
@@ -190,6 +341,29 @@ func main() {
 	}
 	basicUser = os.Getenv("OPENAPI_BASIC_USER")
 	basicPass = os.Getenv("OPENAPI_BASIC_PASS")
+
+	// OAuth2 client credentials flow
+	if authType == "oauth2" {
+		authEndpoint := os.Getenv("OPENAPI_AUTH_ENDPOINT")
+		if authEndpoint == "" {
+			fmt.Fprintf(os.Stderr, "OPENAPI_AUTH_ENDPOINT is required for oauth2 auth type\n")
+			os.Exit(1)
+		}
+		clientID := os.Getenv("OPENAPI_CLIENT_ID")
+		clientSecret := os.Getenv("OPENAPI_CLIENT_SECRET")
+		if clientID == "" || clientSecret == "" {
+			fmt.Fprintf(os.Stderr, "OPENAPI_CLIENT_ID and OPENAPI_CLIENT_SECRET are required for oauth2 auth type\n")
+			os.Exit(1)
+		}
+		refreshEndpoint := os.Getenv("OPENAPI_REFRESH_ENDPOINT")
+
+		tokenManager = newOAuth2TokenManager(clientID, clientSecret, authEndpoint, refreshEndpoint, httpClient)
+		if err := tokenManager.authenticate(); err != nil {
+			fmt.Fprintf(os.Stderr, "mcp-openapi: initial authentication failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "mcp-openapi: oauth2 authenticated successfully\n")
+	}
 
 	// Parse extra headers
 	extraHeaders = parseExtraHeaders(os.Getenv("OPENAPI_EXTRA_HEADERS"))
@@ -574,6 +748,21 @@ func handleToolCall(params json.RawMessage) toolResult {
 }
 
 func executeOperation(op apiOperation, args map[string]any) toolResult {
+	result, statusCode := doExecute(op, args)
+
+	// Auto-retry on 401 for oauth2: refresh token and retry once
+	if statusCode == http.StatusUnauthorized && authType == "oauth2" && tokenManager != nil {
+		fmt.Fprintf(os.Stderr, "mcp-openapi: 401 received, refreshing token\n")
+		if err := tokenManager.refresh(); err != nil {
+			return errorResult("token refresh failed: " + err.Error())
+		}
+		result, _ = doExecute(op, args)
+	}
+
+	return result
+}
+
+func doExecute(op apiOperation, args map[string]any) (toolResult, int) {
 	// Build URL with path params
 	reqPath := op.Path
 	queryParams := url.Values{}
@@ -604,21 +793,25 @@ func executeOperation(op apiOperation, args map[string]any) toolResult {
 	}
 
 	// Build body
-	var bodyReader io.Reader
+	var bodyBytes []byte
 	if op.HasBody {
 		if bodyData, ok := args["body"]; ok {
-			bodyBytes, err := json.Marshal(bodyData)
+			var err error
+			bodyBytes, err = json.Marshal(bodyData)
 			if err != nil {
-				return errorResult("failed to marshal body: " + err.Error())
+				return errorResult("failed to marshal body: " + err.Error()), 0
 			}
-			bodyReader = bytes.NewReader(bodyBytes)
 		}
 	}
 
 	// Create request
+	var bodyReader io.Reader
+	if bodyBytes != nil {
+		bodyReader = bytes.NewReader(bodyBytes)
+	}
 	req, err := http.NewRequest(op.Method, fullURL, bodyReader)
 	if err != nil {
-		return errorResult("failed to create request: " + err.Error())
+		return errorResult("failed to create request: " + err.Error()), 0
 	}
 
 	if op.HasBody {
@@ -627,7 +820,9 @@ func executeOperation(op apiOperation, args map[string]any) toolResult {
 	req.Header.Set("Accept", "application/json")
 
 	// Apply auth
-	applyAuth(req)
+	if err := applyAuth(req); err != nil {
+		return errorResult(err.Error()), 0
+	}
 
 	// Apply header params from args
 	for _, p := range op.Parameters {
@@ -646,14 +841,14 @@ func executeOperation(op apiOperation, args map[string]any) toolResult {
 	// Execute
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return errorResult("HTTP request failed: " + err.Error())
+		return errorResult("HTTP request failed: " + err.Error()), 0
 	}
 	defer resp.Body.Close()
 
 	// Read response (limit 1MB)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	if err != nil {
-		return errorResult("failed to read response: " + err.Error())
+		return errorResult("failed to read response: " + err.Error()), 0
 	}
 
 	// Format response
@@ -670,17 +865,25 @@ func executeOperation(op apiOperation, args map[string]any) toolResult {
 		return toolResult{
 			Content: []contentItem{{Type: "text", Text: output}},
 			IsError: true,
-		}
+		}, resp.StatusCode
 	}
 
-	return textResult(output)
+	return textResult(output), resp.StatusCode
 }
 
-func applyAuth(req *http.Request) {
+func applyAuth(req *http.Request) error {
 	switch authType {
 	case "bearer":
 		if authToken != "" {
 			req.Header.Set("Authorization", "Bearer "+authToken)
+		}
+	case "oauth2":
+		if tokenManager != nil {
+			token, err := tokenManager.getToken()
+			if err != nil {
+				return fmt.Errorf("oauth2 get token: %w", err)
+			}
+			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	case "apikey":
 		if apiKey != "" {
@@ -698,6 +901,7 @@ func applyAuth(req *http.Request) {
 			req.Header.Set("Authorization", "Basic "+cred)
 		}
 	}
+	return nil
 }
 
 func parseExtraHeaders(s string) map[string]string {

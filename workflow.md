@@ -661,6 +661,59 @@ pipelines:
 - Web UI (`Wizard.tsx`): секция "MCP Servers" в preview с env vars, отображение созданных серверов в результатах
 - TypeScript: `MCPServerPlan` и `mcp_servers_created` в `ApplyResult`
 
+### 2026-03-17 — mcp-openapi: OAuth2 client credentials flow
+
+**Проблема:** `mcp-openapi` поддерживал только статичные методы аутентификации (bearer token, API key, basic auth). API с динамической авторизацией (api_key + api_secret → access_token + refresh_token) не поддерживались.
+
+**Решение: новый auth type `oauth2`**
+
+Реализован полный OAuth2 client credentials flow с автоматическим управлением токенами:
+
+**Новые env-переменные:**
+| Переменная | Обяз. | Описание |
+|---|---|---|
+| `OPENAPI_AUTH_TYPE` | Да | `oauth2` |
+| `OPENAPI_AUTH_ENDPOINT` | Да | URL для получения токена (POST) |
+| `OPENAPI_REFRESH_ENDPOINT` | Нет | URL для refresh токена (POST) |
+| `OPENAPI_CLIENT_ID` | Да | Client ID / API key |
+| `OPENAPI_CLIENT_SECRET` | Да | Client secret / API secret |
+
+**Логика работы:**
+1. При старте — `POST auth_endpoint` с `client_id` + `client_secret` + `grant_type=client_credentials` → получение `access_token` + `refresh_token`
+2. Проактивный refresh — если до истечения токена < 30 сек, обновляет заранее через `getToken()`
+3. Retry на 401 — при получении HTTP 401 автоматически вызывает refresh и повторяет запрос один раз
+4. Fallback — если refresh не удался (expired refresh token, 400/401 от refresh endpoint), делает полную повторную авторизацию через `auth_endpoint`
+5. Если `OPENAPI_REFRESH_ENDPOINT` не задан — при необходимости refresh всегда использует полную re-авторизацию
+
+**Реализация (`cmd/mcp/mcp-openapi/main.go`):**
+- Тип `oauth2TokenManager` — потокобезопасный (sync.Mutex) менеджер токенов
+- Методы: `authenticate()`, `refresh()`, `getToken()`, `doTokenRequest()`
+- `applyAuth()` возвращает `error` (вместо void) — для корректной обработки ошибок OAuth2
+- `executeOperation()` → `doExecute()` — разделение для поддержки retry на 401
+- `doExecute()` возвращает `(toolResult, statusCode)` — для проверки 401
+
+**Unit-тесты (`cmd/mcp/mcp-openapi/oauth2_test.go`, 6 тестов):**
+- Authenticate (успешный token exchange)
+- Refresh (успешный refresh_token → новый access_token)
+- GetToken с проактивным refresh (near-expiry)
+- GetToken с валидным токеном (без refresh)
+- Authenticate с невалидными credentials (401)
+- Refresh fallback на re-auth (expired refresh token → full re-auth)
+
+**Пример конфигурации:**
+```yaml
+mcp_servers:
+  - name: my-api
+    command: ./bin/mcp-openapi
+    env:
+      OPENAPI_SPEC_PATH: specs/my-api.yaml
+      OPENAPI_AUTH_TYPE: oauth2
+      OPENAPI_AUTH_ENDPOINT: https://api.example.com/auth/token
+      OPENAPI_REFRESH_ENDPOINT: https://api.example.com/auth/refresh
+      OPENAPI_CLIENT_ID: ${MY_API_KEY}
+      OPENAPI_CLIENT_SECRET: ${MY_API_SECRET}
+```
+
 ---
 
 ## Бэклог
