@@ -445,11 +445,105 @@ mcp_servers:
 | **mcp-excel** | `create_spreadsheet`, `write_spreadsheet`, `read_spreadsheet`, `add_styled_table` | Реализован |
 | **mcp-email** | `send_email` (с вложениями и HTML), `read_inbox`*, `search_emails`* | Частично (*stubs) |
 | **mcp-telegram** | `send_message`, `send_document` | Реализован |
-| **mcp-word** | — | Stub |
-| **mcp-pdf** | — | Stub |
+| **mcp-word** | `read_document`, `write_document`, `create_document` | Реализован |
+| **mcp-pdf** | `read_pdf`, `extract_text`, `extract_tables` | Реализован |
+| **mcp-openapi** | Динамические (из OpenAPI-спеки) | Реализован |
 | **mcp-google** | — | Stub |
 | **mcp-database** | `query`, `execute`, `list_tables`, `describe_table`, `check_exists`, `insert` | Реализован |
 | **mcp-exportby** | `sync_catalog`, `get_unanalyzed`, `check_new`, `get_stats`, `get_pending_count`, `export_leads_excel`, `mark_exported`, `reject_companies` | Реализован |
+
+### mcp-openapi — интеграция внешних API
+
+`mcp-openapi` — MCP-сервер, который динамически генерирует инструменты из OpenAPI v2/v3 спецификации. Каждый эндпоинт API становится отдельным MCP-инструментом.
+
+#### Конфигурация
+
+```yaml
+mcp_servers:
+  - name: crm-api
+    command: ./bin/mcp-openapi
+    env:
+      OPENAPI_SPEC_PATH: specs/crm-openapi.yaml
+      OPENAPI_BASE_URL: https://api.crm.example.com/v2
+      OPENAPI_AUTH_TYPE: bearer
+      OPENAPI_AUTH_TOKEN: ${CRM_API_TOKEN}
+      OPENAPI_INCLUDE_TAGS: contacts,deals
+```
+
+Множественные API — отдельные записи в `mcp_servers` с разными env vars:
+
+```yaml
+mcp_servers:
+  - name: crm-api
+    command: ./bin/mcp-openapi
+    env:
+      OPENAPI_SPEC_PATH: specs/crm.yaml
+      OPENAPI_AUTH_TYPE: bearer
+      OPENAPI_AUTH_TOKEN: ${CRM_TOKEN}
+
+  - name: billing-api
+    command: ./bin/mcp-openapi
+    env:
+      OPENAPI_SPEC_PATH: specs/billing.yaml
+      OPENAPI_AUTH_TYPE: apikey
+      OPENAPI_API_KEY: ${BILLING_KEY}
+```
+
+#### Переменные окружения
+
+| Переменная | Обяз. | Описание |
+|---|---|---|
+| `OPENAPI_SPEC_PATH` | **Да** | Путь к OpenAPI-спецификации (JSON/YAML) |
+| `OPENAPI_BASE_URL` | Нет | Переопределение base URL из спеки |
+| `OPENAPI_AUTH_TYPE` | Нет | `bearer`, `apikey`, `basic` |
+| `OPENAPI_AUTH_TOKEN` | Нет | Bearer token |
+| `OPENAPI_API_KEY` | Нет | API key |
+| `OPENAPI_API_KEY_NAME` | Нет | Имя заголовка/параметра (default: `X-API-Key`) |
+| `OPENAPI_API_KEY_IN` | Нет | `header` (default) или `query` |
+| `OPENAPI_BASIC_USER` / `OPENAPI_BASIC_PASS` | Нет | Basic auth |
+| `OPENAPI_INCLUDE_TAGS` | Нет | Фильтр по тегам (через запятую) |
+| `OPENAPI_INCLUDE_PATHS` | Нет | Фильтр по path-префиксам |
+| `OPENAPI_INCLUDE_OPS` | Нет | Фильтр по operationId |
+| `OPENAPI_EXCLUDE_OPS` | Нет | Исключить по operationId |
+| `OPENAPI_MAX_TOOLS` | Нет | Лимит инструментов (default: 50) |
+| `OPENAPI_TIMEOUT` | Нет | HTTP timeout (default: `30s`) |
+| `OPENAPI_EXTRA_HEADERS` | Нет | Доп. заголовки `Key:Value,Key2:Value2` |
+
+#### Именование инструментов
+
+- Если в спеке задан `operationId: getPetById` → инструмент `getpetbyid`
+- Без operationId → `{method}_{path}`: `GET /users/{id}/orders` → `get_users_id_orders`
+- В `allowed_tools`: `mcp__{server_name}__{tool_name}`, например `mcp__crm-api__getcontacts`
+
+#### Пример использования в задаче
+
+```yaml
+tasks:
+  - name: sync-crm-leads
+    prompt: "Fetch new leads from CRM and sync to local database."
+    mcp_servers:
+      - crm-api
+      - database
+    allowed_tools:
+      - mcp__crm-api__list_contacts
+      - mcp__crm-api__get_contact
+      - mcp__database__insert
+    permission_mode: dontAsk
+    timeout: "5m"
+```
+
+#### Ручная проверка
+
+```bash
+# Список инструментов
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | \
+  OPENAPI_SPEC_PATH=specs/api.yaml ./bin/mcp-openapi 2>/dev/null | python3 -m json.tool
+
+# Вызов инструмента
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"getpetbyid","arguments":{"petId":"1"}}}' | \
+  OPENAPI_SPEC_PATH=specs/petstore.json OPENAPI_BASE_URL=https://petstore3.swagger.io/api/v3 \
+  ./bin/mcp-openapi 2>/dev/null | python3 -m json.tool
+```
 
 ### Привязка к задачам
 

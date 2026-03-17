@@ -32,7 +32,28 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	// 1. Domains
+	// 1. MCP Servers (must come first so tasks can reference them)
+	for _, mp := range plan.MCPServers {
+		mcp := config.MCPServerConfig{
+			Name:    mp.Name,
+			Command: mp.Command,
+			Args:    mp.Args,
+			Env:     mp.Env,
+		}
+		a.cfg.MCPServers = append(a.cfg.MCPServers, mcp)
+		result.MCPServersCreated = append(result.MCPServersCreated, mp.Name)
+		mcpName := mp.Name
+		rollbacks = append(rollbacks, func() {
+			for i := len(a.cfg.MCPServers) - 1; i >= 0; i-- {
+				if a.cfg.MCPServers[i].Name == mcpName {
+					a.cfg.MCPServers = append(a.cfg.MCPServers[:i], a.cfg.MCPServers[i+1:]...)
+					break
+				}
+			}
+		})
+	}
+
+	// 2. Domains
 	for _, dp := range plan.Domains {
 		d := config.Domain{
 			Name:        dp.Name,
@@ -61,7 +82,7 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 		})
 	}
 
-	// 2. Agents
+	// 3. Agents
 	for _, ap := range plan.Agents {
 		agent := &subagent.SubAgent{
 			Name:           ap.Name,
@@ -86,7 +107,7 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 		})
 	}
 
-	// 3. Tasks
+	// 4. Tasks
 	for _, tp := range plan.Tasks {
 		t := config.Task{
 			Name:           tp.Name,
@@ -117,7 +138,7 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 		})
 	}
 
-	// 4. Pipelines
+	// 5. Pipelines
 	for _, pp := range plan.Pipelines {
 		steps := make([]config.PipelineStep, len(pp.Steps))
 		for i, s := range pp.Steps {
@@ -145,7 +166,7 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 		})
 	}
 
-	// 5. Save config
+	// 6. Save config
 	if err := a.cfg.Save(); err != nil {
 		a.rollback(rollbacks)
 		return nil, fmt.Errorf("saving config: %w", err)
@@ -205,11 +226,22 @@ func (a *Applier) validate(plan *Plan) error {
 		}
 	}
 
-	// Validate MCP server references
+	// Check duplicate MCP server names
 	mcpNames := make(map[string]bool)
 	for _, mcp := range a.cfg.MCPServers {
 		mcpNames[mcp.Name] = true
 	}
+	for _, mcp := range plan.MCPServers {
+		if mcpNames[mcp.Name] {
+			return fmt.Errorf("MCP server %q already exists", mcp.Name)
+		}
+		if mcp.Command == "" {
+			return fmt.Errorf("MCP server %q has empty command", mcp.Name)
+		}
+		mcpNames[mcp.Name] = true
+	}
+
+	// Validate MCP server references in tasks (including servers from this plan)
 	for _, t := range plan.Tasks {
 		for _, m := range t.MCPServers {
 			if !mcpNames[m] {

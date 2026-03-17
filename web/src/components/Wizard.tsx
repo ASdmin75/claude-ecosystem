@@ -13,7 +13,7 @@ export default function Wizard() {
   const [plan, setPlan] = useState<WizardPlan | null>(null)
   const [result, setResult] = useState<ApplyResult | null>(null)
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
-    domains: true, agents: true, tasks: true, pipelines: true,
+    mcp_servers: true, domains: true, agents: true, tasks: true, pipelines: true,
   })
 
   const toggleSection = (key: string) =>
@@ -138,6 +138,29 @@ export default function Wizard() {
           </div>
         )}
 
+        {/* MCP Servers */}
+        {plan.mcp_servers && plan.mcp_servers.length > 0 && (
+          <CollapsibleSection title={`MCP Servers (${plan.mcp_servers.length})`} expanded={expandedSections.mcp_servers} onToggle={() => toggleSection('mcp_servers')}>
+            {plan.mcp_servers.map((m) => (
+              <div key={m.name} className="p-3 border dark:border-gray-700 rounded-lg mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-sm">{m.name}</span>
+                  <Badge text={m.command} />
+                </div>
+                {m.env && Object.keys(m.env).length > 0 && (
+                  <div className="mt-2 space-y-0.5">
+                    {Object.entries(m.env).map(([k, v]) => (
+                      <div key={k} className="text-xs text-gray-500">
+                        <span className="text-gray-600 dark:text-gray-400">{k}</span>={v}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </CollapsibleSection>
+        )}
+
         {/* Domains */}
         {plan.domains && plan.domains.length > 0 && (
           <CollapsibleSection title={`Domains (${plan.domains.length})`} expanded={expandedSections.domains} onToggle={() => toggleSection('domains')}>
@@ -246,6 +269,7 @@ export default function Wizard() {
   // Result state
   if (state === 'result' && result) {
     const all = [
+      ...(result.mcp_servers_created || []).map((n) => ({ type: 'MCP Server', name: n })),
       ...(result.domains_created || []).map((n) => ({ type: 'Domain', name: n })),
       ...(result.agents_created || []).map((n) => ({ type: 'Agent', name: n })),
       ...(result.tasks_created || []).map((n) => ({ type: 'Task', name: n })),

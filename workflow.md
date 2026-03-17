@@ -600,6 +600,67 @@ pipelines:
 **Убрано cron-расписание пайплайна export-by-aviation-to-ceo**
 - Удалён `schedule: '*/15 * * * *'` — пайплайн запускается вручную или по необходимости
 
+### 2026-03-17 — MCP-серверы (PDF, Word) + Live streaming + MCP UI + Unit-тесты
+
+**mcp-pdf — полная реализация**
+- 3 инструмента: `read_pdf` (метаданные + текст), `extract_text` (извлечение текста с поддержкой page ranges), `extract_tables` (best-effort извлечение таблиц в JSON/CSV)
+- Библиотека: `github.com/ledongthuc/pdf` (pure Go)
+- Поддержка диапазонов страниц: `1-5`, `1,3,7`, пустой = все
+- Page range парсер с валидацией
+
+**mcp-word — полная реализация**
+- 3 инструмента: `read_document` (чтение текста с опциональным форматированием), `write_document` (append/replace), `create_document` (создание с нуля)
+- Реализация через stdlib: `archive/zip` + `encoding/xml` (без внешних зависимостей)
+- Парсинг `word/document.xml`: извлечение `<w:t>`, определение bold/italic/heading стилей
+- Создание минимального валидного .docx: `[Content_Types].xml`, `_rels/.rels`, `word/document.xml`
+
+**Live output streaming в Execution History**
+- Бэкенд: `handleRunTaskAsync` переключен на `RunStream()` — публикует `task.output` SSE-события с каждым чанком вывода Claude CLI
+- Фронтенд: при выборе running execution — подключение к `/api/v1/executions/{id}/stream` через `EventSource`
+- Live-панель: зелёный терминальный вывод с auto-scroll, пульсирующий индикатор "Live Output"
+- `streamExecution()` обновлён: слушает именованные SSE-события (`task.output`, `task.completed`)
+- Автоотключение при завершении задачи, очистка при смене выбранного execution
+
+**Управление MCP-серверами через Web UI**
+- Новый компонент `MCPServerList.tsx`: таблица серверов со статусом, PID, кнопками Start/Stop
+- Статистика: общее количество, запущенные, остановленные
+- Зелёный/серый индикатор статуса, авто-обновление каждые 10 секунд
+- Новый пункт навигации "MCP Servers" в sidebar
+- Маршрут `/mcp-servers` в App.tsx
+
+**Unit-тесты (45+ новых тестов, 6 пакетов)**
+- `internal/runguard/` (4 теста): acquire/release, namespace isolation, concurrent access
+- `internal/events/` (6 тестов): pub/sub, multiple subscribers, panic recovery, Wait blocking
+- `internal/auth/` (8 тестов): PASETO create/validate, expiration, tampering, key generation
+- `internal/subagent/` (7 тестов): parse, serialize, roundtrip, ToAgentsJSON, CRUD manager
+- `internal/task/` (16 тестов): BuildArgs (все флаги), renderPrompt, parseJSONOutput
+- `internal/store/sqlite/` (9 тестов): execution CRUD, list с фильтрами, user CRUD, pipeline execution
+- Makefile: `make test` расширен на `./cmd/...`
+
+### 2026-03-17 — mcp-openapi: динамические MCP-инструменты из OpenAPI-спецификаций
+
+**Новый MCP-сервер `mcp-openapi` (`cmd/mcp/mcp-openapi/main.go`)**
+- Единый MCP-сервер, который при запуске читает OpenAPI v3 спецификацию (JSON/YAML) и динамически генерирует MCP-инструменты для каждого эндпоинта API
+- Библиотека: `github.com/pb33f/libopenapi` v0.34.3 (поддержка OpenAPI v2/v3/v3.1, разрешение $ref)
+- Именование инструментов: из `operationId` (lowercase, sanitize) или `method_path` если operationId отсутствует
+- InputSchema генерируется из параметров операции: path → required, query → optional, header → prefix `header_`, body → свойство `body` с вложенной JSON Schema (глубина до 3 уровней)
+- Фильтрация: по тегам (`OPENAPI_INCLUDE_TAGS`), path-префиксам (`OPENAPI_INCLUDE_PATHS`), operationId (`OPENAPI_INCLUDE_OPS`/`OPENAPI_EXCLUDE_OPS`)
+- Auth: bearer, API key (header/query), basic auth — через env vars
+- Лимиты: макс. 50 инструментов (настраивается), ответ до 1MB, HTTP timeout 30s
+- Множественные API — отдельные инстансы с разными env vars в `mcp_servers`
+- Makefile подхватывает автоматически (цикл `for dir in cmd/mcp/*/`)
+- Протестировано на Petstore spec (19 инструментов, live HTTP вызовы)
+
+**Wizard: создание mcp-openapi серверов**
+- Новый тип `MCPServerPlan` в `internal/wizard/types.go` (name, command, args, env)
+- Поле `MCPServers []MCPServerPlan` в `Plan` — wizard теперь может создавать новые MCP-серверы (не только ссылаться на существующие)
+- JSON schema в prompt.go: новая секция `mcp_servers` для плана
+- Applier: MCP-серверы создаются первым шагом (до доменов), валидация дубликатов, задачи могут ссылаться на серверы из того же плана
+- Prompt: документация по mcp-openapi (env vars, паттерн именования инструментов, пример конфигурации), правило #2 обновлено
+- Динамическое отображение env vars openapi-серверов в секции "Available MCP Servers"
+- Web UI (`Wizard.tsx`): секция "MCP Servers" в preview с env vars, отображение созданных серверов в результатах
+- TypeScript: `MCPServerPlan` и `mcp_servers_created` в `ApplyResult`
+
 ---
 
 ## Бэклог
@@ -611,28 +672,29 @@ pipelines:
 ### MCP-серверы — доработки
 - [x] mcp-filesystem: полная реализация tools/call + copy_file
 - [x] mcp-excel: интеграция с excelize + add_styled_table
-- [ ] mcp-word: интеграция с docx-библиотекой
-- [ ] mcp-pdf: интеграция с pdfcpu
+- [x] mcp-word: чтение, запись и создание .docx через stdlib (archive/zip + encoding/xml)
+- [x] mcp-pdf: чтение, извлечение текста и таблиц из PDF через ledongthuc/pdf
 - [x] mcp-email: SMTP-отправка с вложениями через gomail
 - [ ] mcp-email: IMAP-чтение (read_inbox, search_emails)
 - [ ] mcp-google: Google Docs/Sheets API
 - [x] mcp-database: SQLite-реализация (query, execute, check_exists, insert, list_tables, describe_table) — интеграция через domain system
 - [x] mcp-telegram: отправка сообщений и файлов через Telegram Bot API
 - [x] mcp-exportby: каталог export.by — scan, analyze, reject, mark_exported
+- [x] mcp-openapi: динамические MCP-инструменты из OpenAPI-спецификаций (libopenapi)
 
 ### Web UI — доработки
 - [x] Динамическое обновление UI через SSE (real-time, без polling)
 - [x] Toast-уведомления при завершении задач/пайплайнов
-- [ ] Детальный просмотр execution с SSE-стримингом (live output)
+- [x] Детальный просмотр execution с SSE-стримингом (live output)
 - [x] Редактирование задач через UI (CSV-поля исправлены)
 - [x] Удаление execution записей (с подтверждением)
 - [x] Конфигурация allow_concurrent через UI (чекбокс в TaskEditor и PipelineEditor)
 - [x] Hot reload tasks.yaml (fsnotify + debounce → scheduler/watcher перерегистрация)
-- [ ] Управление MCP-серверами через UI
+- [x] Управление MCP-серверами через UI
 - [x] Тёмная тема
 
 ### Инфраструктура
-- [ ] Unit-тесты для всех internal/ пакетов
+- [x] Unit-тесты: auth, events, runguard, subagent, task, store/sqlite (45+ новых тестов)
 - [ ] CI/CD pipeline (GitHub Actions)
 - [x] Docker-образ (Dockerfile + docker-compose.yml)
 - [ ] Docker: авторизация Claude Code Max (OAuth) — `claude login` из контейнера не подключается к api.anthropic.com (ERR_BAD_REQUEST). Варианты: host network, DNS-fix, или ANTHROPIC_API_KEY

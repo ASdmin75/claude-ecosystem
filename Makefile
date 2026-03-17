@@ -37,7 +37,7 @@ run-pipeline:
 	go run ./cmd/server -config tasks.yaml -pipeline $(PIPELINE)
 
 test:
-	go test ./internal/...
+	go test ./internal/... ./cmd/...
 
 clean:
 	rm -rf bin/

@@ -294,7 +294,7 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	// Run in background goroutine.
+	// Run in background goroutine with streaming output.
 	taskCopy := *t
 	templateVars := req.TemplateVars
 	go func() {
@@ -311,7 +311,27 @@ func (s *Server) handleRunTaskAsync(w http.ResponseWriter, r *http.Request) {
 		s.cancels.Store(execID, cancel)
 		defer s.cancels.Delete(execID)
 
-		result := s.taskRunner.Run(ctx, taskCopy, asyncOpts, templateVars)
+		// Use RunStream to get real-time output chunks.
+		chunks := make(chan task.StreamChunk, 64)
+		var result task.Result
+		go func() {
+			result = s.taskRunner.RunStream(ctx, taskCopy, asyncOpts, templateVars, chunks)
+		}()
+
+		// Forward chunks as task.output SSE events.
+		for chunk := range chunks {
+			if chunk.Content != "" {
+				s.bus.Publish(events.Event{
+					Type: "task.output",
+					Payload: map[string]string{
+						"execution_id": execID,
+						"task":         taskCopy.Name,
+						"chunk_type":   chunk.Type,
+						"content":      chunk.Content,
+					},
+				})
+			}
+		}
 
 		completedAt := time.Now().UTC()
 		status := "completed"

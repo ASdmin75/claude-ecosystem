@@ -11,10 +11,11 @@ type Plan struct {
 	ID          string         `json:"id"`
 	Description string         `json:"description"`
 	Summary     string         `json:"summary"`
-	Domains     []DomainPlan   `json:"domains,omitempty"`
-	Agents      []AgentPlan    `json:"agents,omitempty"`
-	Tasks       []TaskPlan     `json:"tasks,omitempty"`
-	Pipelines   []PipelinePlan `json:"pipelines,omitempty"`
+	MCPServers  []MCPServerPlan `json:"mcp_servers,omitempty"`
+	Domains     []DomainPlan    `json:"domains,omitempty"`
+	Agents      []AgentPlan     `json:"agents,omitempty"`
+	Tasks       []TaskPlan      `json:"tasks,omitempty"`
+	Pipelines   []PipelinePlan  `json:"pipelines,omitempty"`
 	Status      string         `json:"status"` // "draft", "applied", "discarded"
 }
 
@@ -61,6 +62,14 @@ type TaskPlan struct {
 	Domain         string   `json:"domain,omitempty"`
 }
 
+// MCPServerPlan describes an MCP server to be created (currently only mcp-openapi).
+type MCPServerPlan struct {
+	Name    string            `json:"name"`
+	Command string            `json:"command"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+}
+
 // PipelinePlan describes a pipeline to be created.
 type PipelinePlan struct {
 	Name          string   `json:"name"`
@@ -72,7 +81,8 @@ type PipelinePlan struct {
 
 // ApplyResult holds the outcome of applying a plan.
 type ApplyResult struct {
-	DomainsCreated   []string `json:"domains_created,omitempty"`
+	MCPServersCreated []string `json:"mcp_servers_created,omitempty"`
+	DomainsCreated    []string `json:"domains_created,omitempty"`
 	AgentsCreated    []string `json:"agents_created,omitempty"`
 	TasksCreated     []string `json:"tasks_created,omitempty"`
 	PipelinesCreated []string `json:"pipelines_created,omitempty"`

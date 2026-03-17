@@ -5,6 +5,7 @@ import TaskList from './components/TaskList'
 import SubAgentList from './components/SubAgentList'
 import PipelineList from './components/PipelineList'
 import ExecutionHistory from './components/ExecutionHistory'
+import MCPServerList from './components/MCPServerList'
 import Wizard from './components/Wizard'
 import Login from './components/Login'
 import { ToastContainer, useToast } from './components/Toast'
@@ -16,6 +17,7 @@ const navItems = [
   { path: '/tasks', label: 'Tasks' },
   { path: '/subagents', label: 'Sub-Agents' },
   { path: '/pipelines', label: 'Pipelines' },
+  { path: '/mcp-servers', label: 'MCP Servers' },
   { path: '/executions', label: 'Executions' },
 ]
 
@@ -110,6 +112,7 @@ export default function App() {
           <Route path="/tasks" element={<TaskList />} />
           <Route path="/subagents" element={<SubAgentList />} />
           <Route path="/pipelines" element={<PipelineList />} />
+          <Route path="/mcp-servers" element={<MCPServerList />} />
           <Route path="/executions" element={<ExecutionHistory />} />
           <Route path="/login" element={<Login />} />
         </Routes>

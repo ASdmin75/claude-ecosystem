@@ -94,10 +94,18 @@ export interface MCPServer {
 }
 
 // Wizard types
+export interface MCPServerPlan {
+  name: string
+  command: string
+  args?: string[]
+  env?: Record<string, string>
+}
+
 export interface WizardPlan {
   id: string
   description: string
   summary: string
+  mcp_servers?: MCPServerPlan[]
   domains?: DomainPlan[]
   agents?: AgentPlan[]
   tasks?: TaskPlan[]
@@ -154,6 +162,7 @@ export interface PipelinePlan {
 }
 
 export interface ApplyResult {
+  mcp_servers_created?: string[]
   domains_created?: string[]
   agents_created?: string[]
   tasks_created?: string[]

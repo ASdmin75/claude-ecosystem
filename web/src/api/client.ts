@@ -114,10 +114,23 @@ export const api = {
     request<void>(`/wizard/plans/${id}`, { method: 'DELETE' }),
 }
 
-// SSE helper
+// SSE helper for per-execution streaming
 export function streamExecution(id: string, onMessage: (data: string) => void): () => void {
   const token = localStorage.getItem('token')
   const es = new EventSource(`${BASE}/executions/${id}/stream?token=${token}`)
+
+  // Listen to named SSE events (task.output, task.completed, pipeline.completed)
+  const eventTypes = ['task.output', 'task.completed', 'pipeline.completed']
+  for (const type of eventTypes) {
+    es.addEventListener(type, (e: MessageEvent) => {
+      onMessage(e.data)
+      if (type === 'task.completed' || type === 'pipeline.completed') {
+        es.close()
+      }
+    })
+  }
+
+  // Fallback for unnamed events
   es.onmessage = (e) => onMessage(e.data)
   es.onerror = () => es.close()
   return () => es.close()

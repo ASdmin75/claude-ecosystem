@@ -1,8 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { api } from '../api/client'
-import { useState, useEffect } from 'react'
+import { api, streamExecution } from '../api/client'
+import { useState, useEffect, useRef } from 'react'
 import type { Execution } from '../types'
 import ConfirmModal from './ConfirmModal'
 
@@ -59,6 +59,67 @@ export default function ExecutionHistory() {
   })
 
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [streamOutput, setStreamOutput] = useState<string>('')
+  const streamCleanup = useRef<(() => void) | null>(null)
+  const streamingId = useRef<string | null>(null)
+  const outputEndRef = useRef<HTMLDivElement>(null)
+
+  // Connect to SSE stream when a running execution is selected
+  useEffect(() => {
+    const currentStatus = detailQuery.data?.status ?? selected?.status
+    const currentId = selected?.id
+
+    // Disconnect if no selection or execution is no longer running
+    if (!currentId || currentStatus !== 'running') {
+      if (streamCleanup.current) {
+        streamCleanup.current()
+        streamCleanup.current = null
+        streamingId.current = null
+      }
+      if (currentStatus !== 'running') {
+        setStreamOutput('')
+      }
+      return
+    }
+
+    // Already streaming this execution
+    if (streamingId.current === currentId) return
+
+    // Clean up previous stream
+    if (streamCleanup.current) {
+      streamCleanup.current()
+    }
+
+    setStreamOutput('')
+    streamingId.current = currentId
+
+    const cleanup = streamExecution(currentId, (data) => {
+      try {
+        const parsed = JSON.parse(data)
+        if (parsed.content) {
+          setStreamOutput((prev) => prev + parsed.content)
+        }
+      } catch {
+        // Non-JSON data, append as-is
+        setStreamOutput((prev) => prev + data)
+      }
+    })
+
+    streamCleanup.current = cleanup
+
+    return () => {
+      cleanup()
+      streamCleanup.current = null
+      streamingId.current = null
+    }
+  }, [selected?.id, detailQuery.data?.status, selected?.status])
+
+  // Auto-scroll streaming output
+  useEffect(() => {
+    if (streamOutput && outputEndRef.current) {
+      outputEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [streamOutput])
 
   const confirmDelete = (id: string, ev?: React.MouseEvent) => {
     ev?.stopPropagation()
@@ -224,8 +285,21 @@ export default function ExecutionHistory() {
                 </div>
               )}
 
-              {detailQuery.data && !detailQuery.data.output && !detailQuery.data.error && selected.status === 'running' && (
-                <p className="text-sm text-blue-500 dark:text-blue-400">Task is still running...</p>
+              {(detailQuery.data?.status ?? selected.status) === 'running' && (
+                <div>
+                  <h4 className="text-sm font-semibold text-blue-600 dark:text-blue-400 mb-1 flex items-center gap-2">
+                    <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+                    Live Output
+                  </h4>
+                  {streamOutput ? (
+                    <div className="bg-gray-900 dark:bg-gray-950 text-green-400 text-xs font-mono p-3 rounded overflow-auto max-h-96 whitespace-pre-wrap break-words">
+                      {streamOutput}
+                      <div ref={outputEndRef} />
+                    </div>
+                  ) : (
+                    <p className="text-sm text-blue-500 dark:text-blue-400">Waiting for output...</p>
+                  )}
+                </div>
               )}
             </div>
           </div>

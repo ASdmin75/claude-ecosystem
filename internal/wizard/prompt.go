@@ -15,6 +15,24 @@ const wizardJSONSchema = `{
       "type": "string",
       "description": "Brief explanation of what this plan will create and why"
     },
+    "mcp_servers": {
+      "type": "array",
+      "description": "New MCP server entries to add to config. Currently only mcp-openapi is supported for creation.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "kebab-case server name (e.g., crm-api, billing-api)" },
+          "command": { "type": "string", "description": "Binary path, e.g. ./bin/mcp-openapi" },
+          "args": { "type": "array", "items": { "type": "string" } },
+          "env": {
+            "type": "object",
+            "description": "Environment variables for the server",
+            "additionalProperties": { "type": "string" }
+          }
+        },
+        "required": ["name", "command", "env"]
+      }
+    },
     "domains": {
       "type": "array",
       "items": {
@@ -152,8 +170,29 @@ MCP tool names follow the pattern: mcp__{server}__{tool}. Here are the exact too
 - **email**: mcp__email__send_email, mcp__email__read_inbox, mcp__email__search_emails
 - **telegram**: mcp__telegram__send_message, mcp__telegram__send_document
 - **filesystem**: mcp__filesystem__read_file, mcp__filesystem__write_file, mcp__filesystem__list_directory, mcp__filesystem__search_files, mcp__filesystem__copy_file
+- **openapi** (mcp-openapi): DYNAMIC tools — tool names are generated from the OpenAPI spec at startup. Pattern: mcp__{server_name}__{operationId_lowercase}. Example: if server is named "crm-api" and spec has operationId "getContacts", tool name is mcp__crm-api__getcontacts.
 
-IMPORTANT: Use ONLY these exact tool names in allowed_tools. Do NOT invent tool names.
+## mcp-openapi Server
+
+mcp-openapi dynamically generates MCP tools from an OpenAPI v2/v3 specification. Use it to integrate external REST APIs.
+
+The wizard CAN create new mcp-openapi server entries in the plan's "mcp_servers" array. When the user wants to connect an external API, create an mcp-openapi entry with the appropriate env vars. The created server can then be referenced by tasks in the same plan.
+
+Example mcp_servers entry in plan:
+{"name": "crm-api", "command": "./bin/mcp-openapi", "env": {"OPENAPI_SPEC_PATH": "specs/crm.yaml", "OPENAPI_BASE_URL": "https://api.crm.example.com/v2", "OPENAPI_AUTH_TYPE": "bearer", "OPENAPI_AUTH_TOKEN": "${CRM_TOKEN}", "OPENAPI_INCLUDE_TAGS": "contacts,deals"}}
+
+Environment variables (configured in mcp_servers, not by wizard):
+- OPENAPI_SPEC_PATH (required): path to OpenAPI spec file
+- OPENAPI_BASE_URL: override base URL from spec
+- OPENAPI_AUTH_TYPE: bearer, apikey, basic
+- OPENAPI_AUTH_TOKEN, OPENAPI_API_KEY, OPENAPI_BASIC_USER/PASS: credentials
+- OPENAPI_INCLUDE_TAGS: filter by tags (comma-separated)
+- OPENAPI_INCLUDE_PATHS: filter by path prefixes
+- OPENAPI_INCLUDE_OPS / OPENAPI_EXCLUDE_OPS: filter by operationId
+
+Since mcp-openapi tools are dynamic, when adding allowed_tools for an openapi server, use the pattern mcp__{server_name}__{operationid_lowercase} based on the spec's operationId values. If you don't know exact operationIds, omit allowed_tools to allow all tools from that server.
+
+IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi pattern) in allowed_tools. Do NOT invent tool names.
 
 ## Permission Modes
 - "plan" — read-only, no file writes or tool execution. Good for analysis tasks.
@@ -162,7 +201,7 @@ IMPORTANT: Use ONLY these exact tool names in allowed_tools. Do NOT invent tool 
 
 ## Rules
 1. Use kebab-case for all names
-2. Only reference MCP servers that exist in the current config
+2. Only reference MCP servers that exist in the current config OR are created in the same plan's mcp_servers array
 3. If a task needs agents, create them and reference by name
 4. If tasks share data, create a domain
 5. Keep prompts focused and actionable
@@ -180,6 +219,15 @@ IMPORTANT: Use ONLY these exact tool names in allowed_tools. Do NOT invent tool 
 		sb.WriteString("## Available MCP Servers\n\n")
 		for _, mcp := range cfg.MCPServers {
 			sb.WriteString(fmt.Sprintf("- `%s`: %s %s\n", mcp.Name, mcp.Command, strings.Join(mcp.Args, " ")))
+			// For mcp-openapi servers, show spec path and filters so wizard knows what APIs are available
+			if strings.Contains(mcp.Command, "mcp-openapi") {
+				for k, v := range mcp.Env {
+					switch k {
+					case "OPENAPI_SPEC_PATH", "OPENAPI_BASE_URL", "OPENAPI_INCLUDE_TAGS", "OPENAPI_INCLUDE_PATHS":
+						sb.WriteString(fmt.Sprintf("    %s=%s\n", k, v))
+					}
+				}
+			}
 		}
 		sb.WriteString("\n")
 	}
