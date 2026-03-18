@@ -47,6 +47,7 @@ func NewRunner(taskRunner *task.Runner, tasks []config.Task, subMgr *subagent.Ma
 func (r *Runner) RunSequential(ctx context.Context, p config.Pipeline) (string, error) {
 	maxIter := p.MaxIter()
 	prevOutput := ""
+	prevSessionID := ""
 
 	for i := 1; i <= maxIter; i++ {
 		r.logger.Info("pipeline iteration", "pipeline", p.Name, "iteration", i, "max", maxIter)
@@ -74,9 +75,19 @@ func (r *Runner) RunSequential(ctx context.Context, p config.Pipeline) (string, 
 				defer cleanup()
 			}
 
+			// Chain session from the previous step so the agent retains full context.
+			if p.SessionChain && prevSessionID != "" {
+				opts.ResumeSessionID = prevSessionID
+			}
+
 			r.logger.Info("running step", "pipeline", p.Name, "step", step.Task, "iteration", i)
 			result := r.taskRunner.Run(stepCtx, t, opts, vars)
 			cancel()
+
+			// Capture session ID for chaining to the next step.
+			if p.SessionChain && result.SessionID != "" {
+				prevSessionID = result.SessionID
+			}
 
 			if result.Error != "" {
 				return prevOutput, fmt.Errorf("pipeline %s, step %s (iteration %d): %s", p.Name, step.Task, i, result.Error)

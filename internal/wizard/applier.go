@@ -150,6 +150,7 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 			Steps:         steps,
 			MaxIterations: pp.MaxIterations,
 			StopSignal:    pp.StopSignal,
+			SessionChain:  pp.SessionChain,
 		}
 		if p.Mode == "" {
 			p.Mode = "sequential"

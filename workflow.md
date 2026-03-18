@@ -742,6 +742,27 @@ mcp_servers:
 
 **Результат:** 30 производителей ветпрепаратов РБ в БД (8 экспортёров, 1 авиаэкспортёр — ОАО «БелВитунифарм»)
 
+### 2026-03-18 — Session chaining для sequential pipelines
+
+**Новая возможность: `session_chain`**
+- Поле `session_chain: true` в конфигурации sequential pipeline
+- При включении каждый шаг получает `--resume <session_id>` от предыдущего шага
+- Агент сохраняет полный контекст разговора между шагами — не нужно передавать весь `{{.PrevOutput}}`
+- Opt-in: без `session_chain: true` поведение pipeline не меняется
+
+**Затронутые файлы:**
+- `config/pipeline.go` — поле `SessionChain bool`
+- `config/validate.go` — валидация: `session_chain` только для `sequential` mode + все шаги должны иметь одинаковый `work_dir`
+- `pipeline/sequential.go` — передача `prevSessionID` между шагами через `RunOptions.ResumeSessionID`
+- `wizard/types.go` — поле `SessionChain` в `PipelinePlan`
+- `wizard/prompt.go` — описание и JSON schema для wizard (Claude знает про `session_chain`)
+- `wizard/applier.go` — передача `SessionChain` при создании pipeline из плана
+
+**Ограничения:**
+- Только `mode: sequential` (валидация блокирует parallel)
+- Все шаги pipeline должны иметь одинаковый `work_dir` (сессия привязана к проекту)
+- `--resume` может игнорировать `--model`, `--agents`, `--mcp-config` при смене между шагами
+
 ---
 
 ## Бэклог

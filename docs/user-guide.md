@@ -392,6 +392,34 @@ pipelines:
 
 Защита действует на все триггеры: cron-расписание, file watcher, REST API (sync и async). Guard разделяется между всеми компонентами — запуск по cron блокирует ручной запуск и наоборот.
 
+### Session chaining (сохранение контекста между шагами)
+
+По умолчанию каждый шаг pipeline запускает новый `claude -p` процесс без контекста предыдущего. С `session_chain: true` каждый следующий шаг продолжает разговор предыдущего через `--resume`:
+
+```yaml
+pipelines:
+  - name: research-and-report
+    mode: sequential
+    session_chain: true
+    steps:
+      - task: research-data       # запускает claude -p, получает session_id
+      - task: compile-report      # --resume <session_id> — помнит весь контекст research
+      - task: deliver-report      # --resume <session_id> — помнит и research, и report
+    max_iterations: 1
+```
+
+**Преимущества:**
+- Агент помнит весь контекст без передачи `{{.PrevOutput}}`
+- Экономия токенов — Claude не парсит заново предыдущий вывод
+- Качественнее — полный контекст вместо сжатого текста
+
+**Ограничения:**
+- Только `mode: sequential`
+- Все шаги должны иметь **одинаковый `work_dir`** (сессия привязана к проекту)
+- `--resume` может не учитывать разные `model`, `agents`, `mcp_servers` между шагами
+
+Без `session_chain: true` (по умолчанию) pipeline работает как раньше — каждый шаг получает вывод предыдущего через `{{.PrevOutput}}`.
+
 ### Parallel (параллельный)
 
 Все шаги запускаются одновременно. Опциональный `collector` собирает результаты.

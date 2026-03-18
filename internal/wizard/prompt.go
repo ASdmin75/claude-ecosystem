@@ -100,7 +100,8 @@ const wizardJSONSchema = `{
           "mode": { "type": "string", "enum": ["sequential", "parallel"] },
           "steps": { "type": "array", "items": { "type": "string" } },
           "max_iterations": { "type": "integer" },
-          "stop_signal": { "type": "string" }
+          "stop_signal": { "type": "string" },
+          "session_chain": { "type": "boolean", "description": "If true, pass session_id between sequential steps so each step resumes the previous conversation. All steps must share the same work_dir." }
         },
         "required": ["name", "steps"]
       }
@@ -160,6 +161,7 @@ Chain multiple tasks together.
 - steps: ordered list of task names
 - max_iterations: loop count for sequential mode (default 10)
 - stop_signal: text in output that stops iteration early
+- session_chain: if true, each sequential step resumes the previous step's Claude session via --resume, preserving full conversation context. All steps MUST share the same work_dir. Only works with mode "sequential".
 
 ## MCP Tool Names
 

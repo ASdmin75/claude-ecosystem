@@ -78,6 +78,25 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("pipeline %s: step references unknown task %q", p.Name, step.Task)
 			}
 		}
+
+		// session_chain requires sequential mode and consistent work_dir across steps.
+		if p.SessionChain {
+			if mode != "sequential" {
+				return fmt.Errorf("pipeline %s: session_chain is only supported in sequential mode", p.Name)
+			}
+			var firstDir string
+			for i, step := range p.Steps {
+				t := taskByName(cfg.Tasks, step.Task)
+				if t == nil {
+					continue // already validated above
+				}
+				if i == 0 {
+					firstDir = t.WorkDir
+				} else if t.WorkDir != firstDir {
+					return fmt.Errorf("pipeline %s: session_chain requires all steps to share the same work_dir (step %q has %q, expected %q)", p.Name, step.Task, t.WorkDir, firstDir)
+				}
+			}
+		}
 	}
 
 	// Validate domain references
@@ -89,5 +108,15 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	return nil
+}
+
+// taskByName returns a pointer to the task with the given name, or nil.
+func taskByName(tasks []Task, name string) *Task {
+	for i := range tasks {
+		if tasks[i].Name == name {
+			return &tasks[i]
+		}
+	}
 	return nil
 }

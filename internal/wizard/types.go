@@ -77,6 +77,7 @@ type PipelinePlan struct {
 	Steps         []string `json:"steps"`          // task names
 	MaxIterations int      `json:"max_iterations,omitempty"`
 	StopSignal    string   `json:"stop_signal,omitempty"`
+	SessionChain  bool     `json:"session_chain,omitempty"`
 }
 
 // ApplyResult holds the outcome of applying a plan.

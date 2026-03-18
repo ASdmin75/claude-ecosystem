@@ -8,6 +8,7 @@ type Pipeline struct {
 	MaxIterations int            `yaml:"max_iterations" json:"max_iterations"`
 	StopSignal    string         `yaml:"stop_signal,omitempty" json:"stop_signal,omitempty"`
 	Collector     string         `yaml:"collector,omitempty" json:"collector,omitempty"`
+	SessionChain  bool           `yaml:"session_chain,omitempty" json:"session_chain,omitempty"`
 	Schedule        string         `yaml:"schedule,omitempty" json:"schedule,omitempty"`
 	AllowConcurrent *bool          `yaml:"allow_concurrent,omitempty" json:"allow_concurrent,omitempty"`
 }
