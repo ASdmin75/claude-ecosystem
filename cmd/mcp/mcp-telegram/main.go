@@ -1,83 +1,17 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	tele "gopkg.in/telebot.v4"
 )
-
-type jsonRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type jsonRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
-}
-
-type tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-}
-
-var tools = []tool{
-	{
-		Name:        "send_message",
-		Description: "Send a text message to a Telegram chat.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"chat_id": map[string]any{
-					"type":        "string",
-					"description": "Telegram chat ID. Uses TELEGRAM_CHAT_ID env var if omitted.",
-				},
-				"text": map[string]any{
-					"type":        "string",
-					"description": "Message text to send.",
-				},
-				"parse_mode": map[string]any{
-					"type":        "string",
-					"description": "Parse mode: Markdown or HTML. Optional.",
-				},
-			},
-			"required": []string{"text"},
-		},
-	},
-	{
-		Name:        "send_document",
-		Description: "Send a file (document) to a Telegram chat.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"chat_id": map[string]any{
-					"type":        "string",
-					"description": "Telegram chat ID. Uses TELEGRAM_CHAT_ID env var if omitted.",
-				},
-				"file_path": map[string]any{
-					"type":        "string",
-					"description": "Path to the file to send.",
-				},
-				"caption": map[string]any{
-					"type":        "string",
-					"description": "Optional caption for the document.",
-				},
-			},
-			"required": []string{"file_path"},
-		},
-	},
-}
 
 func getBot() (*tele.Bot, error) {
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
@@ -91,8 +25,8 @@ func getBot() (*tele.Bot, error) {
 	return tele.NewBot(pref)
 }
 
-func getChatID(params map[string]any) (int64, error) {
-	if id, ok := params["chat_id"].(string); ok && id != "" {
+func getChatID(args map[string]any) (int64, error) {
+	if id, ok := args["chat_id"].(string); ok && id != "" {
 		return strconv.ParseInt(id, 10, 64)
 	}
 	envID := os.Getenv("TELEGRAM_CHAT_ID")
@@ -102,38 +36,24 @@ func getChatID(params map[string]any) (int64, error) {
 	return strconv.ParseInt(envID, 10, 64)
 }
 
-func handleToolCall(params map[string]any) (any, error) {
-	toolName, _ := params["name"].(string)
-	args, _ := params["arguments"].(map[string]any)
-
-	switch toolName {
-	case "send_message":
-		return handleSendMessage(args)
-	case "send_document":
-		return handleSendDocument(args)
-	default:
-		return nil, fmt.Errorf("unknown tool: %s", toolName)
-	}
-}
-
-func handleSendMessage(args map[string]any) (any, error) {
+func handleSendMessage(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	bot, err := getBot()
 	if err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	chatID, err := getChatID(args)
+	chatID, err := getChatID(req.GetArguments())
 	if err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	text, _ := args["text"].(string)
-	if text == "" {
-		return nil, fmt.Errorf("text is required")
+	text, err := req.RequireString("text")
+	if err != nil {
+		return mcp.NewToolResultError("text is required"), nil
 	}
 
 	opts := &tele.SendOptions{}
-	if pm, ok := args["parse_mode"].(string); ok {
+	if pm := req.GetString("parse_mode", ""); pm != "" {
 		switch pm {
 		case "Markdown", "MarkdownV2":
 			opts.ParseMode = tele.ModeMarkdownV2
@@ -145,102 +65,68 @@ func handleSendMessage(args map[string]any) (any, error) {
 	chat := &tele.Chat{ID: chatID}
 	msg, err := bot.Send(chat, text, opts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send message: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to send message: %v", err)), nil
 	}
 
-	return map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": fmt.Sprintf("Message sent successfully. Message ID: %d", msg.ID)},
-		},
-	}, nil
+	return mcp.NewToolResultText(fmt.Sprintf("Message sent successfully. Message ID: %d", msg.ID)), nil
 }
 
-func handleSendDocument(args map[string]any) (any, error) {
+func handleSendDocument(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	bot, err := getBot()
 	if err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	chatID, err := getChatID(args)
+	chatID, err := getChatID(req.GetArguments())
 	if err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	filePath, _ := args["file_path"].(string)
-	if filePath == "" {
-		return nil, fmt.Errorf("file_path is required")
+	filePath, err := req.RequireString("file_path")
+	if err != nil {
+		return mcp.NewToolResultError("file_path is required"), nil
 	}
 
 	if _, err := os.Stat(filePath); err != nil {
-		return nil, fmt.Errorf("file not found: %s", filePath)
+		return mcp.NewToolResultError(fmt.Sprintf("file not found: %s", filePath)), nil
 	}
 
 	doc := &tele.Document{
 		File:     tele.FromDisk(filePath),
 		FileName: filepath.Base(filePath),
 	}
-	if caption, ok := args["caption"].(string); ok {
+	if caption := req.GetString("caption", ""); caption != "" {
 		doc.Caption = caption
 	}
 
 	chat := &tele.Chat{ID: chatID}
 	msg, err := bot.Send(chat, doc)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send document: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to send document: %v", err)), nil
 	}
 
-	return map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": fmt.Sprintf("Document sent successfully. Message ID: %d", msg.ID)},
-		},
-	}, nil
+	return mcp.NewToolResultText(fmt.Sprintf("Document sent successfully. Message ID: %d", msg.ID)), nil
 }
 
 func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	enc := json.NewEncoder(os.Stdout)
+	s := server.NewMCPServer("mcp-telegram", "0.1.0")
 
-	for scanner.Scan() {
-		var req jsonRPCRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
+	s.AddTool(mcp.NewTool("send_message",
+		mcp.WithDescription("Send a text message to a Telegram chat."),
+		mcp.WithString("chat_id", mcp.Description("Telegram chat ID. Uses TELEGRAM_CHAT_ID env var if omitted.")),
+		mcp.WithString("text", mcp.Required(), mcp.Description("Message text to send.")),
+		mcp.WithString("parse_mode", mcp.Description("Parse mode: Markdown or HTML. Optional.")),
+	), handleSendMessage)
 
-		var resp jsonRPCResponse
-		resp.JSONRPC = "2.0"
-		resp.ID = req.ID
+	s.AddTool(mcp.NewTool("send_document",
+		mcp.WithDescription("Send a file (document) to a Telegram chat."),
+		mcp.WithString("chat_id", mcp.Description("Telegram chat ID. Uses TELEGRAM_CHAT_ID env var if omitted.")),
+		mcp.WithString("file_path", mcp.Required(), mcp.Description("Path to the file to send.")),
+		mcp.WithString("caption", mcp.Description("Optional caption for the document.")),
+	), handleSendDocument)
 
-		switch req.Method {
-		case "initialize":
-			resp.Result = map[string]any{
-				"protocolVersion": "2024-11-05",
-				"capabilities":   map[string]any{"tools": map[string]any{}},
-				"serverInfo":     map[string]any{"name": "mcp-telegram", "version": "0.1.0"},
-			}
-		case "tools/list":
-			resp.Result = map[string]any{"tools": tools}
-		case "tools/call":
-			var params map[string]any
-			if err := json.Unmarshal(req.Params, &params); err != nil {
-				resp.Error = map[string]any{"code": -32602, "message": "invalid params: " + err.Error()}
-			} else {
-				result, err := handleToolCall(params)
-				if err != nil {
-					resp.Result = map[string]any{
-						"content": []map[string]any{
-							{"type": "text", "text": "Error: " + err.Error()},
-						},
-						"isError": true,
-					}
-				} else {
-					resp.Result = result
-				}
-			}
-		default:
-			resp.Error = map[string]any{"code": -32601, "message": "method not found"}
-		}
-
-		enc.Encode(resp)
+	if err := server.ServeStdio(s); err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Exit(1)
 	}
 }

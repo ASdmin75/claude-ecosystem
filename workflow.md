@@ -802,6 +802,56 @@ make setup-whisper
 - `tasks.yaml` — задачи `transcribe-audio`, `summarize-transcription`, пайплайн `meeting-notes`, MCP-сервер `whisper`
 - `.gitignore` — добавлена директория `logs/`
 
+### 2026-03-18 — Миграция MCP-серверов на mcp-go
+
+**Проблема:** 11 MCP-серверов дублировали ~70 строк идентичного JSON-RPC 2.0 boilerplate каждый: типы `jsonRPCRequest`/`jsonRPCResponse`/`tool`, `bufio.Scanner` main loop с `switch` по methods (`initialize`, `tools/list`, `tools/call`), хелперы `textResult()`/`errorResult()`. Итого ~900 строк копипасты. Ручная реализация не обрабатывала edge cases (notifications без id, `ping`, `notifications/initialized`).
+
+**Решение: библиотека [mcp-go](https://github.com/mark3labs/mcp-go) v0.45.0**
+
+Каждый сервер вместо ~70 строк протокольного кода использует 3-5 строк:
+```go
+s := server.NewMCPServer("mcp-filesystem", "0.1.0")
+s.AddTool(mcp.NewTool("read_file",
+    mcp.WithDescription("Read file contents"),
+    mcp.WithString("path", mcp.Required(), mcp.Description("File path")),
+), handleReadFile)
+server.ServeStdio(s)
+```
+
+**Мигрированные серверы (11 из 11):**
+- `mcp-filesystem`, `mcp-pdf`, `mcp-word` — простые, read/write инструменты
+- `mcp-email`, `mcp-telegram` — write-only, env-dependent
+- `mcp-excel`, `mcp-whisper` — средней сложности
+- `mcp-google` — stub (not implemented)
+- `mcp-database`, `mcp-exportby` — сложные, с package-level `*sql.DB` и `ensureSchema()`
+- `mcp-openapi` — самый сложный: динамические tools из OpenAPI spec, OAuth2 token management, 401 retry. Использует `mcp.NewToolWithRawSchema()` для generated schemas + closure `makeToolHandler()` для per-tool dispatch
+
+**Что удалено из каждого сервера:**
+- Типы `jsonRPCRequest`, `jsonRPCResponse`, `tool` (и варианты `mcpTool`, `toolCallParams`, `contentItem`, `toolResult`)
+- Хелперы `textResult()`, `errorResult()`
+- Dispatcher `handleToolCall(params)`
+- Main loop: `bufio.Scanner` + `json.Encoder` + `switch req.Method`
+- Import `"bufio"` (и часто `"encoding/json"`)
+
+**Что сохранено:** вся бизнес-логика каждого сервера без изменений.
+
+**Обновлённые тесты:**
+- `cmd/mcp/mcp-database/main_test.go` — адаптирован к новым сигнатурам handler'ов (`func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)`), добавлены хелперы `makeReq()` и `resultText()`
+- `cmd/mcp/mcp-openapi/oauth2_test.go` — без изменений (тестирует `oauth2TokenManager`, не затронут миграцией)
+
+**Верификация:**
+- `make build` — все 13 бинарников собираются (server, hook, 11 MCP)
+- `make test` — все тесты проходят
+- Ручное тестирование всех 11 серверов через stdin/stdout: `initialize` → `tools/list` → `tools/call` — корректные JSON-RPC ответы
+
+**Новая зависимость:** `github.com/mark3labs/mcp-go v0.45.0` (транзитивные: jsonschema, cast, uritemplate)
+
+**Бонусы mcp-go:**
+- Полное соответствие MCP spec (поддержка `ping`, notifications, `protocolVersion` negotiation)
+- Параллельная обработка tool calls (worker pool)
+- Типобезопасное извлечение аргументов: `req.RequireString()`, `req.GetInt()`, `req.BindArguments()`
+- Готовность к будущим MCP features (Resources, Prompts, Middleware)
+
 ---
 
 ## Бэклог
@@ -823,6 +873,7 @@ make setup-whisper
 - [x] mcp-exportby: каталог export.by — scan, analyze, reject, mark_exported
 - [x] mcp-openapi: динамические MCP-инструменты из OpenAPI-спецификаций (libopenapi)
 - [x] mcp-whisper: транскрипция аудио через whisper.cpp (WAV/MP3/FLAC/OGG/M4A, multi-language)
+- [x] Миграция всех 11 MCP-серверов на библиотеку mcp-go (устранение ~900 строк JSON-RPC boilerplate)
 
 ### Web UI — доработки
 - [x] Динамическое обновление UI через SSE (real-time, без polling)

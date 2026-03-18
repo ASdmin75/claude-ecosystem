@@ -1,205 +1,89 @@
 package main
 
 import (
-	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/xuri/excelize/v2"
 )
 
-type jsonRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
+func main() {
+	s := server.NewMCPServer("mcp-excel", "0.1.0")
 
-type jsonRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
-}
+	s.AddTool(mcp.NewTool("read_spreadsheet",
+		mcp.WithDescription("Read data from an Excel spreadsheet."),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Path to the Excel file (.xlsx or .xls).")),
+		mcp.WithString("sheet", mcp.Description("Name of the sheet to read. Defaults to the first sheet.")),
+		mcp.WithString("range", mcp.Description("Cell range to read, e.g. 'A1:D10'. Reads entire sheet if omitted.")),
+	), handleReadSpreadsheet)
 
-type tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-}
+	s.AddTool(mcp.NewTool("write_spreadsheet",
+		mcp.WithDescription("Write data to an existing Excel spreadsheet."),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Path to the Excel file.")),
+		mcp.WithString("sheet", mcp.Required(), mcp.Description("Name of the sheet to write to.")),
+		mcp.WithString("cell", mcp.Required(), mcp.Description("Starting cell for the write, e.g. 'A1'.")),
+		mcp.WithArray("data", mcp.Required(), mcp.Description("2D array of values to write (rows of columns).")),
+	), handleWriteSpreadsheet)
 
-var tools = []tool{
-	{
-		Name:        "read_spreadsheet",
-		Description: "Read data from an Excel spreadsheet.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Path to the Excel file (.xlsx or .xls).",
-				},
-				"sheet": map[string]any{
-					"type":        "string",
-					"description": "Name of the sheet to read. Defaults to the first sheet.",
-				},
-				"range": map[string]any{
-					"type":        "string",
-					"description": "Cell range to read, e.g. 'A1:D10'. Reads entire sheet if omitted.",
-				},
-			},
-			"required": []string{"path"},
-		},
-	},
-	{
-		Name:        "write_spreadsheet",
-		Description: "Write data to an existing Excel spreadsheet.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Path to the Excel file.",
-				},
-				"sheet": map[string]any{
-					"type":        "string",
-					"description": "Name of the sheet to write to.",
-				},
-				"cell": map[string]any{
-					"type":        "string",
-					"description": "Starting cell for the write, e.g. 'A1'.",
-				},
-				"data": map[string]any{
-					"type":        "array",
-					"description": "2D array of values to write (rows of columns).",
-					"items": map[string]any{
-						"type":  "array",
-						"items": map[string]any{"type": "string"},
-					},
-				},
-			},
-			"required": []string{"path", "sheet", "cell", "data"},
-		},
-	},
-	{
-		Name:        "create_spreadsheet",
-		Description: "Create a new Excel spreadsheet with optional initial data.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Path for the new Excel file.",
-				},
-				"sheet": map[string]any{
-					"type":        "string",
-					"description": "Name of the initial sheet. Defaults to 'Sheet1'.",
-				},
-				"headers": map[string]any{
-					"type":        "array",
-					"description": "Column headers for the first row.",
-					"items":       map[string]any{"type": "string"},
-				},
-			},
-			"required": []string{"path"},
-		},
-	},
-	{
-		Name:        "add_styled_table",
-		Description: "Add a styled table with auto-filter, header styling, and alternating row colors to a sheet.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Path to the Excel file.",
-				},
-				"sheet": map[string]any{
-					"type":        "string",
-					"description": "Name of the sheet to add the table to.",
-				},
-				"headers": map[string]any{
-					"type":        "array",
-					"description": "Column headers.",
-					"items":       map[string]any{"type": "string"},
-				},
-				"data": map[string]any{
-					"type":        "array",
-					"description": "2D array of row data.",
-					"items": map[string]any{
-						"type":  "array",
-						"items": map[string]any{"type": "string"},
-					},
-				},
-				"table_name": map[string]any{
-					"type":        "string",
-					"description": "Name for the table. Defaults to 'Table1'.",
-				},
-			},
-			"required": []string{"path", "sheet", "headers", "data"},
-		},
-	},
-}
+	s.AddTool(mcp.NewTool("create_spreadsheet",
+		mcp.WithDescription("Create a new Excel spreadsheet with optional initial data."),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Path for the new Excel file.")),
+		mcp.WithString("sheet", mcp.Description("Name of the initial sheet. Defaults to 'Sheet1'.")),
+		mcp.WithArray("headers", mcp.Description("Column headers for the first row."), mcp.WithStringItems()),
+	), handleCreateSpreadsheet)
 
-func handleToolCall(params map[string]any) (any, error) {
-	toolName, _ := params["name"].(string)
-	args, _ := params["arguments"].(map[string]any)
+	s.AddTool(mcp.NewTool("add_styled_table",
+		mcp.WithDescription("Add a styled table with auto-filter, header styling, and alternating row colors to a sheet."),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Path to the Excel file.")),
+		mcp.WithString("sheet", mcp.Required(), mcp.Description("Name of the sheet to add the table to.")),
+		mcp.WithArray("headers", mcp.Required(), mcp.Description("Column headers."), mcp.WithStringItems()),
+		mcp.WithArray("data", mcp.Required(), mcp.Description("2D array of row data.")),
+		mcp.WithString("table_name", mcp.Description("Name for the table. Defaults to 'Table1'.")),
+	), handleAddStyledTable)
 
-	switch toolName {
-	case "read_spreadsheet":
-		return handleReadSpreadsheet(args)
-	case "write_spreadsheet":
-		return handleWriteSpreadsheet(args)
-	case "create_spreadsheet":
-		return handleCreateSpreadsheet(args)
-	case "add_styled_table":
-		return handleAddStyledTable(args)
-	default:
-		return nil, fmt.Errorf("unknown tool: %s", toolName)
+	if err := server.ServeStdio(s); err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
-func textResult(text string) any {
-	return map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": text},
-		},
-	}
-}
-
-func handleReadSpreadsheet(args map[string]any) (any, error) {
-	path, _ := args["path"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("path is required")
+func handleReadSpreadsheet(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError("path is required"), nil
 	}
 
 	f, err := excelize.OpenFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to open file: %v", err)), nil
 	}
 	defer f.Close()
 
-	sheet, _ := args["sheet"].(string)
+	sheet := req.GetString("sheet", "")
 	if sheet == "" {
 		sheet = f.GetSheetName(0)
 	}
 
 	var rows [][]string
-	if rangeStr, ok := args["range"].(string); ok && rangeStr != "" {
+	rangeStr := req.GetString("range", "")
+	if rangeStr != "" {
 		// Parse range like "A1:D10"
 		parts := strings.SplitN(rangeStr, ":", 2)
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid range format, expected 'A1:D10'")
+			return mcp.NewToolResultError("invalid range format, expected 'A1:D10'"), nil
 		}
 		startCol, startRow, err := excelize.CellNameToCoordinates(parts[0])
 		if err != nil {
-			return nil, fmt.Errorf("invalid start cell: %w", err)
+			return mcp.NewToolResultError(fmt.Sprintf("invalid start cell: %v", err)), nil
 		}
 		endCol, endRow, err := excelize.CellNameToCoordinates(parts[1])
 		if err != nil {
-			return nil, fmt.Errorf("invalid end cell: %w", err)
+			return mcp.NewToolResultError(fmt.Sprintf("invalid end cell: %v", err)), nil
 		}
 		for r := startRow; r <= endRow; r++ {
 			var row []string
@@ -213,36 +97,46 @@ func handleReadSpreadsheet(args map[string]any) (any, error) {
 	} else {
 		rows, err = f.GetRows(sheet)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get rows: %w", err)
+			return mcp.NewToolResultError(fmt.Sprintf("failed to get rows: %v", err)), nil
 		}
 	}
 
 	data, err := json.Marshal(rows)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal rows: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to marshal rows: %v", err)), nil
 	}
-	return textResult(string(data)), nil
+	return mcp.NewToolResultText(string(data)), nil
 }
 
-func handleWriteSpreadsheet(args map[string]any) (any, error) {
-	path, _ := args["path"].(string)
-	sheet, _ := args["sheet"].(string)
-	cell, _ := args["cell"].(string)
-	dataRaw, _ := args["data"].([]any)
+func handleWriteSpreadsheet(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError("path is required"), nil
+	}
+	sheet, err := req.RequireString("sheet")
+	if err != nil {
+		return mcp.NewToolResultError("sheet is required"), nil
+	}
+	cell, err := req.RequireString("cell")
+	if err != nil {
+		return mcp.NewToolResultError("cell is required"), nil
+	}
 
-	if path == "" || sheet == "" || cell == "" {
-		return nil, fmt.Errorf("path, sheet, and cell are required")
+	args := req.GetArguments()
+	dataRaw, ok := args["data"].([]any)
+	if !ok || len(dataRaw) == 0 {
+		return mcp.NewToolResultError("data is required and must be a non-empty array"), nil
 	}
 
 	f, err := excelize.OpenFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to open file: %v", err)), nil
 	}
 	defer f.Close()
 
 	startCol, startRow, err := excelize.CellNameToCoordinates(cell)
 	if err != nil {
-		return nil, fmt.Errorf("invalid cell: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("invalid cell: %v", err)), nil
 	}
 
 	for ri, rowRaw := range dataRaw {
@@ -257,22 +151,19 @@ func handleWriteSpreadsheet(args map[string]any) (any, error) {
 	}
 
 	if err := f.SaveAs(path); err != nil {
-		return nil, fmt.Errorf("failed to save file: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to save file: %v", err)), nil
 	}
 
-	return textResult(fmt.Sprintf("Written %d rows to %s!%s starting at %s", len(dataRaw), path, sheet, cell)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Written %d rows to %s!%s starting at %s", len(dataRaw), path, sheet, cell)), nil
 }
 
-func handleCreateSpreadsheet(args map[string]any) (any, error) {
-	path, _ := args["path"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("path is required")
+func handleCreateSpreadsheet(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError("path is required"), nil
 	}
 
-	sheet, _ := args["sheet"].(string)
-	if sheet == "" {
-		sheet = "Sheet1"
-	}
+	sheet := req.GetString("sheet", "Sheet1")
 
 	f := excelize.NewFile()
 	defer f.Close()
@@ -285,6 +176,7 @@ func handleCreateSpreadsheet(args map[string]any) (any, error) {
 	}
 
 	// Write headers if provided
+	args := req.GetArguments()
 	if headersRaw, ok := args["headers"].([]any); ok && len(headersRaw) > 0 {
 		for i, h := range headersRaw {
 			cellName, _ := excelize.CoordinatesToCellName(i+1, 1)
@@ -293,33 +185,40 @@ func handleCreateSpreadsheet(args map[string]any) (any, error) {
 	}
 
 	if err := f.SaveAs(path); err != nil {
-		return nil, fmt.Errorf("failed to save file: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to save file: %v", err)), nil
 	}
 
-	return textResult(fmt.Sprintf("Created spreadsheet: %s (sheet: %s)", path, sheet)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Created spreadsheet: %s (sheet: %s)", path, sheet)), nil
 }
 
-func handleAddStyledTable(args map[string]any) (any, error) {
-	path, _ := args["path"].(string)
-	sheet, _ := args["sheet"].(string)
-	headersRaw, _ := args["headers"].([]any)
-	dataRaw, _ := args["data"].([]any)
-	tableName, _ := args["table_name"].(string)
+func handleAddStyledTable(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError("path is required"), nil
+	}
+	sheet, err := req.RequireString("sheet")
+	if err != nil {
+		return mcp.NewToolResultError("sheet is required"), nil
+	}
 
-	if path == "" || sheet == "" || len(headersRaw) == 0 {
-		return nil, fmt.Errorf("path, sheet, and headers are required")
+	args := req.GetArguments()
+	headersRaw, ok := args["headers"].([]any)
+	if !ok || len(headersRaw) == 0 {
+		return mcp.NewToolResultError("headers is required and must be a non-empty array"), nil
 	}
-	if tableName == "" {
-		tableName = "Table1"
+	dataRaw, ok := args["data"].([]any)
+	if !ok {
+		return mcp.NewToolResultError("data is required and must be an array"), nil
 	}
+
+	tableName := req.GetString("table_name", "Table1")
 
 	var f *excelize.File
-	var err error
 
 	if _, statErr := os.Stat(path); statErr == nil {
 		f, err = excelize.OpenFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("failed to open file: %w", err)
+			return mcp.NewToolResultError(fmt.Sprintf("failed to open file: %v", err)), nil
 		}
 	} else {
 		f = excelize.NewFile()
@@ -389,58 +288,9 @@ func handleAddStyledTable(args map[string]any) (any, error) {
 	}
 
 	if err := f.SaveAs(path); err != nil {
-		return nil, fmt.Errorf("failed to save file: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to save file: %v", err)), nil
 	}
 
-	return textResult(fmt.Sprintf("Added styled table '%s' to %s!%s with %d columns and %d data rows",
+	return mcp.NewToolResultText(fmt.Sprintf("Added styled table '%s' to %s!%s with %d columns and %d data rows",
 		tableName, path, sheet, numCols, len(dataRaw))), nil
-}
-
-func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	enc := json.NewEncoder(os.Stdout)
-
-	for scanner.Scan() {
-		var req jsonRPCRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
-
-		var resp jsonRPCResponse
-		resp.JSONRPC = "2.0"
-		resp.ID = req.ID
-
-		switch req.Method {
-		case "initialize":
-			resp.Result = map[string]any{
-				"protocolVersion": "2024-11-05",
-				"capabilities":   map[string]any{"tools": map[string]any{}},
-				"serverInfo":     map[string]any{"name": "mcp-excel", "version": "0.1.0"},
-			}
-		case "tools/list":
-			resp.Result = map[string]any{"tools": tools}
-		case "tools/call":
-			var params map[string]any
-			if err := json.Unmarshal(req.Params, &params); err != nil {
-				resp.Error = map[string]any{"code": -32602, "message": "invalid params: " + err.Error()}
-			} else {
-				result, err := handleToolCall(params)
-				if err != nil {
-					resp.Result = map[string]any{
-						"content": []map[string]any{
-							{"type": "text", "text": "Error: " + err.Error()},
-						},
-						"isError": true,
-					}
-				} else {
-					resp.Result = result
-				}
-			}
-		default:
-			resp.Error = map[string]any{"code": -32601, "message": "method not found"}
-		}
-
-		enc.Encode(resp)
-	}
 }

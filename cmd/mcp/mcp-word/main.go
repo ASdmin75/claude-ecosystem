@@ -2,102 +2,18 @@ package main
 
 import (
 	"archive/zip"
-	"bufio"
 	"bytes"
-	"encoding/json"
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
-
-type jsonRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type jsonRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
-}
-
-type tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-}
-
-var tools = []tool{
-	{
-		Name:        "read_document",
-		Description: "Read the text content of a Word document.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Path to the Word document (.docx).",
-				},
-				"include_formatting": map[string]any{
-					"type":        "boolean",
-					"description": "Whether to include formatting metadata. Defaults to false.",
-				},
-			},
-			"required": []string{"path"},
-		},
-	},
-	{
-		Name:        "write_document",
-		Description: "Append or replace content in an existing Word document.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Path to the Word document.",
-				},
-				"content": map[string]any{
-					"type":        "string",
-					"description": "Text content to write.",
-				},
-				"mode": map[string]any{
-					"type":        "string",
-					"description": "Write mode: 'append' or 'replace'. Defaults to 'append'.",
-					"enum":        []string{"append", "replace"},
-				},
-			},
-			"required": []string{"path", "content"},
-		},
-	},
-	{
-		Name:        "create_document",
-		Description: "Create a new Word document with the given content.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Path for the new Word document.",
-				},
-				"title": map[string]any{
-					"type":        "string",
-					"description": "Document title.",
-				},
-				"content": map[string]any{
-					"type":        "string",
-					"description": "Initial text content for the document.",
-				},
-			},
-			"required": []string{"path"},
-		},
-	},
-}
 
 // XML structs for parsing docx word/document.xml
 
@@ -126,7 +42,7 @@ type wPStyle struct {
 }
 
 type wRun struct {
-	RPr  *wRPr  `xml:"rPr"`
+	RPr  *wRPr   `xml:"rPr"`
 	Text []wText `xml:"t"`
 }
 
@@ -176,30 +92,6 @@ const documentXMLHeader = `<?xml version="1.0" encoding="UTF-8" standalone="yes"
 const documentXMLFooter = `
   </w:body>
 </w:document>`
-
-func textResult(text string) any {
-	return map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": text},
-		},
-	}
-}
-
-func handleToolCall(params map[string]any) (any, error) {
-	toolName, _ := params["name"].(string)
-	args, _ := params["arguments"].(map[string]any)
-
-	switch toolName {
-	case "read_document":
-		return handleReadDocument(args)
-	case "write_document":
-		return handleWriteDocument(args)
-	case "create_document":
-		return handleCreateDocument(args)
-	default:
-		return nil, fmt.Errorf("unknown tool: %s", toolName)
-	}
-}
 
 // readDocxFile reads a .docx ZIP and returns the parsed document XML and all ZIP entries.
 func readDocxFile(path string) (*wDocument, []*zipEntry, error) {
@@ -386,38 +278,42 @@ func existingParagraphs(doc *wDocument) []paragraphData {
 	return result
 }
 
-func handleReadDocument(args map[string]any) (any, error) {
-	path, _ := args["path"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("path is required")
+// Tool handlers
+
+func handleReadDocument(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError("path is required"), nil
 	}
 
+	args := req.GetArguments()
 	includeFormatting, _ := args["include_formatting"].(bool)
 
 	doc, _, err := readDocxFile(path)
 	if err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	text := extractText(doc, includeFormatting)
-	return textResult(text), nil
+	return mcp.NewToolResultText(text), nil
 }
 
-func handleWriteDocument(args map[string]any) (any, error) {
-	path, _ := args["path"].(string)
-	content, _ := args["content"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("path is required")
+func handleWriteDocument(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError("path is required"), nil
 	}
 
-	mode, _ := args["mode"].(string)
-	if mode == "" {
-		mode = "append"
+	content, err := req.RequireString("content")
+	if err != nil {
+		return mcp.NewToolResultError("content is required"), nil
 	}
+
+	mode := req.GetString("mode", "append")
 
 	doc, entries, err := readDocxFile(path)
 	if err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	// Build new paragraphs from content
@@ -438,20 +334,20 @@ func handleWriteDocument(args map[string]any) (any, error) {
 	docXML := buildDocumentXML(allParas)
 
 	if err := writeDocxFromEntries(path, entries, docXML); err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	return textResult(fmt.Sprintf("Written %d paragraphs to %s (mode: %s)", len(newParas), path, mode)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Written %d paragraphs to %s (mode: %s)", len(newParas), path, mode)), nil
 }
 
-func handleCreateDocument(args map[string]any) (any, error) {
-	path, _ := args["path"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("path is required")
+func handleCreateDocument(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError("path is required"), nil
 	}
 
-	title, _ := args["title"].(string)
-	content, _ := args["content"].(string)
+	title := req.GetString("title", "")
+	content := req.GetString("content", "")
 
 	var paragraphs []paragraphData
 
@@ -476,58 +372,68 @@ func handleCreateDocument(args map[string]any) (any, error) {
 	}
 
 	if err := writeDocxFromEntries(path, entries, docXML); err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	paraCount := len(paragraphs)
-	return textResult(fmt.Sprintf("Created %s with %d paragraphs", path, paraCount)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Created %s with %d paragraphs", path, paraCount)), nil
 }
 
 func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	enc := json.NewEncoder(os.Stdout)
+	s := server.NewMCPServer("mcp-word", "0.1.0")
 
-	for scanner.Scan() {
-		var req jsonRPCRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
+	s.AddTool(
+		mcp.NewTool("read_document",
+			mcp.WithDescription("Read the text content of a Word document."),
+			mcp.WithString("path",
+				mcp.Required(),
+				mcp.Description("Path to the Word document (.docx)."),
+			),
+			mcp.WithBoolean("include_formatting",
+				mcp.Description("Whether to include formatting metadata. Defaults to false."),
+			),
+		),
+		handleReadDocument,
+	)
 
-		var resp jsonRPCResponse
-		resp.JSONRPC = "2.0"
-		resp.ID = req.ID
+	s.AddTool(
+		mcp.NewTool("write_document",
+			mcp.WithDescription("Append or replace content in an existing Word document."),
+			mcp.WithString("path",
+				mcp.Required(),
+				mcp.Description("Path to the Word document."),
+			),
+			mcp.WithString("content",
+				mcp.Required(),
+				mcp.Description("Text content to write."),
+			),
+			mcp.WithString("mode",
+				mcp.Description("Write mode: 'append' or 'replace'. Defaults to 'append'."),
+				mcp.Enum("append", "replace"),
+			),
+		),
+		handleWriteDocument,
+	)
 
-		switch req.Method {
-		case "initialize":
-			resp.Result = map[string]any{
-				"protocolVersion": "2024-11-05",
-				"capabilities":   map[string]any{"tools": map[string]any{}},
-				"serverInfo":     map[string]any{"name": "mcp-word", "version": "0.1.0"},
-			}
-		case "tools/list":
-			resp.Result = map[string]any{"tools": tools}
-		case "tools/call":
-			var params map[string]any
-			if err := json.Unmarshal(req.Params, &params); err != nil {
-				resp.Error = map[string]any{"code": -32602, "message": "invalid params: " + err.Error()}
-			} else {
-				result, err := handleToolCall(params)
-				if err != nil {
-					resp.Result = map[string]any{
-						"content": []map[string]any{
-							{"type": "text", "text": "Error: " + err.Error()},
-						},
-						"isError": true,
-					}
-				} else {
-					resp.Result = result
-				}
-			}
-		default:
-			resp.Error = map[string]any{"code": -32601, "message": "method not found"}
-		}
+	s.AddTool(
+		mcp.NewTool("create_document",
+			mcp.WithDescription("Create a new Word document with the given content."),
+			mcp.WithString("path",
+				mcp.Required(),
+				mcp.Description("Path for the new Word document."),
+			),
+			mcp.WithString("title",
+				mcp.Description("Document title."),
+			),
+			mcp.WithString("content",
+				mcp.Description("Initial text content for the document."),
+			),
+		),
+		handleCreateDocument,
+	)
 
-		enc.Encode(resp)
+	if err := server.ServeStdio(s); err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Exit(1)
 	}
 }

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,136 +9,10 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	_ "modernc.org/sqlite"
 )
-
-type jsonRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type jsonRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
-}
-
-type tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-}
-
-type toolCallParams struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
-}
-
-type contentItem struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type toolResult struct {
-	Content []contentItem `json:"content"`
-	IsError bool          `json:"isError,omitempty"`
-}
-
-var tools = []tool{
-	{
-		Name:        "query",
-		Description: "Execute a read-only SQL query (SELECT) and return results as JSON array.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"sql": map[string]any{
-					"type":        "string",
-					"description": "The SQL SELECT query to execute.",
-				},
-			},
-			"required": []string{"sql"},
-		},
-	},
-	{
-		Name:        "execute",
-		Description: "Execute a write SQL statement (INSERT, UPDATE, DELETE). Returns rows affected.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"sql": map[string]any{
-					"type":        "string",
-					"description": "The SQL statement to execute.",
-				},
-			},
-			"required": []string{"sql"},
-		},
-	},
-	{
-		Name:        "list_tables",
-		Description: "List all tables in the database.",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	},
-	{
-		Name:        "describe_table",
-		Description: "Describe the columns and types of a table.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"table": map[string]any{
-					"type":        "string",
-					"description": "Name of the table to describe.",
-				},
-			},
-			"required": []string{"table"},
-		},
-	},
-	{
-		Name:        "check_exists",
-		Description: "Check if a record exists in a table by column value. Returns true/false. Use for deduplication before inserting.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"table": map[string]any{
-					"type":        "string",
-					"description": "Table name to check.",
-				},
-				"column": map[string]any{
-					"type":        "string",
-					"description": "Column name to match.",
-				},
-				"value": map[string]any{
-					"type":        "string",
-					"description": "Value to search for.",
-				},
-			},
-			"required": []string{"table", "column", "value"},
-		},
-	},
-	{
-		Name:        "insert",
-		Description: "Insert a record into a table. Accepts table name and a JSON object of column:value pairs. Returns the inserted row ID.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"table": map[string]any{
-					"type":        "string",
-					"description": "Table name to insert into.",
-				},
-				"data": map[string]any{
-					"type":        "object",
-					"description": "Key-value pairs of column names and values to insert.",
-				},
-			},
-			"required": []string{"table", "data"},
-		},
-	},
-}
 
 // dangerousPattern matches SQL statements that should be rejected.
 var dangerousPattern = regexp.MustCompile(`(?i)\b(DROP|ALTER|ATTACH|DETACH|VACUUM|REINDEX)\b`)
@@ -163,132 +37,110 @@ func main() {
 	}
 	defer db.Close()
 
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	enc := json.NewEncoder(os.Stdout)
+	s := server.NewMCPServer("mcp-database", "1.0.0")
 
-	for scanner.Scan() {
-		var req jsonRPCRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
+	s.AddTool(mcp.NewTool("query",
+		mcp.WithDescription("Execute a read-only SQL query (SELECT) and return results as JSON array."),
+		mcp.WithString("sql", mcp.Required(), mcp.Description("The SQL SELECT query to execute.")),
+	), handleQuery)
 
-		var resp jsonRPCResponse
-		resp.JSONRPC = "2.0"
-		resp.ID = req.ID
+	s.AddTool(mcp.NewTool("execute",
+		mcp.WithDescription("Execute a write SQL statement (INSERT, UPDATE, DELETE). Returns rows affected."),
+		mcp.WithString("sql", mcp.Required(), mcp.Description("The SQL statement to execute.")),
+	), handleExecute)
 
-		switch req.Method {
-		case "initialize":
-			resp.Result = map[string]any{
-				"protocolVersion": "2024-11-05",
-				"capabilities":   map[string]any{"tools": map[string]any{}},
-				"serverInfo":     map[string]any{"name": "mcp-database", "version": "1.0.0"},
-			}
-		case "tools/list":
-			resp.Result = map[string]any{"tools": tools}
-		case "tools/call":
-			resp.Result = handleToolCall(req.Params)
-		default:
-			resp.Error = map[string]any{"code": -32601, "message": "method not found"}
-		}
+	s.AddTool(mcp.NewTool("list_tables",
+		mcp.WithDescription("List all tables in the database."),
+	), handleListTables)
 
-		enc.Encode(resp)
+	s.AddTool(mcp.NewTool("describe_table",
+		mcp.WithDescription("Describe the columns and types of a table."),
+		mcp.WithString("table", mcp.Required(), mcp.Description("Name of the table to describe.")),
+	), handleDescribeTable)
+
+	s.AddTool(mcp.NewTool("check_exists",
+		mcp.WithDescription("Check if a record exists in a table by column value. Returns true/false. Use for deduplication before inserting."),
+		mcp.WithString("table", mcp.Required(), mcp.Description("Table name to check.")),
+		mcp.WithString("column", mcp.Required(), mcp.Description("Column name to match.")),
+		mcp.WithString("value", mcp.Required(), mcp.Description("Value to search for.")),
+	), handleCheckExists)
+
+	s.AddTool(mcp.NewTool("insert",
+		mcp.WithDescription("Insert a record into a table. Accepts table name and a JSON object of column:value pairs. Returns the inserted row ID."),
+		mcp.WithString("table", mcp.Required(), mcp.Description("Table name to insert into.")),
+		mcp.WithObject("data", mcp.Required(), mcp.Description("Key-value pairs of column names and values to insert.")),
+	), handleInsert)
+
+	if err := server.ServeStdio(s); err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
-func handleToolCall(params json.RawMessage) toolResult {
-	var p toolCallParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return errorResult("invalid params: " + err.Error())
+func handleQuery(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	sqlStr := req.GetString("sql", "")
+	if sqlStr == "" {
+		return mcp.NewToolResultError("sql parameter is required"), nil
 	}
 
-	switch p.Name {
-	case "query":
-		return handleQuery(p.Arguments)
-	case "execute":
-		return handleExecute(p.Arguments)
-	case "list_tables":
-		return handleListTables()
-	case "describe_table":
-		return handleDescribeTable(p.Arguments)
-	case "check_exists":
-		return handleCheckExists(p.Arguments)
-	case "insert":
-		return handleInsert(p.Arguments)
-	default:
-		return errorResult("unknown tool: " + p.Name)
-	}
-}
-
-func handleQuery(args json.RawMessage) toolResult {
-	var a struct {
-		SQL string `json:"sql"`
-	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return errorResult("invalid arguments: " + err.Error())
-	}
-
-	upper := strings.TrimSpace(strings.ToUpper(a.SQL))
+	upper := strings.TrimSpace(strings.ToUpper(sqlStr))
 	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") &&
 		!strings.HasPrefix(upper, "PRAGMA") {
-		return errorResult("query tool only accepts SELECT/WITH/PRAGMA statements")
+		return mcp.NewToolResultError("query tool only accepts SELECT/WITH/PRAGMA statements"), nil
 	}
 
-	if dangerousPattern.MatchString(a.SQL) {
-		return errorResult("query contains disallowed SQL keywords")
+	if dangerousPattern.MatchString(sqlStr) {
+		return mcp.NewToolResultError("query contains disallowed SQL keywords"), nil
 	}
 
 	// Add LIMIT if not present
-	sqlStr := a.SQL
 	if !strings.Contains(strings.ToUpper(sqlStr), "LIMIT") {
 		sqlStr = sqlStr + " LIMIT 1000"
 	}
 
 	rows, err := db.Query(sqlStr)
 	if err != nil {
-		return errorResult("query error: " + err.Error())
+		return mcp.NewToolResultError("query error: " + err.Error()), nil
 	}
 	defer rows.Close()
 
 	result, err := rowsToJSON(rows)
 	if err != nil {
-		return errorResult("reading results: " + err.Error())
+		return mcp.NewToolResultError("reading results: " + err.Error()), nil
 	}
 
 	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return mcp.NewToolResultText(string(data)), nil
 }
 
-func handleExecute(args json.RawMessage) toolResult {
-	var a struct {
-		SQL string `json:"sql"`
-	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return errorResult("invalid arguments: " + err.Error())
+func handleExecute(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	sqlStr := req.GetString("sql", "")
+	if sqlStr == "" {
+		return mcp.NewToolResultError("sql parameter is required"), nil
 	}
 
-	if dangerousPattern.MatchString(a.SQL) {
-		return errorResult("statement contains disallowed SQL keywords (DROP, ALTER, ATTACH, etc.)")
+	if dangerousPattern.MatchString(sqlStr) {
+		return mcp.NewToolResultError("statement contains disallowed SQL keywords (DROP, ALTER, ATTACH, etc.)"), nil
 	}
 
-	upper := strings.TrimSpace(strings.ToUpper(a.SQL))
+	upper := strings.TrimSpace(strings.ToUpper(sqlStr))
 	if strings.HasPrefix(upper, "SELECT") {
-		return errorResult("use the 'query' tool for SELECT statements")
+		return mcp.NewToolResultError("use the 'query' tool for SELECT statements"), nil
 	}
 
-	res, err := db.Exec(a.SQL)
+	res, err := db.Exec(sqlStr)
 	if err != nil {
-		return errorResult("execute error: " + err.Error())
+		return mcp.NewToolResultError("execute error: " + err.Error()), nil
 	}
 
 	affected, _ := res.RowsAffected()
-	return textResult(fmt.Sprintf(`{"rows_affected": %d}`, affected))
+	return mcp.NewToolResultText(fmt.Sprintf(`{"rows_affected": %d}`, affected)), nil
 }
 
-func handleListTables() toolResult {
+func handleListTables(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
 	if err != nil {
-		return errorResult("error listing tables: " + err.Error())
+		return mcp.NewToolResultError("error listing tables: " + err.Error()), nil
 	}
 	defer rows.Close()
 
@@ -296,94 +148,104 @@ func handleListTables() toolResult {
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return errorResult("error scanning table name: " + err.Error())
+			return mcp.NewToolResultError("error scanning table name: " + err.Error()), nil
 		}
 		tables = append(tables, name)
 	}
 
 	data, _ := json.Marshal(tables)
-	return textResult(string(data))
+	return mcp.NewToolResultText(string(data)), nil
 }
 
-func handleDescribeTable(args json.RawMessage) toolResult {
-	var a struct {
-		Table string `json:"table"`
-	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return errorResult("invalid arguments: " + err.Error())
-	}
-
-	if !identifierPattern.MatchString(a.Table) {
-		return errorResult("invalid table name")
-	}
-
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", a.Table))
+func handleDescribeTable(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	table, err := req.RequireString("table")
 	if err != nil {
-		return errorResult("error describing table: " + err.Error())
+		return mcp.NewToolResultError("table parameter is required"), nil
+	}
+
+	if !identifierPattern.MatchString(table) {
+		return mcp.NewToolResultError("invalid table name"), nil
+	}
+
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return mcp.NewToolResultError("error describing table: " + err.Error()), nil
 	}
 	defer rows.Close()
 
 	result, err := rowsToJSON(rows)
 	if err != nil {
-		return errorResult("reading results: " + err.Error())
+		return mcp.NewToolResultError("reading results: " + err.Error()), nil
 	}
 
 	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return mcp.NewToolResultText(string(data)), nil
 }
 
-func handleCheckExists(args json.RawMessage) toolResult {
-	var a struct {
-		Table  string `json:"table"`
-		Column string `json:"column"`
-		Value  string `json:"value"`
+func handleCheckExists(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	table, err := req.RequireString("table")
+	if err != nil {
+		return mcp.NewToolResultError("table parameter is required"), nil
 	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return errorResult("invalid arguments: " + err.Error())
+	column, err := req.RequireString("column")
+	if err != nil {
+		return mcp.NewToolResultError("column parameter is required"), nil
 	}
-
-	if !identifierPattern.MatchString(a.Table) {
-		return errorResult("invalid table name")
-	}
-	if !identifierPattern.MatchString(a.Column) {
-		return errorResult("invalid column name")
+	value, err := req.RequireString("value")
+	if err != nil {
+		return mcp.NewToolResultError("value parameter is required"), nil
 	}
 
-	query := fmt.Sprintf("SELECT 1 FROM %s WHERE %s = ? LIMIT 1", a.Table, a.Column)
+	if !identifierPattern.MatchString(table) {
+		return mcp.NewToolResultError("invalid table name"), nil
+	}
+	if !identifierPattern.MatchString(column) {
+		return mcp.NewToolResultError("invalid column name"), nil
+	}
+
+	query := fmt.Sprintf("SELECT 1 FROM %s WHERE %s = ? LIMIT 1", table, column)
 	var dummy int
-	err := db.QueryRow(query, a.Value).Scan(&dummy)
+	err = db.QueryRow(query, value).Scan(&dummy)
 	if err == sql.ErrNoRows {
-		return textResult(`{"exists": false}`)
+		return mcp.NewToolResultText(`{"exists": false}`), nil
 	}
 	if err != nil {
-		return errorResult("check_exists error: " + err.Error())
+		return mcp.NewToolResultError("check_exists error: " + err.Error()), nil
 	}
-	return textResult(`{"exists": true}`)
+	return mcp.NewToolResultText(`{"exists": true}`), nil
 }
 
-func handleInsert(args json.RawMessage) toolResult {
-	var a struct {
-		Table string         `json:"table"`
-		Data  map[string]any `json:"data"`
-	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return errorResult("invalid arguments: " + err.Error())
+func handleInsert(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	table, err := req.RequireString("table")
+	if err != nil {
+		return mcp.NewToolResultError("table parameter is required"), nil
 	}
 
-	if !identifierPattern.MatchString(a.Table) {
-		return errorResult("invalid table name")
+	args := req.GetArguments()
+	dataRaw, ok := args["data"]
+	if !ok {
+		return mcp.NewToolResultError("data parameter is required"), nil
 	}
-	if len(a.Data) == 0 {
-		return errorResult("data must contain at least one column")
+
+	dataMap, ok := dataRaw.(map[string]any)
+	if !ok {
+		return mcp.NewToolResultError("data must be a JSON object"), nil
+	}
+
+	if !identifierPattern.MatchString(table) {
+		return mcp.NewToolResultError("invalid table name"), nil
+	}
+	if len(dataMap) == 0 {
+		return mcp.NewToolResultError("data must contain at least one column"), nil
 	}
 
 	var columns []string
 	var placeholders []string
 	var values []any
 
-	for col, val := range a.Data {
+	for col, val := range dataMap {
 		if !identifierPattern.MatchString(col) {
-			return errorResult(fmt.Sprintf("invalid column name: %s", col))
+			return mcp.NewToolResultError(fmt.Sprintf("invalid column name: %s", col)), nil
 		}
 		columns = append(columns, col)
 		placeholders = append(placeholders, "?")
@@ -391,18 +253,18 @@ func handleInsert(args json.RawMessage) toolResult {
 	}
 
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
-		a.Table,
+		table,
 		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "),
 	)
 
 	res, err := db.Exec(query, values...)
 	if err != nil {
-		return errorResult("insert error: " + err.Error())
+		return mcp.NewToolResultError("insert error: " + err.Error()), nil
 	}
 
 	id, _ := res.LastInsertId()
-	return textResult(fmt.Sprintf(`{"id": %d}`, id))
+	return mcp.NewToolResultText(fmt.Sprintf(`{"id": %d}`, id)), nil
 }
 
 // rowsToJSON converts sql.Rows to a slice of maps.
@@ -435,17 +297,4 @@ func rowsToJSON(rows *sql.Rows) ([]map[string]any, error) {
 		result = append(result, row)
 	}
 	return result, rows.Err()
-}
-
-func textResult(text string) toolResult {
-	return toolResult{
-		Content: []contentItem{{Type: "text", Text: text}},
-	}
-}
-
-func errorResult(msg string) toolResult {
-	return toolResult{
-		Content: []contentItem{{Type: "text", Text: msg}},
-		IsError: true,
-	}
 }

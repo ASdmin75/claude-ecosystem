@@ -1,186 +1,56 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
+	"context"
 	"fmt"
 	"os"
 	"strconv"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"gopkg.in/gomail.v2"
 )
 
-type jsonRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
+func main() {
+	s := server.NewMCPServer("mcp-email", "1.1.0")
 
-type jsonRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
-}
+	s.AddTool(mcp.NewTool("send_email",
+		mcp.WithDescription("Send an email message with optional attachments, HTML body, CC, and BCC recipients."),
+		mcp.WithArray("to", mcp.Required(), mcp.Description("List of recipient email addresses."), mcp.WithStringItems()),
+		mcp.WithString("subject", mcp.Required(), mcp.Description("Email subject line.")),
+		mcp.WithString("body", mcp.Required(), mcp.Description("Plain text email body.")),
+		mcp.WithString("html_body", mcp.Description("HTML email body (alternative to plain text body).")),
+		mcp.WithArray("cc", mcp.Description("List of CC recipient email addresses."), mcp.WithStringItems()),
+		mcp.WithArray("bcc", mcp.Description("List of BCC recipient email addresses (hidden from other recipients). Use for mass distribution of reports."), mcp.WithStringItems()),
+		mcp.WithString("reply_to", mcp.Description("Reply-To email address (if different from sender).")),
+		mcp.WithArray("attachments", mcp.Description("List of file paths to attach."), mcp.WithStringItems()),
+	), handleSendEmail)
 
-type tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-}
+	s.AddTool(mcp.NewTool("send_report",
+		mcp.WithDescription("Send a report email to multiple recipients with attachments. Convenience wrapper: accepts a recipients list (all go to BCC for privacy), a single visible 'from_name', and file attachments. Ideal for periodic report distribution to management."),
+		mcp.WithArray("recipients", mcp.Required(), mcp.Description("List of email addresses to receive the report (sent as BCC for privacy)."), mcp.WithStringItems()),
+		mcp.WithString("subject", mcp.Required(), mcp.Description("Email subject line.")),
+		mcp.WithString("body", mcp.Required(), mcp.Description("Plain text email body with report summary.")),
+		mcp.WithString("html_body", mcp.Description("HTML email body with formatted report.")),
+		mcp.WithArray("attachments", mcp.Description("List of file paths to attach (e.g. Excel reports)."), mcp.WithStringItems()),
+	), handleSendReport)
 
-var tools = []tool{
-	{
-		Name:        "send_email",
-		Description: "Send an email message with optional attachments, HTML body, CC, and BCC recipients.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"to": map[string]any{
-					"type":        "array",
-					"description": "List of recipient email addresses.",
-					"items":       map[string]any{"type": "string"},
-				},
-				"subject": map[string]any{
-					"type":        "string",
-					"description": "Email subject line.",
-				},
-				"body": map[string]any{
-					"type":        "string",
-					"description": "Plain text email body.",
-				},
-				"html_body": map[string]any{
-					"type":        "string",
-					"description": "HTML email body (alternative to plain text body).",
-				},
-				"cc": map[string]any{
-					"type":        "array",
-					"description": "List of CC recipient email addresses.",
-					"items":       map[string]any{"type": "string"},
-				},
-				"bcc": map[string]any{
-					"type":        "array",
-					"description": "List of BCC recipient email addresses (hidden from other recipients). Use for mass distribution of reports.",
-					"items":       map[string]any{"type": "string"},
-				},
-				"reply_to": map[string]any{
-					"type":        "string",
-					"description": "Reply-To email address (if different from sender).",
-				},
-				"attachments": map[string]any{
-					"type":        "array",
-					"description": "List of file paths to attach.",
-					"items":       map[string]any{"type": "string"},
-				},
-			},
-			"required": []string{"to", "subject", "body"},
-		},
-	},
-	{
-		Name:        "send_report",
-		Description: "Send a report email to multiple recipients with attachments. Convenience wrapper: accepts a recipients list (all go to BCC for privacy), a single visible 'from_name', and file attachments. Ideal for periodic report distribution to management.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"recipients": map[string]any{
-					"type":        "array",
-					"description": "List of email addresses to receive the report (sent as BCC for privacy).",
-					"items":       map[string]any{"type": "string"},
-				},
-				"subject": map[string]any{
-					"type":        "string",
-					"description": "Email subject line.",
-				},
-				"body": map[string]any{
-					"type":        "string",
-					"description": "Plain text email body with report summary.",
-				},
-				"html_body": map[string]any{
-					"type":        "string",
-					"description": "HTML email body with formatted report.",
-				},
-				"attachments": map[string]any{
-					"type":        "array",
-					"description": "List of file paths to attach (e.g. Excel reports).",
-					"items":       map[string]any{"type": "string"},
-				},
-			},
-			"required": []string{"recipients", "subject", "body"},
-		},
-	},
-	{
-		Name:        "read_inbox",
-		Description: "Read recent messages from the inbox (not implemented).",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"limit": map[string]any{
-					"type":        "integer",
-					"description": "Maximum number of messages to return. Defaults to 10.",
-				},
-				"unread_only": map[string]any{
-					"type":        "boolean",
-					"description": "Whether to return only unread messages. Defaults to false.",
-				},
-			},
-			"required": []string{},
-		},
-	},
-	{
-		Name:        "search_emails",
-		Description: "Search emails by query string (not implemented).",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "Search query to match against subject, body, and sender.",
-				},
-				"limit": map[string]any{
-					"type":        "integer",
-					"description": "Maximum number of results to return. Defaults to 20.",
-				},
-				"from": map[string]any{
-					"type":        "string",
-					"description": "Filter by sender email address.",
-				},
-			},
-			"required": []string{"query"},
-		},
-	},
-}
+	s.AddTool(mcp.NewTool("read_inbox",
+		mcp.WithDescription("Read recent messages from the inbox (not implemented)."),
+		mcp.WithNumber("limit", mcp.Description("Maximum number of messages to return. Defaults to 10.")),
+		mcp.WithBoolean("unread_only", mcp.Description("Whether to return only unread messages. Defaults to false.")),
+	), handleReadInbox)
 
-func textResult(text string) any {
-	return map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": text},
-		},
-	}
-}
+	s.AddTool(mcp.NewTool("search_emails",
+		mcp.WithDescription("Search emails by query string (not implemented)."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Search query to match against subject, body, and sender.")),
+		mcp.WithNumber("limit", mcp.Description("Maximum number of results to return. Defaults to 20.")),
+		mcp.WithString("from", mcp.Description("Filter by sender email address.")),
+	), handleSearchEmails)
 
-func errorResult(msg string) any {
-	return map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": "Error: " + msg},
-		},
-		"isError": true,
-	}
-}
-
-func handleToolCall(params map[string]any) (any, error) {
-	toolName, _ := params["name"].(string)
-	args, _ := params["arguments"].(map[string]any)
-
-	switch toolName {
-	case "send_email":
-		return handleSendEmail(args)
-	case "send_report":
-		return handleSendReport(args)
-	case "read_inbox", "search_emails":
-		return textResult("This tool is not implemented yet."), nil
-	default:
-		return nil, fmt.Errorf("unknown tool: %s", toolName)
+	if err := server.ServeStdio(s); err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
@@ -231,15 +101,17 @@ func attachFiles(m *gomail.Message, args map[string]any, key string) error {
 	return nil
 }
 
-func handleSendEmail(args map[string]any) (any, error) {
+func handleSendEmail(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
 	d, from, err := getDialer()
 	if err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	to := parseStringList(args["to"])
 	if len(to) == 0 {
-		return nil, fmt.Errorf("at least one recipient is required")
+		return mcp.NewToolResultError("at least one recipient is required"), nil
 	}
 
 	subject, _ := args["subject"].(string)
@@ -277,27 +149,29 @@ func handleSendEmail(args map[string]any) (any, error) {
 
 	// Attachments
 	if err := attachFiles(m, args, "attachments"); err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	if err := d.DialAndSend(m); err != nil {
-		return nil, fmt.Errorf("failed to send email: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to send email: %v", err)), nil
 	}
 
 	allRecipients := append(to, parseStringList(args["cc"])...)
 	allRecipients = append(allRecipients, parseStringList(args["bcc"])...)
-	return textResult(fmt.Sprintf("Email sent successfully to %d recipients (subject: %s)", len(allRecipients), subject)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Email sent successfully to %d recipients (subject: %s)", len(allRecipients), subject)), nil
 }
 
-func handleSendReport(args map[string]any) (any, error) {
+func handleSendReport(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
 	d, from, err := getDialer()
 	if err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	recipients := parseStringList(args["recipients"])
 	if len(recipients) == 0 {
-		return nil, fmt.Errorf("at least one recipient is required")
+		return mcp.NewToolResultError("at least one recipient is required"), nil
 	}
 
 	subject, _ := args["subject"].(string)
@@ -322,56 +196,20 @@ func handleSendReport(args map[string]any) (any, error) {
 
 	// Attachments
 	if err := attachFiles(m, args, "attachments"); err != nil {
-		return nil, err
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	if err := d.DialAndSend(m); err != nil {
-		return nil, fmt.Errorf("failed to send report: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to send report: %v", err)), nil
 	}
 
-	return textResult(fmt.Sprintf("Report sent successfully to %d recipients (subject: %s)", len(recipients), subject)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Report sent successfully to %d recipients (subject: %s)", len(recipients), subject)), nil
 }
 
-func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	enc := json.NewEncoder(os.Stdout)
+func handleReadInbox(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return mcp.NewToolResultText("This tool is not implemented yet."), nil
+}
 
-	for scanner.Scan() {
-		var req jsonRPCRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
-
-		var resp jsonRPCResponse
-		resp.JSONRPC = "2.0"
-		resp.ID = req.ID
-
-		switch req.Method {
-		case "initialize":
-			resp.Result = map[string]any{
-				"protocolVersion": "2024-11-05",
-				"capabilities":   map[string]any{"tools": map[string]any{}},
-				"serverInfo":     map[string]any{"name": "mcp-email", "version": "1.1.0"},
-			}
-		case "tools/list":
-			resp.Result = map[string]any{"tools": tools}
-		case "tools/call":
-			var params map[string]any
-			if err := json.Unmarshal(req.Params, &params); err != nil {
-				resp.Error = map[string]any{"code": -32602, "message": "invalid params: " + err.Error()}
-			} else {
-				result, err := handleToolCall(params)
-				if err != nil {
-					resp.Result = errorResult(err.Error())
-				} else {
-					resp.Result = result
-				}
-			}
-		default:
-			resp.Error = map[string]any{"code": -32601, "message": "method not found"}
-		}
-
-		enc.Encode(resp)
-	}
+func handleSearchEmails(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return mcp.NewToolResultText("This tool is not implemented yet."), nil
 }

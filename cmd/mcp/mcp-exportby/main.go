@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"context"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
@@ -14,46 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/xuri/excelize/v2"
 	_ "modernc.org/sqlite"
 )
-
-// --- JSON-RPC types ---
-
-type jsonRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type jsonRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
-}
-
-type tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-}
-
-type toolCallParams struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
-}
-
-type contentItem struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type toolResult struct {
-	Content []contentItem `json:"content"`
-	IsError bool          `json:"isError,omitempty"`
-}
 
 // --- API types ---
 
@@ -64,114 +29,6 @@ type apiCompany struct {
 	Description string `json:"description"`
 	Country     string `json:"country"`
 	IsFavorite  bool   `json:"is_favorite"`
-}
-
-
-// --- Tools ---
-
-var tools = []tool{
-	{
-		Name:        "sync_catalog",
-		Description: "Скачивает компании из каталога export.by и сохраняет в локальную БД. Продолжает с последней просканированной страницы. Возвращает статистику.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"max_pages": map[string]any{
-					"type":        "integer",
-					"description": "Максимальное количество страниц для скачивания за один вызов (по умолчанию 50, макс 500).",
-				},
-				"from_page": map[string]any{
-					"type":        "integer",
-					"description": "Начальная страница (по умолчанию — продолжение с последней просканированной).",
-				},
-				"country": map[string]any{
-					"type":        "string",
-					"description": "Код страны для фильтрации (по умолчанию BY).",
-				},
-			},
-		},
-	},
-	{
-		Name:        "get_unanalyzed",
-		Description: "Возвращает компании из raw_companies, которых ещё нет в таблице companies (не проанализированы). Для передачи агенту-аналитику.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"limit": map[string]any{
-					"type":        "integer",
-					"description": "Максимальное количество компаний (по умолчанию 100).",
-				},
-				"offset": map[string]any{
-					"type":        "integer",
-					"description": "Смещение для пагинации (по умолчанию 0).",
-				},
-			},
-		},
-	},
-	{
-		Name:        "check_new",
-		Description: "Проверяет первые N страниц каталога на наличие новых компаний. Возвращает количество новых.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"pages": map[string]any{
-					"type":        "integer",
-					"description": "Количество первых страниц для проверки (по умолчанию 3).",
-				},
-			},
-		},
-	},
-	{
-		Name:        "get_stats",
-		Description: "Возвращает статистику по локальной БД: количество компаний, прогресс сканирования, дата последнего обновления.",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	},
-	{
-		Name:        "mark_exported",
-		Description: "Помечает все лиды со статусом 'new' как 'sent' в таблице companies и записывает sent_at. Вызывай после успешной отправки отчёта.",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	},
-	{
-		Name:        "reject_companies",
-		Description: "Помечает компании как отклонённые (импортёры, сервисные и т.д.). Они больше не будут появляться в get_unanalyzed. Вызывай для КАЖДОЙ отклонённой компании после анализа.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"names": map[string]any{
-					"type":        "array",
-					"items":       map[string]any{"type": "string"},
-					"description": "Массив названий компаний для отклонения.",
-				},
-				"reason": map[string]any{
-					"type":        "string",
-					"description": "Причина отклонения (importer, service, distributor и т.д.).",
-				},
-			},
-			"required": []string{"names"},
-		},
-	},
-	{
-		Name:        "get_pending_count",
-		Description: "Возвращает количество лидов со статусом 'new' в таблице companies (готовых к отправке).",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	},
-	{
-		Name:        "export_leads_excel",
-		Description: "Генерирует Excel-файл из всех лидов со статусом 'new'. Возвращает путь к файлу и количество лидов. Вызывай перед отправкой в Telegram/email.",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	},
 }
 
 const (
@@ -212,36 +69,51 @@ func main() {
 		},
 	}
 
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	enc := json.NewEncoder(os.Stdout)
+	s := server.NewMCPServer("mcp-exportby", "1.0.0")
 
-	for scanner.Scan() {
-		var req jsonRPCRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
+	s.AddTool(mcp.NewTool("sync_catalog",
+		mcp.WithDescription("Скачивает компании из каталога export.by и сохраняет в локальную БД. Продолжает с последней просканированной страницы. Возвращает статистику."),
+		mcp.WithNumber("max_pages", mcp.Description("Максимальное количество страниц для скачивания за один вызов (по умолчанию 50, макс 500).")),
+		mcp.WithNumber("from_page", mcp.Description("Начальная страница (по умолчанию — продолжение с последней просканированной).")),
+		mcp.WithString("country", mcp.Description("Код страны для фильтрации (по умолчанию BY).")),
+	), handleSyncCatalog)
 
-		var resp jsonRPCResponse
-		resp.JSONRPC = "2.0"
-		resp.ID = req.ID
+	s.AddTool(mcp.NewTool("get_unanalyzed",
+		mcp.WithDescription("Возвращает компании из raw_companies, которых ещё нет в таблице companies (не проанализированы). Для передачи агенту-аналитику."),
+		mcp.WithNumber("limit", mcp.Description("Максимальное количество компаний (по умолчанию 100).")),
+		mcp.WithNumber("offset", mcp.Description("Смещение для пагинации (по умолчанию 0).")),
+	), handleGetUnanalyzed)
 
-		switch req.Method {
-		case "initialize":
-			resp.Result = map[string]any{
-				"protocolVersion": "2024-11-05",
-				"capabilities":   map[string]any{"tools": map[string]any{}},
-				"serverInfo":     map[string]any{"name": "mcp-exportby", "version": "1.0.0"},
-			}
-		case "tools/list":
-			resp.Result = map[string]any{"tools": tools}
-		case "tools/call":
-			resp.Result = handleToolCall(req.Params)
-		default:
-			resp.Error = map[string]any{"code": -32601, "message": "method not found"}
-		}
+	s.AddTool(mcp.NewTool("check_new",
+		mcp.WithDescription("Проверяет первые N страниц каталога на наличие новых компаний. Возвращает количество новых."),
+		mcp.WithNumber("pages", mcp.Description("Количество первых страниц для проверки (по умолчанию 3).")),
+	), handleCheckNew)
 
-		enc.Encode(resp)
+	s.AddTool(mcp.NewTool("get_stats",
+		mcp.WithDescription("Возвращает статистику по локальной БД: количество компаний, прогресс сканирования, дата последнего обновления."),
+	), handleGetStats)
+
+	s.AddTool(mcp.NewTool("mark_exported",
+		mcp.WithDescription("Помечает все лиды со статусом 'new' как 'sent' в таблице companies и записывает sent_at. Вызывай после успешной отправки отчёта."),
+	), handleMarkExported)
+
+	s.AddTool(mcp.NewTool("reject_companies",
+		mcp.WithDescription("Помечает компании как отклонённые (импортёры, сервисные и т.д.). Они больше не будут появляться в get_unanalyzed. Вызывай для КАЖДОЙ отклонённой компании после анализа."),
+		mcp.WithArray("names", mcp.Required(), mcp.Description("Массив названий компаний для отклонения."), mcp.WithStringItems()),
+		mcp.WithString("reason", mcp.Description("Причина отклонения (importer, service, distributor и т.д.).")),
+	), handleRejectCompanies)
+
+	s.AddTool(mcp.NewTool("get_pending_count",
+		mcp.WithDescription("Возвращает количество лидов со статусом 'new' в таблице companies (готовых к отправке)."),
+	), handleGetPendingCount)
+
+	s.AddTool(mcp.NewTool("export_leads_excel",
+		mcp.WithDescription("Генерирует Excel-файл из всех лидов со статусом 'new'. Возвращает путь к файлу и количество лидов. Вызывай перед отправкой в Telegram/email."),
+	), handleExportLeadsExcel)
+
+	if err := server.ServeStdio(s); err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
@@ -289,78 +161,44 @@ func ensureSchema() error {
 	return nil
 }
 
-func handleToolCall(params json.RawMessage) toolResult {
-	var p toolCallParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return errorResult("invalid params: " + err.Error())
-	}
-
-	switch p.Name {
-	case "sync_catalog":
-		return handleSyncCatalog(p.Arguments)
-	case "get_unanalyzed":
-		return handleGetUnanalyzed(p.Arguments)
-	case "check_new":
-		return handleCheckNew(p.Arguments)
-	case "get_stats":
-		return handleGetStats()
-	case "mark_exported":
-		return handleMarkExported()
-	case "reject_companies":
-		return handleRejectCompanies(p.Arguments)
-	case "get_pending_count":
-		return handleGetPendingCount()
-	case "export_leads_excel":
-		return handleExportLeadsExcel()
-	default:
-		return errorResult("unknown tool: " + p.Name)
-	}
-}
-
 // --- sync_catalog ---
 
-func handleSyncCatalog(args json.RawMessage) toolResult {
-	var a struct {
-		MaxPages int    `json:"max_pages"`
-		FromPage int    `json:"from_page"`
-		Country  string `json:"country"`
-	}
-	json.Unmarshal(args, &a)
+func handleSyncCatalog(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	maxPages := req.GetInt("max_pages", 50)
+	fromPage := req.GetInt("from_page", 0)
+	country := req.GetString("country", "BY")
 
-	if a.MaxPages <= 0 {
-		a.MaxPages = 50
+	if maxPages <= 0 {
+		maxPages = 50
 	}
-	if a.MaxPages > maxPerCall {
-		a.MaxPages = maxPerCall
-	}
-	if a.Country == "" {
-		a.Country = "BY"
+	if maxPages > maxPerCall {
+		maxPages = maxPerCall
 	}
 
 	// Determine start page from scan_progress if not specified
-	if a.FromPage <= 0 {
+	if fromPage <= 0 {
 		var lastPage sql.NullInt64
 		db.QueryRow("SELECT MAX(last_page) FROM scan_progress").Scan(&lastPage)
 		if lastPage.Valid {
-			a.FromPage = int(lastPage.Int64) + 1
+			fromPage = int(lastPage.Int64) + 1
 		} else {
-			a.FromPage = 1
+			fromPage = 1
 		}
 	}
 
 	totalAdded := 0
 	totalSkipped := 0
-	lastPage := a.FromPage
+	lastPage := fromPage
 	var totalPages, totalCompanies int
 
-	for page := a.FromPage; page < a.FromPage+a.MaxPages; page++ {
-		companies, tp, tc, err := fetchCatalogPage(a.Country, page)
+	for page := fromPage; page < fromPage+maxPages; page++ {
+		companies, tp, tc, err := fetchCatalogPage(country, page)
 		if err != nil {
 			// Log partial progress
-			if totalAdded > 0 || page > a.FromPage {
+			if totalAdded > 0 || page > fromPage {
 				saveScanProgress(lastPage, totalPages, totalCompanies, totalAdded)
 			}
-			return errorResult(fmt.Sprintf("error fetching page %d: %v (processed %d pages, added %d)", page, err, page-a.FromPage, totalAdded))
+			return mcp.NewToolResultError(fmt.Sprintf("error fetching page %d: %v (processed %d pages, added %d)", page, err, page-fromPage, totalAdded)), nil
 		}
 
 		totalPages = tp
@@ -382,18 +220,18 @@ func handleSyncCatalog(args json.RawMessage) toolResult {
 	saveScanProgress(lastPage, totalPages, totalCompanies, totalAdded)
 
 	result := map[string]any{
-		"pages_scanned":   lastPage - a.FromPage + 1,
-		"from_page":       a.FromPage,
-		"to_page":         lastPage,
-		"total_pages":     totalPages,
-		"total_on_site":   totalCompanies,
-		"new_added":       totalAdded,
-		"duplicates":      totalSkipped,
-		"scan_complete":   lastPage >= totalPages,
+		"pages_scanned": lastPage - fromPage + 1,
+		"from_page":     fromPage,
+		"to_page":       lastPage,
+		"total_pages":   totalPages,
+		"total_on_site": totalCompanies,
+		"new_added":     totalAdded,
+		"duplicates":    totalSkipped,
+		"scan_complete": lastPage >= totalPages,
 	}
 
 	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 func fetchCatalogPage(country string, page int) ([]apiCompany, int, int, error) {
@@ -495,19 +333,16 @@ func containsImporterKeyword(desc string) bool {
 	return false
 }
 
-func handleGetUnanalyzed(args json.RawMessage) toolResult {
-	var a struct {
-		Limit  int `json:"limit"`
-		Offset int `json:"offset"`
-	}
-	json.Unmarshal(args, &a)
+func handleGetUnanalyzed(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	limit := req.GetInt("limit", 100)
+	offset := req.GetInt("offset", 0)
 
-	if a.Limit <= 0 {
-		a.Limit = 100
+	if limit <= 0 {
+		limit = 100
 	}
 
 	// Fetch more than needed to compensate for auto-rejected importers
-	fetchLimit := a.Limit * 3
+	fetchLimit := limit * 3
 
 	rows, err := db.Query(`
 		SELECT MIN(r.export_by_id) AS export_by_id, r.name, r.description, r.country
@@ -518,9 +353,9 @@ func handleGetUnanalyzed(args json.RawMessage) toolResult {
 		GROUP BY r.name
 		ORDER BY MIN(r.id)
 		LIMIT ? OFFSET ?
-	`, fetchLimit, a.Offset)
+	`, fetchLimit, offset)
 	if err != nil {
-		return errorResult("query error: " + err.Error())
+		return mcp.NewToolResultError("query error: " + err.Error()), nil
 	}
 	defer rows.Close()
 
@@ -552,7 +387,7 @@ func handleGetUnanalyzed(args json.RawMessage) toolResult {
 			continue
 		}
 
-		if len(companies) < a.Limit {
+		if len(companies) < limit {
 			companies = append(companies, map[string]any{
 				"export_by_id": exportByID,
 				"name":         name,
@@ -591,28 +426,25 @@ func handleGetUnanalyzed(args json.RawMessage) toolResult {
 		"auto_rejected":    len(autoRejected),
 	}
 	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- check_new ---
 
-func handleCheckNew(args json.RawMessage) toolResult {
-	var a struct {
-		Pages int `json:"pages"`
-	}
-	json.Unmarshal(args, &a)
+func handleCheckNew(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	pages := req.GetInt("pages", 3)
 
-	if a.Pages <= 0 {
-		a.Pages = 3
+	if pages <= 0 {
+		pages = 3
 	}
 
 	totalNew := 0
 	var newCompanies []map[string]string
 
-	for page := 1; page <= a.Pages; page++ {
+	for page := 1; page <= pages; page++ {
 		companies, _, _, err := fetchCatalogPage("BY", page)
 		if err != nil {
-			return errorResult(fmt.Sprintf("error fetching page %d: %v", page, err))
+			return mcp.NewToolResultError(fmt.Sprintf("error fetching page %d: %v", page, err)), nil
 		}
 
 		for _, c := range companies {
@@ -635,17 +467,17 @@ func handleCheckNew(args json.RawMessage) toolResult {
 	}
 
 	result := map[string]any{
-		"pages_checked":  a.Pages,
-		"new_companies":  totalNew,
-		"new_list":       newCompanies,
+		"pages_checked": pages,
+		"new_companies": totalNew,
+		"new_list":      newCompanies,
 	}
 	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- get_stats ---
 
-func handleGetStats() toolResult {
+func handleGetStats(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var totalCompanies, withProducts, withoutProducts int
 	db.QueryRow("SELECT COUNT(*) FROM raw_companies").Scan(&totalCompanies)
 	db.QueryRow("SELECT COUNT(*) FROM raw_companies WHERE products_fetched = 1").Scan(&withProducts)
@@ -674,38 +506,38 @@ func handleGetStats() toolResult {
 		"scan_complete":     scanComplete,
 	}
 	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- mark_exported ---
 
-func handleMarkExported() toolResult {
+func handleMarkExported(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	now := time.Now().Format("2006-01-02 15:04:05")
 	res, err := db.Exec(`UPDATE companies SET status = 'sent', sent_at = ? WHERE status = 'new'`, now)
 	if err != nil {
-		return errorResult("update error: " + err.Error())
+		return mcp.NewToolResultError("update error: " + err.Error()), nil
 	}
 	affected, _ := res.RowsAffected()
 	result := map[string]any{
-		"updated":  affected,
-		"sent_at":  now,
+		"updated": affected,
+		"sent_at": now,
 	}
 	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- reject_companies ---
 
-func handleRejectCompanies(args json.RawMessage) toolResult {
+func handleRejectCompanies(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		Names  []string `json:"names"`
 		Reason string   `json:"reason"`
 	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return errorResult("invalid params: " + err.Error())
+	if err := req.BindArguments(&a); err != nil {
+		return mcp.NewToolResultError("invalid params: " + err.Error()), nil
 	}
 	if len(a.Names) == 0 {
-		return errorResult("names array is required")
+		return mcp.NewToolResultError("names array is required"), nil
 	}
 	if a.Reason == "" {
 		a.Reason = "manual"
@@ -722,27 +554,27 @@ func handleRejectCompanies(args json.RawMessage) toolResult {
 
 	result := map[string]any{"rejected": rejected}
 	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- get_pending_count ---
 
-func handleGetPendingCount() toolResult {
+func handleGetPendingCount(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var count int
 	err := db.QueryRow(`SELECT COUNT(*) FROM companies WHERE status = 'new'`).Scan(&count)
 	if err != nil {
-		return errorResult("query error: " + err.Error())
+		return mcp.NewToolResultError("query error: " + err.Error()), nil
 	}
 	result := map[string]any{
 		"pending_count": count,
 	}
 	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- export_leads_excel ---
 
-func handleExportLeadsExcel() toolResult {
+func handleExportLeadsExcel(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	dataDir := os.Getenv("DOMAIN_DATA_DIR")
 	if dataDir == "" {
 		dataDir = "."
@@ -755,7 +587,7 @@ func handleExportLeadsExcel() toolResult {
 		ORDER BY aviation_priority DESC, found_date DESC
 	`)
 	if err != nil {
-		return errorResult("query error: " + err.Error())
+		return mcp.NewToolResultError("query error: " + err.Error()), nil
 	}
 	defer rows.Close()
 
@@ -780,7 +612,7 @@ func handleExportLeadsExcel() toolResult {
 	}
 
 	if len(leads) == 0 {
-		return errorResult("no pending leads to export")
+		return mcp.NewToolResultError("no pending leads to export"), nil
 	}
 
 	f := excelize.NewFile()
@@ -840,7 +672,7 @@ func handleExportLeadsExcel() toolResult {
 	filename := fmt.Sprintf("leads_%s.xlsx", time.Now().Format("2006-01-02_150405"))
 	outPath := filepath.Join(dataDir, filename)
 	if err := f.SaveAs(outPath); err != nil {
-		return errorResult("save excel error: " + err.Error())
+		return mcp.NewToolResultError("save excel error: " + err.Error()), nil
 	}
 
 	result := map[string]any{
@@ -850,7 +682,7 @@ func handleExportLeadsExcel() toolResult {
 		"med_priority":  medium,
 	}
 	data, _ := json.Marshal(result)
-	return textResult(string(data))
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 func nullStr(s sql.NullString) string {
@@ -861,14 +693,6 @@ func nullStr(s sql.NullString) string {
 }
 
 // --- helpers ---
-
-func textResult(text string) toolResult {
-	return toolResult{Content: []contentItem{{Type: "text", Text: text}}}
-}
-
-func errorResult(msg string) toolResult {
-	return toolResult{Content: []contentItem{{Type: "text", Text: msg}}, IsError: true}
-}
 
 func nullIntVal(n sql.NullInt64) any {
 	if n.Valid {

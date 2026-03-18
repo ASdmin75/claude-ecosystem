@@ -1,195 +1,99 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
-type jsonRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
+func main() {
+	s := server.NewMCPServer("mcp-filesystem", "0.1.0")
 
-type jsonRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
-}
+	s.AddTool(mcp.NewTool("read_file",
+		mcp.WithDescription("Read the contents of a file at the given path."),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute path to the file to read.")),
+	), handleReadFile)
 
-type tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-}
+	s.AddTool(mcp.NewTool("write_file",
+		mcp.WithDescription("Write content to a file at the given path, creating or overwriting it."),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute path to the file to write.")),
+		mcp.WithString("content", mcp.Required(), mcp.Description("Content to write to the file.")),
+	), handleWriteFile)
 
-var tools = []tool{
-	{
-		Name:        "read_file",
-		Description: "Read the contents of a file at the given path.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Absolute path to the file to read.",
-				},
-			},
-			"required": []string{"path"},
-		},
-	},
-	{
-		Name:        "write_file",
-		Description: "Write content to a file at the given path, creating or overwriting it.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Absolute path to the file to write.",
-				},
-				"content": map[string]any{
-					"type":        "string",
-					"description": "Content to write to the file.",
-				},
-			},
-			"required": []string{"path", "content"},
-		},
-	},
-	{
-		Name:        "list_directory",
-		Description: "List the contents of a directory.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Absolute path to the directory to list.",
-				},
-				"recursive": map[string]any{
-					"type":        "boolean",
-					"description": "Whether to list recursively. Defaults to false.",
-				},
-			},
-			"required": []string{"path"},
-		},
-	},
-	{
-		Name:        "search_files",
-		Description: "Search for files matching a pattern within a directory tree.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Root directory to search from.",
-				},
-				"pattern": map[string]any{
-					"type":        "string",
-					"description": "Glob pattern to match file names against.",
-				},
-			},
-			"required": []string{"path", "pattern"},
-		},
-	},
-	{
-		Name:        "copy_file",
-		Description: "Copy a file from source to destination path.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"src": map[string]any{
-					"type":        "string",
-					"description": "Source file path.",
-				},
-				"dst": map[string]any{
-					"type":        "string",
-					"description": "Destination file path.",
-				},
-			},
-			"required": []string{"src", "dst"},
-		},
-	},
-}
+	s.AddTool(mcp.NewTool("list_directory",
+		mcp.WithDescription("List the contents of a directory."),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute path to the directory to list.")),
+		mcp.WithBoolean("recursive", mcp.Description("Whether to list recursively. Defaults to false.")),
+	), handleListDirectory)
 
-func textResult(text string) any {
-	return map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": text},
-		},
+	s.AddTool(mcp.NewTool("search_files",
+		mcp.WithDescription("Search for files matching a pattern within a directory tree."),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Root directory to search from.")),
+		mcp.WithString("pattern", mcp.Required(), mcp.Description("Glob pattern to match file names against.")),
+	), handleSearchFiles)
+
+	s.AddTool(mcp.NewTool("copy_file",
+		mcp.WithDescription("Copy a file from source to destination path."),
+		mcp.WithString("src", mcp.Required(), mcp.Description("Source file path.")),
+		mcp.WithString("dst", mcp.Required(), mcp.Description("Destination file path.")),
+	), handleCopyFile)
+
+	if err := server.ServeStdio(s); err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
-func handleToolCall(params map[string]any) (any, error) {
-	toolName, _ := params["name"].(string)
-	args, _ := params["arguments"].(map[string]any)
-
-	switch toolName {
-	case "read_file":
-		return handleReadFile(args)
-	case "write_file":
-		return handleWriteFile(args)
-	case "list_directory":
-		return handleListDirectory(args)
-	case "search_files":
-		return handleSearchFiles(args)
-	case "copy_file":
-		return handleCopyFile(args)
-	default:
-		return nil, fmt.Errorf("unknown tool: %s", toolName)
-	}
-}
-
-func handleReadFile(args map[string]any) (any, error) {
-	path, _ := args["path"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("path is required")
+func handleReadFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to read file: %v", err)), nil
 	}
-	return textResult(string(data)), nil
+	return mcp.NewToolResultText(string(data)), nil
 }
 
-func handleWriteFile(args map[string]any) (any, error) {
-	path, _ := args["path"].(string)
-	content, _ := args["content"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("path is required")
+func handleWriteFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
+	content := req.GetString("content", "")
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create directory: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to create directory: %v", err)), nil
 	}
 
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return nil, fmt.Errorf("failed to write file: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to write file: %v", err)), nil
 	}
-	return textResult(fmt.Sprintf("Written %d bytes to %s", len(content), path)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Written %d bytes to %s", len(content), path)), nil
 }
 
-func handleListDirectory(args map[string]any) (any, error) {
-	path, _ := args["path"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("path is required")
+func handleListDirectory(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
+	args := req.GetArguments()
 	recursive, _ := args["recursive"].(bool)
 
 	var entries []string
 	if recursive {
 		err := filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
 			if err != nil {
-				return nil // skip errors
+				return nil
 			}
 			rel, _ := filepath.Rel(path, p)
 			if rel == "." {
@@ -203,12 +107,12 @@ func handleListDirectory(args map[string]any) (any, error) {
 			return nil
 		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to walk directory: %w", err)
+			return mcp.NewToolResultError(fmt.Sprintf("failed to walk directory: %v", err)), nil
 		}
 	} else {
 		dirEntries, err := os.ReadDir(path)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read directory: %w", err)
+			return mcp.NewToolResultError(fmt.Sprintf("failed to read directory: %v", err)), nil
 		}
 		for _, e := range dirEntries {
 			prefix := "FILE"
@@ -219,22 +123,22 @@ func handleListDirectory(args map[string]any) (any, error) {
 		}
 	}
 
-	return textResult(strings.Join(entries, "\n")), nil
+	return mcp.NewToolResultText(strings.Join(entries, "\n")), nil
 }
 
-func handleSearchFiles(args map[string]any) (any, error) {
-	root, _ := args["path"].(string)
-	pattern, _ := args["pattern"].(string)
-	if root == "" || pattern == "" {
-		return nil, fmt.Errorf("path and pattern are required")
+func handleSearchFiles(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	root, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	pattern, err := req.RequireString("pattern")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	var matches []string
 	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
+		if err != nil || info.IsDir() {
 			return nil
 		}
 		matched, _ := filepath.Match(pattern, filepath.Base(p))
@@ -244,86 +148,39 @@ func handleSearchFiles(args map[string]any) (any, error) {
 		return nil
 	})
 
-	return textResult(strings.Join(matches, "\n")), nil
+	return mcp.NewToolResultText(strings.Join(matches, "\n")), nil
 }
 
-func handleCopyFile(args map[string]any) (any, error) {
-	src, _ := args["src"].(string)
-	dst, _ := args["dst"].(string)
-	if src == "" || dst == "" {
-		return nil, fmt.Errorf("src and dst are required")
+func handleCopyFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	src, err := req.RequireString("src")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	dst, err := req.RequireString("dst")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	srcFile, err := os.Open(src)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open source: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to open source: %v", err)), nil
 	}
 	defer srcFile.Close()
 
-	// Ensure destination directory exists
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create destination directory: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to create destination directory: %v", err)), nil
 	}
 
 	dstFile, err := os.Create(dst)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create destination: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to create destination: %v", err)), nil
 	}
 	defer dstFile.Close()
 
 	n, err := io.Copy(dstFile, srcFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to copy: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to copy: %v", err)), nil
 	}
 
-	return textResult(fmt.Sprintf("Copied %s to %s (%d bytes)", src, dst, n)), nil
-}
-
-func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	enc := json.NewEncoder(os.Stdout)
-
-	for scanner.Scan() {
-		var req jsonRPCRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
-
-		var resp jsonRPCResponse
-		resp.JSONRPC = "2.0"
-		resp.ID = req.ID
-
-		switch req.Method {
-		case "initialize":
-			resp.Result = map[string]any{
-				"protocolVersion": "2024-11-05",
-				"capabilities":   map[string]any{"tools": map[string]any{}},
-				"serverInfo":     map[string]any{"name": "mcp-filesystem", "version": "0.1.0"},
-			}
-		case "tools/list":
-			resp.Result = map[string]any{"tools": tools}
-		case "tools/call":
-			var params map[string]any
-			if err := json.Unmarshal(req.Params, &params); err != nil {
-				resp.Error = map[string]any{"code": -32602, "message": "invalid params: " + err.Error()}
-			} else {
-				result, err := handleToolCall(params)
-				if err != nil {
-					resp.Result = map[string]any{
-						"content": []map[string]any{
-							{"type": "text", "text": "Error: " + err.Error()},
-						},
-						"isError": true,
-					}
-				} else {
-					resp.Result = result
-				}
-			}
-		default:
-			resp.Error = map[string]any{"code": -32601, "message": "method not found"}
-		}
-
-		enc.Encode(resp)
-	}
+	return mcp.NewToolResultText(fmt.Sprintf("Copied %s to %s (%d bytes)", src, dst, n)), nil
 }

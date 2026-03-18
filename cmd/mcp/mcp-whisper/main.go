@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,91 +10,17 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
-type jsonRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type jsonRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
-}
-
-type tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-}
-
-var tools = []tool{
-	{
-		Name:        "transcribe_audio",
-		Description: "Transcribe an audio file to text using whisper.cpp. Supports WAV, MP3, FLAC, OGG, M4A (non-WAV formats require ffmpeg). Returns transcription text or subtitles.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "Path to the audio file.",
-				},
-				"language": map[string]any{
-					"type":        "string",
-					"description": "Language code (e.g. 'ru', 'en', 'de') or 'auto' for auto-detection. Default: 'auto'.",
-				},
-				"output_format": map[string]any{
-					"type":        "string",
-					"description": "Output format: 'txt' (plain text), 'srt' (subtitles), 'vtt' (WebVTT), 'json' (timestamped). Default: 'txt'.",
-					"enum":        []string{"txt", "srt", "vtt", "json"},
-				},
-				"translate": map[string]any{
-					"type":        "boolean",
-					"description": "Translate to English instead of transcribing in original language.",
-				},
-				"model": map[string]any{
-					"type":        "string",
-					"description": "Model name to use (e.g. 'small', 'large-v3'). Overrides default model. Must be downloaded first.",
-				},
-			},
-			"required": []string{"path"},
-		},
-	},
-	{
-		Name:        "list_models",
-		Description: "List available whisper models in the models directory.",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	},
-	{
-		Name:        "download_model",
-		Description: "Download a whisper model from Hugging Face. Models: tiny (~75MB), base (~142MB), small (~466MB), medium (~1.5GB), large-v3 (~3.1GB).",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"model": map[string]any{
-					"type":        "string",
-					"description": "Model to download.",
-					"enum":        []string{"tiny", "base", "small", "medium", "large-v3"},
-				},
-			},
-			"required": []string{"model"},
-		},
-	},
-}
-
 var (
-	whisperBin string
+	whisperBin   string
 	defaultModel string
-	modelsDir  string
-	threads    string
-	ffmpegBin  string
+	modelsDir    string
+	threads      string
+	ffmpegBin    string
 )
 
 func init() {
@@ -114,66 +38,28 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func textResult(text string) any {
-	return map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": text},
-		},
-	}
-}
-
-func errorResult(text string) any {
-	return map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": "Error: " + text},
-		},
-		"isError": true,
-	}
-}
-
-func handleToolCall(params map[string]any) (any, error) {
-	toolName, _ := params["name"].(string)
-	args, _ := params["arguments"].(map[string]any)
-
-	switch toolName {
-	case "transcribe_audio":
-		return handleTranscribe(args)
-	case "list_models":
-		return handleListModels()
-	case "download_model":
-		return handleDownloadModel(args)
-	default:
-		return nil, fmt.Errorf("unknown tool: %s", toolName)
-	}
-}
-
-func handleTranscribe(args map[string]any) (any, error) {
-	path, _ := args["path"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("path is required")
+func handleTranscribe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError("path is required"), nil
 	}
 
 	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("file not found: %s", path)
+		return mcp.NewToolResultError(fmt.Sprintf("file not found: %s", path)), nil
 	}
 
-	language, _ := args["language"].(string)
-	if language == "" {
-		language = "auto"
-	}
+	language := req.GetString("language", "auto")
+	outputFormat := req.GetString("output_format", "txt")
 
-	outputFormat, _ := args["output_format"].(string)
-	if outputFormat == "" {
-		outputFormat = "txt"
-	}
-
+	args := req.GetArguments()
 	translate, _ := args["translate"].(bool)
 
 	modelPath := defaultModel
-	if modelName, ok := args["model"].(string); ok && modelName != "" {
+	modelName := req.GetString("model", "")
+	if modelName != "" {
 		modelPath = filepath.Join(modelsDir, "ggml-"+modelName+".bin")
 		if _, err := os.Stat(modelPath); err != nil {
-			return nil, fmt.Errorf("model not found: %s (use download_model to get it)", modelPath)
+			return mcp.NewToolResultError(fmt.Sprintf("model not found: %s (use download_model to get it)", modelPath)), nil
 		}
 	}
 
@@ -183,12 +69,12 @@ func handleTranscribe(args map[string]any) (any, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext != ".wav" {
 		if _, err := exec.LookPath(ffmpegBin); err != nil {
-			return nil, fmt.Errorf("ffmpeg not found; only WAV files are supported without ffmpeg")
+			return mcp.NewToolResultError("ffmpeg not found; only WAV files are supported without ffmpeg"), nil
 		}
 		tmpWav = filepath.Join(os.TempDir(), fmt.Sprintf("whisper_%d.wav", time.Now().UnixNano()))
 		cmd := exec.Command(ffmpegBin, "-i", path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-y", tmpWav)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("ffmpeg conversion failed: %s\n%s", err, string(out))
+			return mcp.NewToolResultError(fmt.Sprintf("ffmpeg conversion failed: %s\n%s", err, string(out))), nil
 		}
 		audioPath = tmpWav
 		defer os.Remove(tmpWav)
@@ -219,16 +105,16 @@ func handleTranscribe(args map[string]any) (any, error) {
 		cmdArgs = append(cmdArgs, "-oj")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+	execCtx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, whisperBin, cmdArgs...)
+	cmd := exec.CommandContext(execCtx, whisperBin, cmdArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("transcription timed out")
+		if execCtx.Err() == context.DeadlineExceeded {
+			return mcp.NewToolResultError("transcription timed out"), nil
 		}
-		return nil, fmt.Errorf("whisper-cli failed: %s\n%s", err, string(output))
+		return mcp.NewToolResultError(fmt.Sprintf("whisper-cli failed: %s\n%s", err, string(output))), nil
 	}
 
 	// For srt/vtt/json, whisper-cli writes output files next to input
@@ -240,28 +126,28 @@ func handleTranscribe(args map[string]any) (any, error) {
 			defer os.Remove(outFile)
 			result := strings.TrimSpace(string(data))
 			if result == "" {
-				return textResult("No speech detected."), nil
+				return mcp.NewToolResultText("No speech detected."), nil
 			}
-			return textResult(result), nil
+			return mcp.NewToolResultText(result), nil
 		}
 		// Fallback: check if output was written to stdout
 	}
 
 	result := strings.TrimSpace(string(output))
 	if result == "" {
-		return textResult("No speech detected."), nil
+		return mcp.NewToolResultText("No speech detected."), nil
 	}
 
-	return textResult(result), nil
+	return mcp.NewToolResultText(result), nil
 }
 
-func handleListModels() (any, error) {
+func handleListModels(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	entries, err := os.ReadDir(modelsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return textResult("No models directory found. Run 'make setup-whisper' to set up."), nil
+			return mcp.NewToolResultText("No models directory found. Run 'make setup-whisper' to set up."), nil
 		}
-		return nil, fmt.Errorf("failed to read models directory: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to read models directory: %s", err)), nil
 	}
 
 	var models []string
@@ -284,27 +170,27 @@ func handleListModels() (any, error) {
 	}
 
 	if len(models) == 0 {
-		return textResult("No models found in " + modelsDir + ". Use download_model to get one."), nil
+		return mcp.NewToolResultText("No models found in " + modelsDir + ". Use download_model to get one."), nil
 	}
 
-	return textResult("Available models:\n" + strings.Join(models, "\n")), nil
+	return mcp.NewToolResultText("Available models:\n" + strings.Join(models, "\n")), nil
 }
 
-func handleDownloadModel(args map[string]any) (any, error) {
-	model, _ := args["model"].(string)
-	if model == "" {
-		return nil, fmt.Errorf("model is required")
+func handleDownloadModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	model, err := req.RequireString("model")
+	if err != nil {
+		return mcp.NewToolResultError("model is required"), nil
 	}
 
 	validModels := map[string]bool{
 		"tiny": true, "base": true, "small": true, "medium": true, "large-v3": true,
 	}
 	if !validModels[model] {
-		return nil, fmt.Errorf("invalid model: %s. Valid: tiny, base, small, medium, large-v3", model)
+		return mcp.NewToolResultError(fmt.Sprintf("invalid model: %s. Valid: tiny, base, small, medium, large-v3", model)), nil
 	}
 
 	if err := os.MkdirAll(modelsDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create models directory: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to create models directory: %s", err)), nil
 	}
 
 	filename := fmt.Sprintf("ggml-%s.bin", model)
@@ -313,7 +199,7 @@ func handleDownloadModel(args map[string]any) (any, error) {
 	// Check if already exists
 	if info, err := os.Stat(destPath); err == nil {
 		sizeMB := info.Size() / (1024 * 1024)
-		return textResult(fmt.Sprintf("Model %s already exists (%d MB): %s", model, sizeMB, destPath)), nil
+		return mcp.NewToolResultText(fmt.Sprintf("Model %s already exists (%d MB): %s", model, sizeMB, destPath)), nil
 	}
 
 	url := fmt.Sprintf("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-%s.bin", model)
@@ -324,31 +210,31 @@ func handleDownloadModel(args map[string]any) (any, error) {
 
 	resp, err := http.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("download failed: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("download failed: %s", err)), nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+		return mcp.NewToolResultError(fmt.Sprintf("download failed: HTTP %d", resp.StatusCode)), nil
 	}
 
 	out, err := os.Create(tmpPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to create temp file: %s", err)), nil
 	}
 
 	written, err := io.Copy(out, resp.Body)
 	out.Close()
 	if err != nil {
-		return nil, fmt.Errorf("download interrupted: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("download interrupted: %s", err)), nil
 	}
 
 	if err := os.Rename(tmpPath, destPath); err != nil {
-		return nil, fmt.Errorf("failed to finalize download: %w", err)
+		return mcp.NewToolResultError(fmt.Sprintf("failed to finalize download: %s", err)), nil
 	}
 
 	sizeMB := written / (1024 * 1024)
-	return textResult(fmt.Sprintf("Downloaded model %s (%d MB) to %s", model, sizeMB, destPath)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Downloaded model %s (%d MB) to %s", model, sizeMB, destPath)), nil
 }
 
 func main() {
@@ -358,45 +244,53 @@ func main() {
 		os.Exit(1)
 	}
 
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	enc := json.NewEncoder(os.Stdout)
+	s := server.NewMCPServer("mcp-whisper", "0.1.0")
 
-	for scanner.Scan() {
-		var req jsonRPCRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
-		}
+	s.AddTool(
+		mcp.NewTool("transcribe_audio",
+			mcp.WithDescription("Transcribe an audio file to text using whisper.cpp. Supports WAV, MP3, FLAC, OGG, M4A (non-WAV formats require ffmpeg). Returns transcription text or subtitles."),
+			mcp.WithString("path",
+				mcp.Required(),
+				mcp.Description("Path to the audio file."),
+			),
+			mcp.WithString("language",
+				mcp.Description("Language code (e.g. 'ru', 'en', 'de') or 'auto' for auto-detection. Default: 'auto'."),
+			),
+			mcp.WithString("output_format",
+				mcp.Description("Output format: 'txt' (plain text), 'srt' (subtitles), 'vtt' (WebVTT), 'json' (timestamped). Default: 'txt'."),
+				mcp.Enum("txt", "srt", "vtt", "json"),
+			),
+			mcp.WithBoolean("translate",
+				mcp.Description("Translate to English instead of transcribing in original language."),
+			),
+			mcp.WithString("model",
+				mcp.Description("Model name to use (e.g. 'small', 'large-v3'). Overrides default model. Must be downloaded first."),
+			),
+		),
+		handleTranscribe,
+	)
 
-		var resp jsonRPCResponse
-		resp.JSONRPC = "2.0"
-		resp.ID = req.ID
+	s.AddTool(
+		mcp.NewTool("list_models",
+			mcp.WithDescription("List available whisper models in the models directory."),
+		),
+		handleListModels,
+	)
 
-		switch req.Method {
-		case "initialize":
-			resp.Result = map[string]any{
-				"protocolVersion": "2024-11-05",
-				"capabilities":   map[string]any{"tools": map[string]any{}},
-				"serverInfo":     map[string]any{"name": "mcp-whisper", "version": "0.1.0"},
-			}
-		case "tools/list":
-			resp.Result = map[string]any{"tools": tools}
-		case "tools/call":
-			var params map[string]any
-			if err := json.Unmarshal(req.Params, &params); err != nil {
-				resp.Error = map[string]any{"code": -32602, "message": "invalid params: " + err.Error()}
-			} else {
-				result, err := handleToolCall(params)
-				if err != nil {
-					resp.Result = errorResult(err.Error())
-				} else {
-					resp.Result = result
-				}
-			}
-		default:
-			resp.Error = map[string]any{"code": -32601, "message": "method not found"}
-		}
+	s.AddTool(
+		mcp.NewTool("download_model",
+			mcp.WithDescription("Download a whisper model from Hugging Face. Models: tiny (~75MB), base (~142MB), small (~466MB), medium (~1.5GB), large-v3 (~3.1GB)."),
+			mcp.WithString("model",
+				mcp.Required(),
+				mcp.Description("Model to download."),
+				mcp.Enum("tiny", "base", "small", "medium", "large-v3"),
+			),
+		),
+		handleDownloadModel,
+	)
 
-		enc.Encode(resp)
+	if err := server.ServeStdio(s); err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %s\n", err)
+		os.Exit(1)
 	}
 }

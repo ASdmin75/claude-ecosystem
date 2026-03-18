@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,48 +16,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/pb33f/libopenapi"
 	"github.com/pb33f/libopenapi/datamodel/high/base"
 	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 	"github.com/pb33f/libopenapi/orderedmap"
 )
-
-// --- JSON-RPC types (same pattern as other MCP servers) ---
-
-type jsonRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type jsonRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
-}
-
-type mcpTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-}
-
-type toolCallParams struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
-}
-
-type contentItem struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type toolResult struct {
-	Content []contentItem `json:"content"`
-	IsError bool          `json:"isError,omitempty"`
-}
 
 // --- API operation model ---
 
@@ -82,7 +47,7 @@ type apiOperation struct {
 }
 
 type generatedTool struct {
-	tool      mcpTool
+	tool      mcp.Tool
 	operation apiOperation
 }
 
@@ -239,7 +204,6 @@ func (tm *oauth2TokenManager) getToken() (string, error) {
 
 var (
 	generatedTools map[string]generatedTool
-	toolList       []mcpTool
 	baseURL        string
 	httpClient     *http.Client
 	authType       string
@@ -301,23 +265,6 @@ func main() {
 		operations = operations[:maxTools]
 	}
 
-	// Generate tools
-	generatedTools = make(map[string]generatedTool)
-	toolList = nil
-	nameCount := make(map[string]int)
-
-	for _, op := range operations {
-		name := toolName(op)
-		nameCount[name]++
-		if nameCount[name] > 1 {
-			name = fmt.Sprintf("%s_%d", name, nameCount[name])
-		}
-
-		t := buildTool(name, op)
-		generatedTools[name] = generatedTool{tool: t, operation: op}
-		toolList = append(toolList, t)
-	}
-
 	// Configure HTTP client
 	timeout := 30 * time.Second
 	if v := os.Getenv("OPENAPI_TIMEOUT"); v != "" {
@@ -368,39 +315,40 @@ func main() {
 	// Parse extra headers
 	extraHeaders = parseExtraHeaders(os.Getenv("OPENAPI_EXTRA_HEADERS"))
 
-	fmt.Fprintf(os.Stderr, "mcp-openapi: loaded %d tools from %s (base: %s)\n", len(toolList), specPath, baseURL)
+	// Generate tools and register with MCP server
+	s := server.NewMCPServer("mcp-openapi", "1.0.0")
+	generatedTools = make(map[string]generatedTool)
+	nameCount := make(map[string]int)
+	toolCount := 0
 
-	// JSON-RPC main loop
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	enc := json.NewEncoder(os.Stdout)
-
-	for scanner.Scan() {
-		var req jsonRPCRequest
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			continue
+	for _, op := range operations {
+		name := toolName(op)
+		nameCount[name]++
+		if nameCount[name] > 1 {
+			name = fmt.Sprintf("%s_%d", name, nameCount[name])
 		}
 
-		var resp jsonRPCResponse
-		resp.JSONRPC = "2.0"
-		resp.ID = req.ID
+		t := buildTool(name, op)
+		gt := generatedTool{tool: t, operation: op}
+		generatedTools[name] = gt
+		s.AddTool(t, makeToolHandler(gt))
+		toolCount++
+	}
 
-		switch req.Method {
-		case "initialize":
-			resp.Result = map[string]any{
-				"protocolVersion": "2024-11-05",
-				"capabilities":   map[string]any{"tools": map[string]any{}},
-				"serverInfo":     map[string]any{"name": "mcp-openapi", "version": "1.0.0"},
-			}
-		case "tools/list":
-			resp.Result = map[string]any{"tools": toolList}
-		case "tools/call":
-			resp.Result = handleToolCall(req.Params)
-		default:
-			resp.Error = map[string]any{"code": -32601, "message": "method not found"}
-		}
+	fmt.Fprintf(os.Stderr, "mcp-openapi: loaded %d tools from %s (base: %s)\n", toolCount, specPath, baseURL)
 
-		enc.Encode(resp)
+	if err := server.ServeStdio(s); err != nil {
+		fmt.Fprintf(os.Stderr, "mcp-openapi: server error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// makeToolHandler creates a tool handler closure for a generated tool.
+func makeToolHandler(gt generatedTool) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := req.GetArguments()
+		result := executeOperation(gt.operation, args)
+		return &result, nil
 	}
 }
 
@@ -658,7 +606,7 @@ func toolName(op apiOperation) string {
 
 // --- Tool schema generation ---
 
-func buildTool(name string, op apiOperation) mcpTool {
+func buildTool(name string, op apiOperation) mcp.Tool {
 	desc := op.Summary
 	if desc == "" {
 		desc = op.Description
@@ -711,11 +659,8 @@ func buildTool(name string, op apiOperation) mcpTool {
 		inputSchema["required"] = required
 	}
 
-	return mcpTool{
-		Name:        name,
-		Description: desc,
-		InputSchema: inputSchema,
-	}
+	schemaJSON, _ := json.Marshal(inputSchema)
+	return mcp.NewToolWithRawSchema(name, desc, schemaJSON)
 }
 
 func copyMap(m map[string]any) map[string]any {
@@ -728,26 +673,7 @@ func copyMap(m map[string]any) map[string]any {
 
 // --- Tool execution ---
 
-func handleToolCall(params json.RawMessage) toolResult {
-	var p toolCallParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return errorResult("invalid params: " + err.Error())
-	}
-
-	gt, ok := generatedTools[p.Name]
-	if !ok {
-		return errorResult("unknown tool: " + p.Name)
-	}
-
-	var args map[string]any
-	if err := json.Unmarshal(p.Arguments, &args); err != nil {
-		return errorResult("invalid arguments: " + err.Error())
-	}
-
-	return executeOperation(gt.operation, args)
-}
-
-func executeOperation(op apiOperation, args map[string]any) toolResult {
+func executeOperation(op apiOperation, args map[string]any) mcp.CallToolResult {
 	result, statusCode := doExecute(op, args)
 
 	// Auto-retry on 401 for oauth2: refresh token and retry once
@@ -762,7 +688,7 @@ func executeOperation(op apiOperation, args map[string]any) toolResult {
 	return result
 }
 
-func doExecute(op apiOperation, args map[string]any) (toolResult, int) {
+func doExecute(op apiOperation, args map[string]any) (mcp.CallToolResult, int) {
 	// Build URL with path params
 	reqPath := op.Path
 	queryParams := url.Values{}
@@ -862,10 +788,8 @@ func doExecute(op apiOperation, args map[string]any) (toolResult, int) {
 	}
 
 	if resp.StatusCode >= 400 {
-		return toolResult{
-			Content: []contentItem{{Type: "text", Text: output}},
-			IsError: true,
-		}, resp.StatusCode
+		r := errorResult(output)
+		return r, resp.StatusCode
 	}
 
 	return textResult(output), resp.StatusCode
@@ -923,15 +847,10 @@ func isJSON(data []byte) bool {
 	return len(data) > 0 && (data[0] == '{' || data[0] == '[')
 }
 
-func textResult(text string) toolResult {
-	return toolResult{
-		Content: []contentItem{{Type: "text", Text: text}},
-	}
+func textResult(text string) mcp.CallToolResult {
+	return *mcp.NewToolResultText(text)
 }
 
-func errorResult(msg string) toolResult {
-	return toolResult{
-		Content: []contentItem{{Type: "text", Text: msg}},
-		IsError: true,
-	}
+func errorResult(msg string) mcp.CallToolResult {
+	return *mcp.NewToolResultError(msg)
 }

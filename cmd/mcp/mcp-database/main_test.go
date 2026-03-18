@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	_ "modernc.org/sqlite"
 )
 
@@ -45,19 +47,38 @@ func setupTestDB(t *testing.T) string {
 	return dbPath
 }
 
+// makeReq builds a CallToolRequest with the given arguments map.
+func makeReq(args map[string]any) mcp.CallToolRequest {
+	return mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: args,
+		},
+	}
+}
+
+// resultText extracts the text from the first content item of a CallToolResult.
+func resultText(r *mcp.CallToolResult) string {
+	if len(r.Content) == 0 {
+		return ""
+	}
+	if tc, ok := r.Content[0].(mcp.TextContent); ok {
+		return tc.Text
+	}
+	return ""
+}
+
 func TestHandleQuery(t *testing.T) {
 	setupTestDB(t)
 	defer db.Close()
 
-	args, _ := json.Marshal(map[string]string{"sql": "SELECT name, country FROM leads ORDER BY name"})
-	result := handleQuery(args)
+	result, _ := handleQuery(context.Background(), makeReq(map[string]any{"sql": "SELECT name, country FROM leads ORDER BY name"}))
 
 	if result.IsError {
-		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+		t.Fatalf("unexpected error: %s", resultText(result))
 	}
 
 	var rows []map[string]any
-	if err := json.Unmarshal([]byte(result.Content[0].Text), &rows); err != nil {
+	if err := json.Unmarshal([]byte(resultText(result)), &rows); err != nil {
 		t.Fatalf("parsing result: %v", err)
 	}
 
@@ -73,8 +94,7 @@ func TestHandleQueryRejectsDangerous(t *testing.T) {
 	setupTestDB(t)
 	defer db.Close()
 
-	args, _ := json.Marshal(map[string]string{"sql": "DROP TABLE leads"})
-	result := handleQuery(args)
+	result, _ := handleQuery(context.Background(), makeReq(map[string]any{"sql": "DROP TABLE leads"}))
 
 	if !result.IsError {
 		t.Error("expected error for non-SELECT query")
@@ -85,12 +105,10 @@ func TestHandleQueryAutoLimit(t *testing.T) {
 	setupTestDB(t)
 	defer db.Close()
 
-	// Query without LIMIT should still work (auto-added)
-	args, _ := json.Marshal(map[string]string{"sql": "SELECT * FROM leads"})
-	result := handleQuery(args)
+	result, _ := handleQuery(context.Background(), makeReq(map[string]any{"sql": "SELECT * FROM leads"}))
 
 	if result.IsError {
-		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+		t.Fatalf("unexpected error: %s", resultText(result))
 	}
 }
 
@@ -99,27 +117,25 @@ func TestHandleCheckExists(t *testing.T) {
 	defer db.Close()
 
 	// Existing record
-	args, _ := json.Marshal(map[string]any{
+	result, _ := handleCheckExists(context.Background(), makeReq(map[string]any{
 		"table": "leads", "column": "tax_id", "value": "123456789",
-	})
-	result := handleCheckExists(args)
+	}))
 	if result.IsError {
-		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+		t.Fatalf("unexpected error: %s", resultText(result))
 	}
 
 	var resp map[string]bool
-	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	json.Unmarshal([]byte(resultText(result)), &resp)
 	if !resp["exists"] {
 		t.Error("expected exists=true for existing record")
 	}
 
 	// Non-existing record
-	args, _ = json.Marshal(map[string]any{
+	result, _ = handleCheckExists(context.Background(), makeReq(map[string]any{
 		"table": "leads", "column": "tax_id", "value": "000000000",
-	})
-	result = handleCheckExists(args)
+	}))
 
-	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	json.Unmarshal([]byte(resultText(result)), &resp)
 	if resp["exists"] {
 		t.Error("expected exists=false for non-existing record")
 	}
@@ -129,10 +145,9 @@ func TestHandleCheckExistsInvalidTable(t *testing.T) {
 	setupTestDB(t)
 	defer db.Close()
 
-	args, _ := json.Marshal(map[string]any{
+	result, _ := handleCheckExists(context.Background(), makeReq(map[string]any{
 		"table": "Robert'; DROP TABLE leads;--", "column": "tax_id", "value": "123",
-	})
-	result := handleCheckExists(args)
+	}))
 	if !result.IsError {
 		t.Error("expected error for invalid table name")
 	}
@@ -142,22 +157,21 @@ func TestHandleInsert(t *testing.T) {
 	setupTestDB(t)
 	defer db.Close()
 
-	args, _ := json.Marshal(map[string]any{
+	result, _ := handleInsert(context.Background(), makeReq(map[string]any{
 		"table": "leads",
 		"data": map[string]any{
 			"name":    "New Corp",
 			"tax_id":  "555555555",
 			"country": "KZ",
 		},
-	})
-	result := handleInsert(args)
+	}))
 
 	if result.IsError {
-		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+		t.Fatalf("unexpected error: %s", resultText(result))
 	}
 
 	var resp map[string]int64
-	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	json.Unmarshal([]byte(resultText(result)), &resp)
 	if resp["id"] == 0 {
 		t.Error("expected non-zero ID")
 	}
@@ -174,14 +188,13 @@ func TestHandleInsertDuplicate(t *testing.T) {
 	setupTestDB(t)
 	defer db.Close()
 
-	args, _ := json.Marshal(map[string]any{
+	result, _ := handleInsert(context.Background(), makeReq(map[string]any{
 		"table": "leads",
 		"data": map[string]any{
 			"name":   "Duplicate",
 			"tax_id": "123456789", // already exists
 		},
-	})
-	result := handleInsert(args)
+	}))
 
 	if !result.IsError {
 		t.Error("expected error for duplicate tax_id insert")
@@ -192,17 +205,16 @@ func TestHandleExecute(t *testing.T) {
 	setupTestDB(t)
 	defer db.Close()
 
-	args, _ := json.Marshal(map[string]string{
+	result, _ := handleExecute(context.Background(), makeReq(map[string]any{
 		"sql": "UPDATE leads SET country = 'KZ' WHERE tax_id = '123456789'",
-	})
-	result := handleExecute(args)
+	}))
 
 	if result.IsError {
-		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+		t.Fatalf("unexpected error: %s", resultText(result))
 	}
 
 	var resp map[string]int64
-	json.Unmarshal([]byte(result.Content[0].Text), &resp)
+	json.Unmarshal([]byte(resultText(result)), &resp)
 	if resp["rows_affected"] != 1 {
 		t.Errorf("expected 1 row affected, got %d", resp["rows_affected"])
 	}
@@ -212,8 +224,7 @@ func TestHandleExecuteRejectsDangerous(t *testing.T) {
 	setupTestDB(t)
 	defer db.Close()
 
-	args, _ := json.Marshal(map[string]string{"sql": "DROP TABLE leads"})
-	result := handleExecute(args)
+	result, _ := handleExecute(context.Background(), makeReq(map[string]any{"sql": "DROP TABLE leads"}))
 
 	if !result.IsError {
 		t.Error("expected error for DROP statement")
@@ -224,13 +235,13 @@ func TestHandleListTables(t *testing.T) {
 	setupTestDB(t)
 	defer db.Close()
 
-	result := handleListTables()
+	result, _ := handleListTables(context.Background(), mcp.CallToolRequest{})
 	if result.IsError {
-		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+		t.Fatalf("unexpected error: %s", resultText(result))
 	}
 
 	var tables []string
-	json.Unmarshal([]byte(result.Content[0].Text), &tables)
+	json.Unmarshal([]byte(resultText(result)), &tables)
 
 	found := false
 	for _, tbl := range tables {
@@ -247,15 +258,14 @@ func TestHandleDescribeTable(t *testing.T) {
 	setupTestDB(t)
 	defer db.Close()
 
-	args, _ := json.Marshal(map[string]string{"table": "leads"})
-	result := handleDescribeTable(args)
+	result, _ := handleDescribeTable(context.Background(), makeReq(map[string]any{"table": "leads"}))
 
 	if result.IsError {
-		t.Fatalf("unexpected error: %s", result.Content[0].Text)
+		t.Fatalf("unexpected error: %s", resultText(result))
 	}
 
 	var cols []map[string]any
-	json.Unmarshal([]byte(result.Content[0].Text), &cols)
+	json.Unmarshal([]byte(resultText(result)), &cols)
 
 	if len(cols) < 3 {
 		t.Errorf("expected at least 3 columns, got %d", len(cols))
@@ -266,13 +276,12 @@ func TestHandleInsertInvalidColumnName(t *testing.T) {
 	setupTestDB(t)
 	defer db.Close()
 
-	args, _ := json.Marshal(map[string]any{
+	result, _ := handleInsert(context.Background(), makeReq(map[string]any{
 		"table": "leads",
 		"data": map[string]any{
 			"name; DROP TABLE leads": "bad",
 		},
-	})
-	result := handleInsert(args)
+	}))
 
 	if !result.IsError {
 		t.Error("expected error for SQL injection in column name")
