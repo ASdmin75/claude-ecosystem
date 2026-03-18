@@ -218,6 +218,100 @@ tasks:
         - WebSearch
       max_turns: 50
       permission_mode: bypassPermissions
+    - name: research-vet-manufacturers
+      domain: vet-manufacturers-belarus
+      prompt: "Дата исследования: {{.Date}}\n\nПроведи исследование производителей ветеринарных препаратов в Республике Беларусь.\n\nШАГ 0 — Инициализация сеанса:\n1. Сгенерируй уникальный session_id в формате: vet-YYYYMMDD-HHMMSS (например vet-20260318-143052)\n2. Выполни SELECT name, updated_at FROM manufacturers ORDER BY name — это список УЖЕ известных. НЕ ТРАТЬ бюджет на их повторный поиск.\n3. Создай запись в sync_log: INSERT INTO sync_log (session_id, notes) VALUES ('{session_id}', 'started')\n\nСтратегия работы:\n- ВСЕ INSERT и UPDATE должны содержать session_id текущего сеанса\n- Сохраняй каждого НОВОГО производителя в БД СРАЗУ после нахождения\n- Используй check_exists перед insert чтобы избежать дубликатов\n- Начни с официальных реестров, затем расширяй поиск\n- Для существующих записей: обновляй ТОЛЬКО если нашёл новую информацию\n\nЗадачи:\n1. Инициализация (ШАГ 0)\n2. Найди НОВЫХ производителей через поиск\n3. Для каждого: экспорт, авиатранспорт, страны назначения\n4. СРАЗУ сохраняй в БД с session_id текущего сеанса\n5. Обнови существующие если нашлась новая информация (тоже проставь session_id)\n6. Обнови sync_log: UPDATE sync_log SET manufacturers_added=N, manufacturers_updated=M, notes='completed' WHERE session_id='{session_id}'\n\nПо завершении выведи (ОБЯЗАТЕЛЬНО включи session_id в первой строке):\nSESSION_ID: {session_id}\n- Всего в БД\n- Новых добавлено / обновлено\n- Список экспортёров\n- Список авиаэкспортёров"
+      work_dir: .
+      schedule: 0 8 * * 1
+      tags:
+        - vet
+        - belarus
+        - research
+        - manufacturers
+      model: sonnet
+      timeout: 30m
+      agents:
+        - vet-manufacturers-researcher
+      mcp_servers:
+        - database
+      allowed_tools:
+        - Agent
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__insert
+        - mcp__database__check_exists
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+      max_turns: 25
+      max_budget_usd: 8
+      permission_mode: dontAsk
+    - name: compile-vet-manufacturers-excel
+      domain: vet-manufacturers-belarus
+      prompt: "Сформируй Excel-отчёт по НОВЫМ производителям ветеринарных препаратов Беларуси, найденным в текущем сеансе.\n\nИсходные данные — предыдущий вывод:\n{{.PrevOutput}}\n\nИзвлеки SESSION_ID из предыдущего вывода (строка вида SESSION_ID: vet-XXXXXXXX-XXXXXX). Используй его для фильтрации.\n\nФильтрация: выгружай ТОЛЬКО записи текущего сеанса:\nWHERE session_id = '{извлечённый session_id}'\n\nСтруктура отчёта (3 листа):\n\n**Лист 1 — Новые производители (сеанс)**\nSQL: SELECT * FROM manufacturers WHERE session_id = '{session_id}'\nКолонки: Название | Юр. название | Адрес | Город | Сайт | Телефон | Email | № лицензии | Экспорт | Авиаэкспорт | Страны экспорта | Категории продуктов\n\n**Лист 2 — Новые экспортёры**\nSQL: SELECT * FROM manufacturers WHERE session_id = '{session_id}' AND exports_abroad = 1\nТе же колонки + выделить авиаэкспортёров цветом.\n\n**Лист 3 — Новые авиаэкспортёры**\nSQL: SELECT * FROM manufacturers WHERE session_id = '{session_id}' AND air_export = 1\nКолонки: Название | Страны | Примечания по авиадоставке | Категории товаров | Контакты\n\nЕсли записей нет — создай файл с пустыми таблицами (только заголовки).\nФайл: data/vet-manufacturers-belarus/vet-manufacturers-{{.Date}}.xlsx\nИспользуй mcp__excel__create_spreadsheet или mcp__excel__write_spreadsheet."
+      work_dir: .
+      tags:
+        - vet
+        - belarus
+        - excel
+        - report
+      model: sonnet
+      timeout: 10m
+      mcp_servers:
+        - database
+        - excel
+        - filesystem
+      allowed_tools:
+        - mcp__database__query
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+        - mcp__excel__create_spreadsheet
+        - mcp__excel__write_spreadsheet
+        - mcp__excel__add_styled_table
+        - mcp__filesystem__write_file
+        - mcp__filesystem__list_directory
+      max_turns: 20
+      permission_mode: dontAsk
+    - name: deliver-vet-manufacturers-report
+      domain: vet-manufacturers-belarus
+      prompt: |-
+        Отправь отчёт по НОВЫМ производителям ветеринарных препаратов Беларуси.
+
+        Данные из предыдущего шага:
+        {{.PrevOutput}}
+
+        Извлеки SESSION_ID из данных предыдущего шага.
+
+        Действия:
+        1. Найди файл отчёта data/vet-manufacturers-belarus/vet-manufacturers-{{.Date}}.xlsx
+        2. Отправь в Telegram сообщение с резюме:
+           - Дата: {{.Date}}, сеанс: {session_id}
+           - Новых производителей добавлено в этом сеансе
+           - Из них экспортёров
+           - Из них авиаэкспортёров
+           - Список новых авиаэкспортёров с их странами
+           - Общее кол-во производителей в БД (итого за всё время)
+        3. Прикрепи Excel-файл (только новые за сеанс)
+
+        Если новых не найдено — отправь короткое сообщение: "Сеанс {session_id}: новых производителей не найдено. Всего в БД: N".
+        Формат — краткий деловой отчёт на русском языке.
+      work_dir: .
+      tags:
+        - vet
+        - belarus
+        - telegram
+        - delivery
+      model: haiku
+      timeout: 5m
+      mcp_servers:
+        - telegram
+        - filesystem
+      allowed_tools:
+        - mcp__telegram__send_message
+        - mcp__telegram__send_document
+        - mcp__filesystem__list_directory
+        - mcp__filesystem__read_file
+      max_turns: 10
+      permission_mode: dontAsk
 pipelines:
     - name: review-fix
       mode: sequential
@@ -245,6 +339,14 @@ pipelines:
         - task: process-export-by-leads
       max_iterations: 1
       allow_concurrent: false
+    - name: vet-manufacturers-sync
+      mode: sequential
+      steps:
+        - task: research-vet-manufacturers
+        - task: compile-vet-manufacturers-excel
+        - task: deliver-vet-manufacturers-report
+      max_iterations: 1
+      stop_signal: PIPELINE_DONE
 mcp_servers:
     - name: database
       command: ./bin/mcp-database
@@ -370,6 +472,53 @@ domains:
         mcp_servers:
             - database
             - excel
+    vet-manufacturers-belarus:
+        description: Database of veterinary drug manufacturers in Belarus with export metadata
+        data_dir: data/vet-manufacturers-belarus
+        db: vet-manufacturers.db
+        schema: |-
+            CREATE TABLE IF NOT EXISTS manufacturers (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              legal_name TEXT,
+              address TEXT,
+              city TEXT,
+              website TEXT,
+              phone TEXT,
+              email TEXT,
+              license_no TEXT,
+              license_issuer TEXT,
+              exports_abroad INTEGER DEFAULT 0,
+              air_export INTEGER DEFAULT 0,
+              export_countries TEXT,
+              air_export_notes TEXT,
+              product_categories TEXT,
+              source TEXT,
+              first_seen TEXT DEFAULT (date('now')),
+              updated_at TEXT DEFAULT (datetime('now')),
+              session_id TEXT,
+              UNIQUE(name)
+            );
+            CREATE TABLE IF NOT EXISTS sync_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_at TEXT DEFAULT (datetime('now')),
+              session_id TEXT,
+              manufacturers_added INTEGER DEFAULT 0,
+              manufacturers_updated INTEGER DEFAULT 0,
+              notes TEXT
+            );
+        domain_doc: DOMAIN.md
+        tasks:
+            - research-vet-manufacturers
+            - compile-vet-manufacturers-excel
+        pipelines:
+            - vet-manufacturers-sync
+        agents:
+            - vet-manufacturers-researcher
+        mcp_servers:
+            - database
+            - excel
+            - filesystem
 auth:
     paseto_key: ""
     users:

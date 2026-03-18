@@ -1,6 +1,9 @@
 package config
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // Domain defines a business data domain linked to tasks, pipelines, and agents.
 type Domain struct {
@@ -16,12 +19,21 @@ type Domain struct {
 	MCPServers  []string `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
 }
 
+// stripDataDirPrefix removes the DataDir prefix from a filename if it was
+// mistakenly included (e.g. wizard generated "data/x/file.db" instead of "file.db").
+func (d Domain) stripDataDirPrefix(name string) string {
+	if d.DataDir != "" && strings.HasPrefix(name, d.DataDir+"/") {
+		return strings.TrimPrefix(name, d.DataDir+"/")
+	}
+	return name
+}
+
 // DBPath returns the full path to the domain's SQLite database file.
 func (d Domain) DBPath() string {
 	if d.DB == "" {
 		return ""
 	}
-	return filepath.Join(d.DataDir, d.DB)
+	return filepath.Join(d.DataDir, d.stripDataDirPrefix(d.DB))
 }
 
 // DomainDocPath returns the full path to the domain's documentation file.
@@ -29,5 +41,5 @@ func (d Domain) DomainDocPath() string {
 	if d.DomainDoc == "" {
 		return ""
 	}
-	return filepath.Join(d.DataDir, d.DomainDoc)
+	return filepath.Join(d.DataDir, d.stripDataDirPrefix(d.DomainDoc))
 }

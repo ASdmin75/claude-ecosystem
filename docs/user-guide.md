@@ -8,13 +8,14 @@
 4. [Задачи (Tasks)](#задачи-tasks)
 5. [Суб-агенты](#суб-агенты)
 6. [Пайплайны](#пайплайны)
-7. [MCP-серверы](#mcp-серверы)
-8. [REST API](#rest-api)
-9. [Web UI](#web-ui)
-10. [Аутентификация](#аутентификация)
-11. [Hook-система](#hook-система)
-12. [Docker](#docker)
-13. [Systemd daemon](#systemd-daemon)
+7. [Домены](#домены)
+8. [MCP-серверы](#mcp-серверы)
+9. [REST API](#rest-api)
+10. [Web UI](#web-ui)
+11. [Аутентификация](#аутентификация)
+12. [Hook-система](#hook-система)
+13. [Docker](#docker)
+14. [Systemd daemon](#systemd-daemon)
 
 ---
 
@@ -157,6 +158,8 @@ pipelines:
 | `max_budget_usd` | Лимит бюджета в USD |
 | `output_format` | Формат вывода: `json` (по умолчанию) или `stream-json` |
 | `allow_concurrent` | Разрешить параллельный запуск (по умолчанию `true`). При `false` повторный запуск блокируется, если предыдущий ещё выполняется |
+| `domain` | Привязка к домену данных (см. [Домены](#домены)) |
+| `permission_mode` | Режим разрешений Claude CLI: `default`, `dontAsk` |
 | `notify` | Настройки уведомлений (см. ниже) |
 
 #### Уведомления (notify)
@@ -404,6 +407,96 @@ pipelines:
     collector: review-summarizer
     max_iterations: 1
 ```
+
+---
+
+## Домены
+
+Домены — это механизм привязки бизнес-данных (SQLite БД, файлы, документация) к задачам и пайплайнам. Данные домена отделены от системной БД сервера.
+
+### Конфигурация
+
+```yaml
+domains:
+  vet-manufacturers-belarus:
+    description: Database of veterinary drug manufacturers in Belarus
+    data_dir: data/vet-manufacturers-belarus
+    db: vet-manufacturers.db
+    schema: |-
+      CREATE TABLE IF NOT EXISTS manufacturers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        exports_abroad INTEGER DEFAULT 0,
+        air_export INTEGER DEFAULT 0,
+        session_id TEXT,
+        first_seen TEXT DEFAULT (date('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(name)
+      );
+      CREATE TABLE IF NOT EXISTS sync_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_at TEXT DEFAULT (datetime('now')),
+        session_id TEXT,
+        manufacturers_added INTEGER DEFAULT 0,
+        manufacturers_updated INTEGER DEFAULT 0,
+        notes TEXT
+      );
+    domain_doc: DOMAIN.md
+    tasks:
+      - research-vet-manufacturers
+    pipelines:
+      - vet-manufacturers-sync
+    agents:
+      - vet-manufacturers-researcher
+    mcp_servers:
+      - database
+```
+
+### Параметры домена
+
+| Параметр | Описание |
+|----------|----------|
+| `description` | Описание домена |
+| `data_dir` | Директория для данных (создаётся автоматически) |
+| `db` | Имя файла SQLite БД |
+| `schema` | SQL-схема (применяется при инициализации) |
+| `domain_doc` | Имя файла DOMAIN.md (инжектируется в system prompt агента) |
+| `tasks` | Связанные задачи |
+| `pipelines` | Связанные пайплайны |
+| `agents` | Связанные суб-агенты |
+| `mcp_servers` | Связанные MCP-серверы |
+
+### Как это работает
+
+1. При старте сервера `domain.Manager.Init()` создаёт `data_dir`, применяет SQL-схему, генерирует шаблон `DOMAIN.md`
+2. При запуске задачи с `domain: <name>` автоматически:
+   - Env vars (`DOMAIN_DB_PATH`, `DOMAIN_DATA_DIR`, `DOMAIN_NAME`) инжектируются в MCP-серверы
+   - Содержимое `DOMAIN.md` добавляется в `--append-system-prompt`
+3. MCP-сервер `mcp-database` читает `DOMAIN_DB_PATH` из env и работает с БД домена
+
+### Привязка задач к домену
+
+```yaml
+tasks:
+  - name: research-vet-manufacturers
+    domain: vet-manufacturers-belarus
+    prompt: "Найди производителей..."
+    mcp_servers: [database]
+    allowed_tools:
+      - mcp__database__query
+      - mcp__database__insert
+      - mcp__database__check_exists
+```
+
+### Session_id — фильтрация по запуску
+
+Для пайплайнов, которые запускаются многократно (вручную или по cron), важно отличать данные текущего сеанса от ранее найденных. Паттерн `session_id`:
+
+1. **Research-задача** генерирует уникальный `session_id` (например `vet-20260318-143052`) и проставляет его на все INSERT/UPDATE
+2. Выводит `SESSION_ID: vet-20260318-143052` первой строкой → передаётся через `{{.PrevOutput}}`
+3. **Следующие шаги** парсят session_id из `{{.PrevOutput}}` и фильтруют: `WHERE session_id = '...'`
+
+Это надёжнее фильтрации по дате — при нескольких запусках в день каждый получит уникальный session_id.
 
 ---
 

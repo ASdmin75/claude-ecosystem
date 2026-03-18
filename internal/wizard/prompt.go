@@ -41,7 +41,7 @@ const wizardJSONSchema = `{
           "name": { "type": "string" },
           "description": { "type": "string" },
           "data_dir": { "type": "string" },
-          "db": { "type": "string" },
+          "db": { "type": "string", "description": "Database filename only (e.g. 'data.db'), NOT a full path — data_dir is prepended automatically" },
           "schema": { "type": "string" },
           "domain_doc": { "type": "string" },
           "tasks": { "type": "array", "items": { "type": "string" } },
@@ -151,7 +151,7 @@ Business data contexts with SQLite databases. Tasks reference a domain to get:
 - Automatic DB schema initialization
 - DOMAIN.md injected into system prompt
 - Environment variables for MCP servers (DOMAIN_DB_PATH, DOMAIN_DATA_DIR)
-Fields: name, data_dir, db, schema (CREATE TABLE SQL), domain_doc (filename for DOMAIN.md)
+Fields: name, data_dir, db (filename ONLY, e.g. "mydata.db" — do NOT include data_dir prefix), schema (CREATE TABLE SQL), domain_doc (filename ONLY for DOMAIN.md)
 
 ### Pipelines
 Chain multiple tasks together.

@@ -14,6 +14,23 @@ func TestDomainDBPath(t *testing.T) {
 	}
 }
 
+func TestDomainDBPathDuplicated(t *testing.T) {
+	// Wizard may generate db with data_dir prefix already included.
+	d := Domain{DataDir: "data/vet-manufacturers-by", DB: "data/vet-manufacturers-by/vet_manufacturers.db"}
+	want := filepath.Join("data/vet-manufacturers-by", "vet_manufacturers.db")
+	if got := d.DBPath(); got != want {
+		t.Errorf("DBPath() = %q, want %q", got, want)
+	}
+}
+
+func TestDomainDocPathDuplicated(t *testing.T) {
+	d := Domain{DataDir: "data/leads", DomainDoc: "data/leads/DOMAIN.md"}
+	want := filepath.Join("data/leads", "DOMAIN.md")
+	if got := d.DomainDocPath(); got != want {
+		t.Errorf("DomainDocPath() = %q, want %q", got, want)
+	}
+}
+
 func TestDomainDBPathEmpty(t *testing.T) {
 	d := Domain{DataDir: "data/leads"}
 	if got := d.DBPath(); got != "" {
