@@ -44,6 +44,9 @@ make rebuild
 
 # Установка hook-бинарника
 make install
+
+# Установка Whisper.cpp для транскрипции аудио (опционально)
+make setup-whisper
 ```
 
 После `make build` в директории `bin/` появятся:
@@ -569,6 +572,7 @@ mcp_servers:
 | **mcp-word** | `read_document`, `write_document`, `create_document` | Реализован |
 | **mcp-pdf** | `read_pdf`, `extract_text`, `extract_tables` | Реализован |
 | **mcp-openapi** | Динамические (из OpenAPI-спеки) | Реализован |
+| **mcp-whisper** | `transcribe_audio`, `list_models`, `download_model` | Реализован |
 | **mcp-google** | — | Stub |
 | **mcp-database** | `query`, `execute`, `list_tables`, `describe_table`, `check_exists`, `insert` | Реализован |
 | **mcp-exportby** | `sync_catalog`, `get_unanalyzed`, `check_new`, `get_stats`, `get_pending_count`, `export_leads_excel`, `mark_exported`, `reject_companies` | Реализован |
@@ -695,6 +699,82 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | \
 echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"getpetbyid","arguments":{"petId":"1"}}}' | \
   OPENAPI_SPEC_PATH=specs/petstore.json OPENAPI_BASE_URL=https://petstore3.swagger.io/api/v3 \
   ./bin/mcp-openapi 2>/dev/null | python3 -m json.tool
+```
+
+### mcp-whisper — транскрипция аудио
+
+`mcp-whisper` — MCP-сервер для транскрипции аудиофайлов через [whisper.cpp](https://github.com/ggml-org/whisper.cpp). Работает локально, без внешних API.
+
+#### Установка
+
+```bash
+make setup-whisper
+```
+
+Клонирует whisper.cpp, компилирует бинарник, скачивает модель `ggml-small.bin`. Требуется cmake и C++ компилятор. Для не-WAV форматов (MP3, FLAC, OGG, M4A) нужен ffmpeg.
+
+#### Конфигурация
+
+```yaml
+mcp_servers:
+  - name: whisper
+    command: ./bin/mcp-whisper
+    env:
+      WHISPER_BIN: ./data/whisper/bin/whisper-cli
+      WHISPER_MODEL: ./data/whisper/models/ggml-small.bin
+      WHISPER_MODELS_DIR: ./data/whisper/models
+      WHISPER_THREADS: "8"
+```
+
+#### Переменные окружения
+
+| Переменная | Обяз. | Описание |
+|---|---|---|
+| `WHISPER_BIN` | **Да** | Путь к бинарнику whisper-cli |
+| `WHISPER_MODEL` | **Да** | Путь к модели по умолчанию (ggml-*.bin) |
+| `WHISPER_MODELS_DIR` | **Да** | Директория с моделями |
+| `WHISPER_THREADS` | Нет | Количество потоков (default: 4) |
+
+#### Инструменты
+
+| Инструмент | Описание |
+|---|---|
+| `transcribe_audio` | Транскрипция аудиофайла. Параметры: `path` (путь), `language` (auto/ru/en/...), `translate` (перевод на EN), `output_format` (text/srt/vtt) |
+| `list_models` | Список доступных моделей (tiny, base, small, medium, large-v3) с отметкой скачанных |
+| `download_model` | Скачивание модели с Hugging Face по имени |
+
+#### Пример: пайплайн для заметок встречи
+
+```yaml
+tasks:
+  - name: transcribe-audio
+    prompt: |
+      Транскрибируй аудиофайл: {{.AudioFile}}
+      Используй инструмент transcribe_audio с языком "ru".
+    mcp_servers: [whisper]
+    allowed_tools: [mcp__whisper__transcribe_audio, mcp__whisper__list_models]
+    timeout: 60m
+    model: haiku
+
+  - name: summarize-transcription
+    prompt: |
+      Проанализируй транскрипцию и создай:
+      1. Краткое резюме
+      2. Ключевые темы и решения
+      3. Action items
+      4. Участники и их позиции
+      Транскрипция: {{.PrevOutput}}
+    timeout: 10m
+    model: haiku
+
+pipelines:
+  - name: meeting-notes
+    mode: sequential
+    session_chain: true
+    steps:
+      - task: transcribe-audio
+      - task: summarize-transcription
+    max_iterations: 1
 ```
 
 ### Привязка к задачам

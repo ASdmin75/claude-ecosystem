@@ -312,6 +312,32 @@ tasks:
         - mcp__filesystem__read_file
       max_turns: 10
       permission_mode: dontAsk
+    - name: transcribe-audio
+      prompt: |
+        Транскрибируй аудиофайл: {{.AudioFile}}
+        Используй инструмент transcribe_audio с языком "ru".
+        Выведи полный текст транскрипции.
+      work_dir: .
+      mcp_servers:
+        - whisper
+      allowed_tools:
+        - mcp__whisper__transcribe_audio
+        - mcp__whisper__list_models
+      timeout: 60m
+      model: haiku
+    - name: summarize-transcription
+      prompt: |
+        Проанализируй транскрипцию из предыдущего шага и создай структурированные заметки:
+        1. Краткое резюме (3-5 предложений)
+        2. Ключевые темы и решения
+        3. Список задач (action items), если есть
+        4. Участники и их позиции
+
+        Транскрипция:
+        {{.PrevOutput}}
+      work_dir: .
+      timeout: 10m
+      model: haiku
 pipelines:
     - name: review-fix
       mode: sequential
@@ -339,6 +365,13 @@ pipelines:
         - task: process-export-by-leads
       max_iterations: 1
       allow_concurrent: false
+    - name: meeting-notes
+      mode: sequential
+      session_chain: true
+      steps:
+        - task: transcribe-audio
+        - task: summarize-transcription
+      max_iterations: 1
     - name: vet-manufacturers-sync
       mode: sequential
       steps:
@@ -360,6 +393,13 @@ mcp_servers:
       command: ./bin/mcp-filesystem
     - name: exportby
       command: ./bin/mcp-exportby
+    - name: whisper
+      command: ./bin/mcp-whisper
+      env:
+        WHISPER_BIN: ./data/whisper/bin/whisper-cli
+        WHISPER_MODEL: ./data/whisper/models/ggml-small.bin
+        WHISPER_MODELS_DIR: ./data/whisper/models
+        WHISPER_THREADS: "8"
 domains:
     export-by-aviation:
         description: Лиды с export.by — белорусские экспортёры, нуждающиеся в авиаперевозке грузов. MCP-сервер exportby выполняет скрейпинг сайта и хранит сырые данные в raw_companies. Задача analyze оценивает aviation_priority на основе данных в БД без обращения к сайту.

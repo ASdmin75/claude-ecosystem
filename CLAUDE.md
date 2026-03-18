@@ -27,7 +27,7 @@ Requires Go 1.26+. The `claude` CLI must be on PATH (or set `claude_bin` in task
 
 - **`cmd/server`** — Main binary. HTTP server (REST API + embedded React SPA), scheduler, watcher. Hot-reloads `tasks.yaml` on file changes (tasks, pipelines, schedules). Supports `-run <task>` and `-pipeline <name>` for CLI mode.
 - **`cmd/hook`** — Claude Code hook binary. Reads JSON from stdin, blocks dangerous commands, logs file edits.
-- **`cmd/mcp/*`** — MCP servers (JSON-RPC 2.0 stdio). Implemented: filesystem (CRUD + copy), excel (excelize), email (gomail SMTP), telegram (telebot), database (SQLite via domain system), openapi (dynamic tools from OpenAPI specs via libopenapi), word (docx via stdlib), pdf (ledongthuc/pdf). Stubs: google.
+- **`cmd/mcp/*`** — MCP servers (JSON-RPC 2.0 stdio). Implemented: filesystem (CRUD + copy), excel (excelize), email (gomail SMTP), telegram (telebot), database (SQLite via domain system), openapi (dynamic tools from OpenAPI specs via libopenapi), word (docx via stdlib), pdf (ledongthuc/pdf), whisper (audio transcription via whisper.cpp). Stubs: google.
 
 ### Core Packages (all under `internal/`)
 

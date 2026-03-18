@@ -1,7 +1,7 @@
 .PHONY: build build-ui install run run-task run-pipeline clean test \
        docker-build docker-up docker-down \
        daemon-install daemon-uninstall daemon-start daemon-stop daemon-restart daemon-status daemon-logs \
-       rebuild
+       rebuild setup-whisper
 
 build:
 	go build -o bin/server ./cmd/server
@@ -93,3 +93,26 @@ rebuild:
 	$(MAKE) build-ui build
 	@systemctl --user restart $(SERVICE_NAME) 2>/dev/null || bin/server -config tasks.yaml &
 	@echo "Rebuilt and restarted."
+
+# --- Whisper.cpp setup ---
+
+WHISPER_DIR := data/whisper
+WHISPER_SRC := $(WHISPER_DIR)/whisper.cpp
+WHISPER_BIN_FILE := $(WHISPER_DIR)/bin/whisper-cli
+WHISPER_MODEL := $(WHISPER_DIR)/models/ggml-small.bin
+
+setup-whisper: $(WHISPER_BIN_FILE) $(WHISPER_MODEL)
+
+$(WHISPER_BIN_FILE): $(WHISPER_SRC)
+	cd $(WHISPER_SRC) && cmake -B build -DCMAKE_BUILD_TYPE=Release
+	cd $(WHISPER_SRC) && cmake --build build --config Release -j$$(nproc)
+	mkdir -p $(WHISPER_DIR)/bin
+	cp $(WHISPER_SRC)/build/bin/whisper-cli $(WHISPER_BIN_FILE)
+
+$(WHISPER_SRC):
+	mkdir -p $(WHISPER_DIR)
+	git clone --depth 1 https://github.com/ggml-org/whisper.cpp $(WHISPER_SRC)
+
+$(WHISPER_MODEL):
+	mkdir -p $(WHISPER_DIR)/models
+	cd $(WHISPER_SRC)/models && bash download-ggml-model.sh small $(CURDIR)/$(WHISPER_DIR)/models/

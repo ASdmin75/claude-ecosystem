@@ -763,6 +763,45 @@ mcp_servers:
 - Все шаги pipeline должны иметь одинаковый `work_dir` (сессия привязана к проекту)
 - `--resume` может игнорировать `--model`, `--agents`, `--mcp-config` при смене между шагами
 
+### 2026-03-18 — MCP-сервер mcp-whisper: транскрипция аудио через Whisper.cpp
+
+**Новый MCP-сервер `mcp-whisper`** — транскрипция аудиофайлов через whisper.cpp (локально, без внешних API).
+
+**Инструменты:**
+- `transcribe_audio` — транскрипция аудио (WAV, MP3, FLAC, OGG, M4A). Параметры: `path`, `language` (auto/ru/en/...), `translate` (перевод на EN), `output_format` (text/srt/vtt). Не-WAV форматы конвертируются через ffmpeg
+- `list_models` — список доступных и скачанных моделей (tiny, base, small, medium, large-v3)
+- `download_model` — скачивание модели с Hugging Face
+
+**Конфигурация:**
+```yaml
+mcp_servers:
+  - name: whisper
+    command: ./bin/mcp-whisper
+    env:
+      WHISPER_BIN: ./data/whisper/bin/whisper-cli
+      WHISPER_MODEL: ./data/whisper/models/ggml-small.bin
+      WHISPER_MODELS_DIR: ./data/whisper/models
+      WHISPER_THREADS: "8"
+```
+
+**Установка Whisper.cpp через Makefile:**
+```bash
+make setup-whisper
+```
+- Клонирует whisper.cpp, компилирует через cmake, скачивает модель `ggml-small.bin`
+- Бинарник: `data/whisper/bin/whisper-cli`, модели: `data/whisper/models/`
+
+**Новые задачи и пайплайн:**
+- `transcribe-audio` — транскрипция аудиофайла (model: haiku, timeout: 60m)
+- `summarize-transcription` — анализ транскрипции: резюме, ключевые темы, action items, участники
+- Пайплайн `meeting-notes` — sequential с `session_chain: true`: транскрипция → анализ
+
+**Затронутые файлы:**
+- `cmd/mcp/mcp-whisper/main.go` — реализация MCP-сервера (JSON-RPC 2.0, stdio)
+- `Makefile` — target `setup-whisper` для сборки whisper.cpp и скачивания модели
+- `tasks.yaml` — задачи `transcribe-audio`, `summarize-transcription`, пайплайн `meeting-notes`, MCP-сервер `whisper`
+- `.gitignore` — добавлена директория `logs/`
+
 ---
 
 ## Бэклог
@@ -783,6 +822,7 @@ mcp_servers:
 - [x] mcp-telegram: отправка сообщений и файлов через Telegram Bot API
 - [x] mcp-exportby: каталог export.by — scan, analyze, reject, mark_exported
 - [x] mcp-openapi: динамические MCP-инструменты из OpenAPI-спецификаций (libopenapi)
+- [x] mcp-whisper: транскрипция аудио через whisper.cpp (WAV/MP3/FLAC/OGG/M4A, multi-language)
 
 ### Web UI — доработки
 - [x] Динамическое обновление UI через SSE (real-time, без polling)
