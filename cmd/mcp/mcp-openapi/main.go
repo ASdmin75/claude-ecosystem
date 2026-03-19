@@ -399,6 +399,31 @@ func main() {
 	)
 	toolCount++
 
+	// Register built-in batch_download tool
+	batchDlSchema, _ := json.Marshal(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"files": map[string]any{
+				"type":        "array",
+				"description": "Array of {url, path} objects to download.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"url":  map[string]any{"type": "string", "description": "Full or relative URL to download."},
+						"path": map[string]any{"type": "string", "description": "Local file path to save to."},
+					},
+					"required": []string{"url", "path"},
+				},
+			},
+		},
+		"required": []string{"files"},
+	})
+	s.AddTool(
+		mcp.NewToolWithRawSchema("batch_download", "Download multiple files in one call. Returns per-file results (success with bytes or error). Much more efficient than calling download_file repeatedly.", batchDlSchema),
+		batchDownloadHandler,
+	)
+	toolCount++
+
 	fmt.Fprintf(os.Stderr, "mcp-openapi: loaded %d tools from %s (base: %s)\n", toolCount, specPath, baseURL)
 
 	if err := server.ServeStdio(s); err != nil {
@@ -925,18 +950,12 @@ func errorResult(msg string) mcp.CallToolResult {
 	return *mcp.NewToolResultError(msg)
 }
 
-// downloadFileHandler downloads a file from a URL and saves it to a local path.
-func downloadFileHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args := req.GetArguments()
-
-	rawURL, _ := args["url"].(string)
-	destPath, _ := args["path"].(string)
+// downloadOneFile downloads a single file and returns (bytes_written, error).
+func downloadOneFile(ctx context.Context, rawURL, destPath string) (int64, error) {
 	if rawURL == "" || destPath == "" {
-		r := errorResult("both 'url' and 'path' are required")
-		return &r, nil
+		return 0, fmt.Errorf("both 'url' and 'path' are required")
 	}
 
-	// If URL is relative, prepend base URL (strip API path suffix for download URLs)
 	if strings.HasPrefix(rawURL, "/") {
 		base := baseURL
 		if i := strings.Index(base, "/openapi/"); i > 0 {
@@ -947,53 +966,97 @@ func downloadFileHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 
 	httpReq, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
-		r := errorResult("create request: " + err.Error())
-		return &r, nil
+		return 0, fmt.Errorf("create request: %w", err)
 	}
 
-	// Apply auth (adds token to header or query param)
 	if err := applyAuth(httpReq); err != nil {
-		r := errorResult("auth: " + err.Error())
-		return &r, nil
+		return 0, fmt.Errorf("auth: %w", err)
 	}
 
-	// Apply extra headers
 	for k, v := range extraHeaders {
 		httpReq.Header.Set(k, v)
 	}
 
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
-		r := errorResult("download failed: " + err.Error())
-		return &r, nil
+		return 0, fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		r := errorResult(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)))
-		return &r, nil
+		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Ensure parent directory exists
 	dir := destPath[:strings.LastIndex(destPath, "/")]
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			r := errorResult("create directory: " + err.Error())
-			return &r, nil
+			return 0, fmt.Errorf("create directory: %w", err)
 		}
 	}
 
 	f, err := os.Create(destPath)
 	if err != nil {
-		r := errorResult("create file: " + err.Error())
-		return &r, nil
+		return 0, fmt.Errorf("create file: %w", err)
 	}
 	defer f.Close()
 
 	written, err := io.Copy(f, resp.Body)
 	if err != nil {
-		r := errorResult("write file: " + err.Error())
+		os.Remove(destPath)
+		return 0, fmt.Errorf("write file: %w", err)
+	}
+
+	return written, nil
+}
+
+// batchDownloadHandler downloads multiple files in one call.
+func batchDownloadHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	filesRaw, ok := args["files"].([]any)
+	if !ok || len(filesRaw) == 0 {
+		r := errorResult("'files' array is required and must not be empty")
+		return &r, nil
+	}
+
+	var results []string
+	success, failed := 0, 0
+
+	for i, item := range filesRaw {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			results = append(results, fmt.Sprintf("#%d: invalid item", i+1))
+			failed++
+			continue
+		}
+		url, _ := obj["url"].(string)
+		path, _ := obj["path"].(string)
+
+		written, err := downloadOneFile(ctx, url, path)
+		if err != nil {
+			results = append(results, fmt.Sprintf("#%d FAIL %s: %s", i+1, path, err.Error()))
+			failed++
+		} else {
+			results = append(results, fmt.Sprintf("#%d OK %d bytes -> %s", i+1, written, path))
+			success++
+		}
+	}
+
+	summary := fmt.Sprintf("Batch download: %d success, %d failed out of %d total\n%s",
+		success, failed, len(filesRaw), strings.Join(results, "\n"))
+	r := textResult(summary)
+	return &r, nil
+}
+
+// downloadFileHandler downloads a file from a URL and saves it to a local path.
+func downloadFileHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	rawURL, _ := args["url"].(string)
+	destPath, _ := args["path"].(string)
+
+	written, err := downloadOneFile(ctx, rawURL, destPath)
+	if err != nil {
+		r := errorResult(err.Error())
 		return &r, nil
 	}
 

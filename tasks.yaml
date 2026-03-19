@@ -407,12 +407,14 @@ tasks:
         2. Call listrecordings with page_size=10000 to get ALL recording files. The API returns records with a "time" field (format: DD/MM/YYYY HH:mm:ss). Filter the results client-side to keep only recordings where the date part matches yesterday.
         3. If no recordings found for yesterday, output "0 recordings found for yesterday" and stop.
         4. Ensure the local directory $DOMAIN_DATA_DIR/recordings/ exists (create if needed using filesystem tools).
-        5. For each recording from yesterday:
-           a. Check if uid already exists in the recordings table (SELECT query) — skip duplicates.
-           b. Call downloadrecording with the recording id to get the download_resource_url.
-           c. Use download_file tool with url="{download_resource_url}" (relative URL is OK, auth is added automatically) and path="$DOMAIN_DATA_DIR/recordings/{file}" to save the audio file.
-           d. INSERT INTO recordings (call_id, filename, caller, callee, duration, call_date, download_path) VALUES (uid, file, call_from_number, call_to_number, duration, time, full_path).
-        6. Output: total recordings found in API for yesterday, new recordings downloaded, skipped as duplicates.
+        5. Query existing call_ids: SELECT call_id FROM recordings; — build a set of known UIDs to skip duplicates.
+        6. For each NEW recording (uid not in known set), call downloadrecording to get download_resource_url. Collect all {url, path} pairs.
+        7. Use batch_download tool with the full array of {url, path} pairs to download ALL files in one call. This is critical for efficiency.
+        8. Parse batch_download results. For each successfully downloaded file (marked "OK"), collect its metadata into a rows array.
+        9. Use batch_insert tool to insert all successful records into the "recordings" table at once:
+           table: "recordings"
+           rows: [{call_id, filename, caller, callee, duration, call_date, download_path}, ...]
+        10. Output: total recordings found in API for yesterday, new downloaded, skipped as duplicates, failed downloads.
       work_dir: .
       tags:
         - sip
@@ -420,7 +422,8 @@ tasks:
         - fetch
         - recordings
       model: sonnet
-      timeout: 15m
+      timeout: 30m
+      max_turns: 200
       mcp_servers:
         - yeastar-api
         - database
@@ -431,67 +434,67 @@ tasks:
         - mcp__yeastar-api__listrecordings
         - mcp__yeastar-api__downloadrecording
         - mcp__yeastar-api__download_file
+        - mcp__yeastar-api__batch_download
         - mcp__database__query
         - mcp__database__execute
         - mcp__database__describe_table
+        - mcp__database__batch_insert
         - mcp__filesystem__write_file
         - mcp__filesystem__read_file
         - mcp__filesystem__create_directory
         - mcp__filesystem__list_directory
-      max_budget_usd: 2
+      max_budget_usd: 3
       permission_mode: dontAsk
     - name: transcribe-sip-recordings
       domain: sip-calls
       prompt: |-
-        Transcribe all pending call recordings from the Yeastar SIP station that have not yet been transcribed.
+        Transcribe all pending call recordings using batch_transcribe (single tool call for ALL files).
 
         Steps:
-        1. Query the database for recordings pending transcription:
-           SELECT id, call_id, download_path, caller, callee, call_date, duration FROM recordings WHERE transcription IS NULL ORDER BY call_date DESC;
-        2. For each recording row:
-           a. Verify the audio file exists at download_path.
-           b. Transcribe the audio file using the whisper MCP transcription tool, passing the full file path.
-           c. On success: UPDATE recordings SET transcription = '<transcription_text>', processed_at = datetime('now') WHERE id = <id>.
-           d. On failure (file missing or transcription error): log the error, continue to the next recording — do not abort.
-        3. Output a summary: total transcribed successfully, total failed, total skipped (file not found).
+        1. Query: SELECT id, download_path FROM recordings WHERE transcription_path IS NULL AND download_path IS NOT NULL ORDER BY id;
+        2. If no rows, output "0 recordings to transcribe" and stop.
+        3. Collect all download_path values into an array.
+        4. Call batch_transcribe with files=[array of paths], output_format="srt". This transcribes ALL files in one call.
+        5. Parse the JSON result. For each file with status "ok" and a non-empty srt_path:
+           UPDATE recordings SET transcription_path = '<srt_path>', processed_at = datetime('now') WHERE download_path = '<path>';
+           Use a single execute call with multiple UPDATE statements separated by semicolons, or call execute once per file.
+        6. Output: total transcribed, total failed.
       work_dir: .
       tags:
         - sip
         - whisper
         - transcription
-      model: sonnet
-      timeout: 30m
+      model: haiku
+      timeout: 180m
+      max_turns: 30
       mcp_servers:
         - whisper
         - database
-        - filesystem
       allowed_tools:
-        - mcp__whisper__transcribe_audio
+        - mcp__whisper__batch_transcribe
         - mcp__database__query
         - mcp__database__execute
-        - mcp__database__describe_table
-        - mcp__filesystem__list_directory
-        - mcp__filesystem__read_file
-      max_budget_usd: 1
+      max_budget_usd: 0.5
       permission_mode: dontAsk
     - name: summarize-sip-transcriptions
       domain: sip-calls
       prompt: |-
         Today is {{.Date}}. Analyze and summarize all transcribed call recordings from yesterday that have not yet been summarized.
+        IMPORTANT: All summaries and the digest MUST be written in Russian.
 
         Steps:
         1. Calculate yesterday's date from {{.Date}} (format: YYYY-MM-DD).
-        2. Query: SELECT id, call_id, caller, callee, duration, transcription FROM recordings WHERE transcription IS NOT NULL AND summary IS NULL AND call_date = '<yesterday>';
-        3. For each recording, generate a JSON summary object with fields:
-           - brief: 2-3 sentence description of the conversation
-           - topics: list of key topics or issues discussed
-           - actions: list of action items or follow-ups mentioned (empty array if none)
+        2. Query: SELECT id, call_id, caller, callee, duration, transcription_path FROM recordings WHERE transcription_path IS NOT NULL AND summary IS NULL AND call_date = '<yesterday>';
+        3. For each recording, read the SRT file from transcription_path using filesystem read_file, then generate a JSON summary object with fields (all text in Russian):
+           - brief: 2-3 предложения с описанием разговора
+           - topics: список ключевых тем
+           - actions: список задач и действий (пустой массив если нет)
            - sentiment: 'positive', 'neutral', or 'negative'
         4. UPDATE recordings SET summary = '<json_string>' WHERE id = <id>.
-        5. After processing all calls, compile a daily digest:
+        5. After processing all calls, compile a daily digest in Russian:
            - Count total calls and sum total duration for yesterday
-           - Write a comprehensive digest (3-5 paragraphs) covering: call volume overview, most significant conversations, recurring themes, and consolidated list of all action items
-        6. INSERT OR REPLACE INTO daily_reports (report_date, total_calls, total_duration, digest) VALUES ('<yesterday>', <count>, <total_seconds>, '<digest_text>');
+           - Write a comprehensive digest (3-5 paragraphs) in Russian covering: обзор количества звонков, самые значимые разговоры, повторяющиеся темы, и сводный список всех задач
+        6. INSERT OR REPLACE INTO daily_reports (report_date, total_calls, total_duration, digest) VALUES ('<yesterday>', <count>, <total_seconds>, '<digest_text_in_russian>');
         7. Output the full digest text so the next pipeline step can use it via {{.PrevOutput}}.
       work_dir: .
       tags:
@@ -499,35 +502,86 @@ tasks:
         - summary
         - analysis
       model: sonnet
-      timeout: 20m
+      timeout: 30m
       mcp_servers:
         - database
+        - filesystem
       allowed_tools:
         - mcp__database__query
         - mcp__database__execute
         - mcp__database__insert
         - mcp__database__list_tables
         - mcp__database__describe_table
-      max_budget_usd: 1.5
+        - mcp__filesystem__read_file
+      max_budget_usd: 3
       permission_mode: dontAsk
     - name: deliver-sip-report
       domain: sip-calls
-      prompt: "Today is {{.Date}}. Deliver the daily SIP call recording report via Telegram.\n\nContext from previous step:\n{{.PrevOutput}}\n\nSteps:\n1. Calculate yesterday's date from {{.Date}}.\n2. Query daily_reports for report_date = '<yesterday>' to get total_calls, total_duration, digest.\n3. Query recordings for the top 5 most significant calls from yesterday (longest duration or with action items in summary JSON).\n4. Format and send a Telegram message:\n\n\U0001F4DE *Daily Call Report — <yesterday>*\n\n\U0001F4CA *Statistics:* <total_calls> calls · <total_duration_minutes> min total\n\n\U0001F4DD *Daily Digest:*\n<digest text, trimmed to fit Telegram limit if needed>\n\n\U0001F4CB *Top Calls:*\n<for each of top 5 calls: caller → callee, duration, brief summary>\n\n✅ *Action Items:*\n<consolidated list of all action items from all calls, or 'None' if empty>\n\n5. After sending, UPDATE daily_reports SET delivered_at = datetime('now') WHERE report_date = '<yesterday>'.\n6. Output: 'Report delivered successfully for <yesterday>: <total_calls> calls'."
+      prompt: |-
+        Today is {{.Date}}. Create a Word document with the daily SIP call report and send it via Telegram.
+        ALL text in the document must be in Russian.
+
+        Context from previous step:
+        {{.PrevOutput}}
+
+        Steps:
+        1. Calculate yesterday's date from {{.Date}} (format: YYYY-MM-DD).
+        2. Query daily_reports for report_date = '<yesterday>' to get total_calls, total_duration, digest.
+        3. Query all recordings for yesterday:
+           SELECT id, caller, callee, duration, call_date, transcription_path, summary FROM recordings WHERE call_date = '<yesterday>' ORDER BY call_date;
+        4. Create a Word document at $DOMAIN_DATA_DIR/reports/report-<yesterday>.docx using the word MCP create_document tool.
+           Title: "Отчёт по звонкам — <yesterday>"
+           Content structure (build as a single text block with \n separators):
+
+           Статистика: <total_calls> звонков, общая продолжительность <total_duration_minutes> мин
+
+           Краткое резюме дня:
+           <digest text from daily_reports in Russian>
+
+           Then for EACH recording, add a section:
+           ---
+           Звонок #<N>: <caller> → <callee> (<duration> сек)
+
+           Краткое содержание:
+           <brief from summary JSON>
+
+           Ключевые темы: <topics from summary JSON, comma-separated>
+
+           Задачи: <actions from summary JSON, or "Нет">
+
+           Расшифровка (SRT):
+           <read the SRT file from transcription_path using filesystem read_file and include the full content>
+
+        5. Ensure the directory $DOMAIN_DATA_DIR/reports/ exists (use filesystem create_directory).
+        6. After creating the document, send it via Telegram using the send_document tool with:
+           - file_path: $DOMAIN_DATA_DIR/reports/report-<yesterday>.docx
+           - caption: "📞 Отчёт по звонкам за <yesterday>: <total_calls> звонков, <total_duration_minutes> мин"
+        7. UPDATE daily_reports SET delivered_at = datetime('now') WHERE report_date = '<yesterday>'.
+        8. Output: 'Report delivered successfully for <yesterday>: <total_calls> calls'.
       work_dir: .
       tags:
         - sip
         - report
         - telegram
+        - word
       model: sonnet
-      timeout: 5m
+      timeout: 15m
       mcp_servers:
         - database
         - telegram
+        - word
+        - filesystem
       allowed_tools:
         - mcp__database__query
         - mcp__database__execute
+        - mcp__telegram__send_document
         - mcp__telegram__send_message
-      max_budget_usd: 0.3
+        - mcp__word__create_document
+        - mcp__word__write_document
+        - mcp__filesystem__create_directory
+        - mcp__filesystem__list_directory
+        - mcp__filesystem__read_file
+      max_budget_usd: 1
       permission_mode: dontAsk
 pipelines:
     - name: review-fix
@@ -596,9 +650,11 @@ mcp_servers:
       command: ./bin/mcp-whisper
       env:
         WHISPER_BIN: ./data/whisper/bin/whisper-cli
-        WHISPER_MODEL: ./data/whisper/models/ggml-small.bin
+        WHISPER_MODEL: ./data/whisper/models/ggml-large-v3-turbo.bin
         WHISPER_MODELS_DIR: ./data/whisper/models
         WHISPER_THREADS: "8"
+    - name: word
+      command: ./bin/mcp-word
     - name: yeastar-api
       command: ./bin/mcp-openapi
       env:
@@ -731,7 +787,7 @@ domains:
         description: Yeastar P-Series SIP station call recordings, transcriptions, and daily summaries
         data_dir: data/sip-calls
         db: sip-calls.db
-        schema: CREATE TABLE IF NOT EXISTS recordings (id INTEGER PRIMARY KEY AUTOINCREMENT, call_id TEXT UNIQUE, filename TEXT, caller TEXT, callee TEXT, duration INTEGER, call_date TEXT, download_path TEXT, transcription TEXT, summary TEXT, processed_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS daily_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, report_date TEXT UNIQUE, total_calls INTEGER, total_duration INTEGER, digest TEXT, delivered_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        schema: CREATE TABLE IF NOT EXISTS recordings (id INTEGER PRIMARY KEY AUTOINCREMENT, call_id TEXT UNIQUE, filename TEXT, caller TEXT, callee TEXT, duration INTEGER, call_date TEXT, download_path TEXT, transcription_path TEXT, summary TEXT, processed_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS daily_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, report_date TEXT UNIQUE, total_calls INTEGER, total_duration INTEGER, digest TEXT, delivered_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         domain_doc: DOMAIN.md
         tasks:
             - fetch-sip-recordings
@@ -746,6 +802,7 @@ domains:
             - whisper
             - telegram
             - filesystem
+            - word
     vet-manufacturers-belarus:
         description: Database of veterinary drug manufacturers in Belarus with export metadata
         data_dir: data/vet-manufacturers-belarus

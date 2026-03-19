@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,29 +39,18 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func handleTranscribe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	path, err := req.RequireString("path")
-	if err != nil {
-		return mcp.NewToolResultError("path is required"), nil
-	}
+// transcribeResult holds the result of transcribing a single file.
+type transcribeResult struct {
+	SRTPath string // path to .srt file on disk (empty if txt format or error)
+	Text    string // transcription text
+	Err     error
+}
 
+// transcribeOne transcribes a single audio file and returns the result.
+// For srt/vtt/json formats, the output file is kept on disk next to the input.
+func transcribeOne(ctx context.Context, path, language, outputFormat, modelPath string, translate bool) transcribeResult {
 	if _, err := os.Stat(path); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("file not found: %s", path)), nil
-	}
-
-	language := req.GetString("language", "auto")
-	outputFormat := req.GetString("output_format", "txt")
-
-	args := req.GetArguments()
-	translate, _ := args["translate"].(bool)
-
-	modelPath := defaultModel
-	modelName := req.GetString("model", "")
-	if modelName != "" {
-		modelPath = filepath.Join(modelsDir, "ggml-"+modelName+".bin")
-		if _, err := os.Stat(modelPath); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("model not found: %s (use download_model to get it)", modelPath)), nil
-		}
+		return transcribeResult{Err: fmt.Errorf("file not found: %s", path)}
 	}
 
 	// Convert non-WAV to WAV using ffmpeg
@@ -69,28 +59,26 @@ func handleTranscribe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext != ".wav" {
 		if _, err := exec.LookPath(ffmpegBin); err != nil {
-			return mcp.NewToolResultError("ffmpeg not found; only WAV files are supported without ffmpeg"), nil
+			return transcribeResult{Err: fmt.Errorf("ffmpeg not found; only WAV supported without ffmpeg")}
 		}
 		tmpWav = filepath.Join(os.TempDir(), fmt.Sprintf("whisper_%d.wav", time.Now().UnixNano()))
 		cmd := exec.Command(ffmpegBin, "-i", path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-y", tmpWav)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("ffmpeg conversion failed: %s\n%s", err, string(out))), nil
+			return transcribeResult{Err: fmt.Errorf("ffmpeg failed: %s\n%s", err, string(out))}
 		}
 		audioPath = tmpWav
 		defer os.Remove(tmpWav)
 	}
 
-	// Build whisper-cli command
 	cmdArgs := []string{
 		"-m", modelPath,
 		"-f", audioPath,
 		"-t", threads,
-		"-np", // no progress
+		"-np",
 	}
 
-	if language != "auto" {
-		cmdArgs = append(cmdArgs, "-l", language)
-	}
+	// Always pass -l flag. whisper-cli defaults to English without it.
+	cmdArgs = append(cmdArgs, "-l", language)
 
 	if translate {
 		cmdArgs = append(cmdArgs, "-tr")
@@ -105,40 +93,166 @@ func handleTranscribe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		cmdArgs = append(cmdArgs, "-oj")
 	}
 
-	execCtx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+	execCtx, cancel := context.WithTimeout(ctx, 60*time.Minute)
 	defer cancel()
 
 	cmd := exec.CommandContext(execCtx, whisperBin, cmdArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if execCtx.Err() == context.DeadlineExceeded {
-			return mcp.NewToolResultError("transcription timed out"), nil
+			return transcribeResult{Err: fmt.Errorf("transcription timed out")}
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("whisper-cli failed: %s\n%s", err, string(output))), nil
+		return transcribeResult{Err: fmt.Errorf("whisper-cli failed: %s\n%s", err, string(output))}
 	}
 
 	// For srt/vtt/json, whisper-cli writes output files next to input
 	if outputFormat != "txt" {
 		outExt := "." + outputFormat
-		// whisper-cli creates files like: audioPath + ".srt"
 		outFile := audioPath + outExt
 		if data, err := os.ReadFile(outFile); err == nil {
-			defer os.Remove(outFile)
 			result := strings.TrimSpace(string(data))
 			if result == "" {
-				return mcp.NewToolResultText("No speech detected."), nil
+				os.Remove(outFile)
+				return transcribeResult{Text: "No speech detected."}
 			}
-			return mcp.NewToolResultText(result), nil
+
+			// If input was converted from non-wav, move SRT next to original.
+			finalPath := outFile
+			if tmpWav != "" {
+				finalPath = strings.TrimSuffix(path, filepath.Ext(path)) + outExt
+				if err := os.Rename(outFile, finalPath); err != nil {
+					if err := copyFile(outFile, finalPath); err != nil {
+						os.Remove(outFile)
+						return transcribeResult{Text: result}
+					}
+					os.Remove(outFile)
+				}
+			}
+
+			return transcribeResult{SRTPath: finalPath, Text: result}
 		}
-		// Fallback: check if output was written to stdout
 	}
 
 	result := strings.TrimSpace(string(output))
 	if result == "" {
-		return mcp.NewToolResultText("No speech detected."), nil
+		return transcribeResult{Text: "No speech detected."}
+	}
+	return transcribeResult{Text: result}
+}
+
+func handleTranscribe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError("path is required"), nil
 	}
 
-	return mcp.NewToolResultText(result), nil
+	language := req.GetString("language", "auto")
+	outputFormat := req.GetString("output_format", "txt")
+	args := req.GetArguments()
+	translate, _ := args["translate"].(bool)
+
+	modelPath := defaultModel
+	if modelName := req.GetString("model", ""); modelName != "" {
+		modelPath = filepath.Join(modelsDir, "ggml-"+modelName+".bin")
+		if _, err := os.Stat(modelPath); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("model not found: %s", modelPath)), nil
+		}
+	}
+
+	r := transcribeOne(ctx, path, language, outputFormat, modelPath, translate)
+	if r.Err != nil {
+		return mcp.NewToolResultError(r.Err.Error()), nil
+	}
+
+	if r.SRTPath != "" {
+		return mcp.NewToolResultText(fmt.Sprintf("file:%s\n%s", r.SRTPath, r.Text)), nil
+	}
+	return mcp.NewToolResultText(r.Text), nil
+}
+
+// handleBatchTranscribe transcribes multiple audio files sequentially in one tool call.
+// Returns per-file results as JSON array. This saves tokens by avoiding N round-trips.
+func handleBatchTranscribe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	filesRaw, ok := args["files"].([]any)
+	if !ok || len(filesRaw) == 0 {
+		return mcp.NewToolResultError("'files' array is required and must not be empty"), nil
+	}
+
+	outputFormat := req.GetString("output_format", "srt")
+	language := req.GetString("language", "auto")
+
+	modelPath := defaultModel
+	if modelName := req.GetString("model", ""); modelName != "" {
+		modelPath = filepath.Join(modelsDir, "ggml-"+modelName+".bin")
+		if _, err := os.Stat(modelPath); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("model not found: %s", modelPath)), nil
+		}
+	}
+
+	type fileResult struct {
+		Path    string `json:"path"`
+		SRTPath string `json:"srt_path,omitempty"`
+		Status  string `json:"status"`
+		Error   string `json:"error,omitempty"`
+	}
+
+	results := make([]fileResult, 0, len(filesRaw))
+	success, skipped, failed := 0, 0, 0
+
+	for _, item := range filesRaw {
+		path, _ := item.(string)
+		if path == "" {
+			results = append(results, fileResult{Status: "error", Error: "empty path"})
+			failed++
+			continue
+		}
+
+		// Skip files that already have an output file on disk (idempotent).
+		if outputFormat != "txt" {
+			outFile := path + "." + outputFormat
+			if _, err := os.Stat(outFile); err == nil {
+				results = append(results, fileResult{Path: path, SRTPath: outFile, Status: "skipped"})
+				skipped++
+				continue
+			}
+		}
+
+		r := transcribeOne(ctx, path, language, outputFormat, modelPath, false)
+		if r.Err != nil {
+			results = append(results, fileResult{Path: path, Status: "error", Error: r.Err.Error()})
+			failed++
+		} else {
+			results = append(results, fileResult{Path: path, SRTPath: r.SRTPath, Status: "ok"})
+			success++
+		}
+	}
+
+	summary := map[string]any{
+		"total":   len(filesRaw),
+		"success": success,
+		"skipped": skipped,
+		"failed":  failed,
+		"files":   results,
+	}
+
+	data, _ := json.Marshal(summary)
+	return mcp.NewToolResultText(string(data)), nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func handleListModels(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -183,10 +297,10 @@ func handleDownloadModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	}
 
 	validModels := map[string]bool{
-		"tiny": true, "base": true, "small": true, "medium": true, "large-v3": true,
+		"tiny": true, "base": true, "small": true, "medium": true, "large-v3": true, "large-v3-turbo": true,
 	}
 	if !validModels[model] {
-		return mcp.NewToolResultError(fmt.Sprintf("invalid model: %s. Valid: tiny, base, small, medium, large-v3", model)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("invalid model: %s. Valid: tiny, base, small, medium, large-v3, large-v3-turbo", model)), nil
 	}
 
 	if err := os.MkdirAll(modelsDir, 0755); err != nil {
@@ -196,7 +310,6 @@ func handleDownloadModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	filename := fmt.Sprintf("ggml-%s.bin", model)
 	destPath := filepath.Join(modelsDir, filename)
 
-	// Check if already exists
 	if info, err := os.Stat(destPath); err == nil {
 		sizeMB := info.Size() / (1024 * 1024)
 		return mcp.NewToolResultText(fmt.Sprintf("Model %s already exists (%d MB): %s", model, sizeMB, destPath)), nil
@@ -204,9 +317,8 @@ func handleDownloadModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 
 	url := fmt.Sprintf("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-%s.bin", model)
 
-	// Download to temp file first for atomicity
 	tmpPath := destPath + ".tmp"
-	defer os.Remove(tmpPath) // cleanup on error
+	defer os.Remove(tmpPath)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -238,7 +350,6 @@ func handleDownloadModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 }
 
 func main() {
-	// Verify whisper-cli exists
 	if _, err := os.Stat(whisperBin); err != nil {
 		fmt.Fprintf(os.Stderr, "whisper-cli not found at %s — run 'make setup-whisper' first\n", whisperBin)
 		os.Exit(1)
@@ -248,26 +359,25 @@ func main() {
 
 	s.AddTool(
 		mcp.NewTool("transcribe_audio",
-			mcp.WithDescription("Transcribe an audio file to text using whisper.cpp. Supports WAV, MP3, FLAC, OGG, M4A (non-WAV formats require ffmpeg). Returns transcription text or subtitles."),
-			mcp.WithString("path",
-				mcp.Required(),
-				mcp.Description("Path to the audio file."),
-			),
-			mcp.WithString("language",
-				mcp.Description("Language code (e.g. 'ru', 'en', 'de') or 'auto' for auto-detection. Default: 'auto'."),
-			),
-			mcp.WithString("output_format",
-				mcp.Description("Output format: 'txt' (plain text), 'srt' (subtitles), 'vtt' (WebVTT), 'json' (timestamped). Default: 'txt'."),
-				mcp.Enum("txt", "srt", "vtt", "json"),
-			),
-			mcp.WithBoolean("translate",
-				mcp.Description("Translate to English instead of transcribing in original language."),
-			),
-			mcp.WithString("model",
-				mcp.Description("Model name to use (e.g. 'small', 'large-v3'). Overrides default model. Must be downloaded first."),
-			),
+			mcp.WithDescription("Transcribe an audio file to text using whisper.cpp. Supports WAV, MP3, FLAC, OGG, M4A (non-WAV formats require ffmpeg). Returns transcription text. For srt/vtt/json formats, the output file is saved next to the input and the path is returned as 'file:<path>' in the first line."),
+			mcp.WithString("path", mcp.Required(), mcp.Description("Path to the audio file.")),
+			mcp.WithString("language", mcp.Description("Language code (e.g. 'ru', 'en') or 'auto'. Default: 'auto'.")),
+			mcp.WithString("output_format", mcp.Description("Output format: txt, srt, vtt, json. Default: txt."), mcp.Enum("txt", "srt", "vtt", "json")),
+			mcp.WithBoolean("translate", mcp.Description("Translate to English instead of transcribing in original language.")),
+			mcp.WithString("model", mcp.Description("Model name to use. Must be downloaded first.")),
 		),
 		handleTranscribe,
+	)
+
+	s.AddTool(
+		mcp.NewTool("batch_transcribe",
+			mcp.WithDescription("Transcribe multiple audio files in one call. Processes sequentially, saves .srt files next to each input file. Returns JSON with per-file results including srt_path. Much more efficient than calling transcribe_audio repeatedly — use this for bulk transcription."),
+			mcp.WithArray("files", mcp.Required(), mcp.Description("Array of file paths (strings) to transcribe.")),
+			mcp.WithString("output_format", mcp.Description("Output format for all files. Default: srt."), mcp.Enum("txt", "srt", "vtt", "json")),
+			mcp.WithString("language", mcp.Description("Language code or 'auto'. Default: 'auto'.")),
+			mcp.WithString("model", mcp.Description("Model name to use. Must be downloaded first.")),
+		),
+		handleBatchTranscribe,
 	)
 
 	s.AddTool(
@@ -279,12 +389,8 @@ func main() {
 
 	s.AddTool(
 		mcp.NewTool("download_model",
-			mcp.WithDescription("Download a whisper model from Hugging Face. Models: tiny (~75MB), base (~142MB), small (~466MB), medium (~1.5GB), large-v3 (~3.1GB)."),
-			mcp.WithString("model",
-				mcp.Required(),
-				mcp.Description("Model to download."),
-				mcp.Enum("tiny", "base", "small", "medium", "large-v3"),
-			),
+			mcp.WithDescription("Download a whisper model from Hugging Face. Models: tiny (~75MB), base (~142MB), small (~466MB), medium (~1.5GB), large-v3 (~3.1GB), large-v3-turbo (~1.6GB)."),
+			mcp.WithString("model", mcp.Required(), mcp.Description("Model to download."), mcp.Enum("tiny", "base", "small", "medium", "large-v3", "large-v3-turbo")),
 		),
 		handleDownloadModel,
 	)

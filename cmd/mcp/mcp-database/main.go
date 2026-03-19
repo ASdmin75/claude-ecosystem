@@ -71,6 +71,12 @@ func main() {
 		mcp.WithObject("data", mcp.Required(), mcp.Description("Key-value pairs of column names and values to insert.")),
 	), handleInsert)
 
+	s.AddTool(mcp.NewTool("batch_insert",
+		mcp.WithDescription("Insert multiple records into a table in one call within a transaction. Much more efficient than calling insert repeatedly. Returns count of inserted rows and any errors."),
+		mcp.WithString("table", mcp.Required(), mcp.Description("Table name to insert into.")),
+		mcp.WithArray("rows", mcp.Required(), mcp.Description("Array of JSON objects, each with column:value pairs to insert.")),
+	), handleBatchInsert)
+
 	if err := server.ServeStdio(s); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
@@ -265,6 +271,80 @@ func handleInsert(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 
 	id, _ := res.LastInsertId()
 	return mcp.NewToolResultText(fmt.Sprintf(`{"id": %d}`, id)), nil
+}
+
+func handleBatchInsert(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	table, err := req.RequireString("table")
+	if err != nil {
+		return mcp.NewToolResultError("table parameter is required"), nil
+	}
+	if !identifierPattern.MatchString(table) {
+		return mcp.NewToolResultError("invalid table name"), nil
+	}
+
+	args := req.GetArguments()
+	rowsRaw, ok := args["rows"].([]any)
+	if !ok || len(rowsRaw) == 0 {
+		return mcp.NewToolResultError("rows must be a non-empty array"), nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return mcp.NewToolResultError("begin transaction: " + err.Error()), nil
+	}
+
+	inserted := 0
+	var errors []string
+
+	for i, item := range rowsRaw {
+		dataMap, ok := item.(map[string]any)
+		if !ok {
+			errors = append(errors, fmt.Sprintf("#%d: not a JSON object", i+1))
+			continue
+		}
+		if len(dataMap) == 0 {
+			errors = append(errors, fmt.Sprintf("#%d: empty object", i+1))
+			continue
+		}
+
+		var columns []string
+		var placeholders []string
+		var values []any
+
+		for col, val := range dataMap {
+			if !identifierPattern.MatchString(col) {
+				errors = append(errors, fmt.Sprintf("#%d: invalid column name: %s", i+1, col))
+				continue
+			}
+			columns = append(columns, col)
+			placeholders = append(placeholders, "?")
+			values = append(values, val)
+		}
+
+		query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+			table,
+			strings.Join(columns, ", "),
+			strings.Join(placeholders, ", "),
+		)
+
+		_, err := tx.Exec(query, values...)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("#%d: %s", i+1, err.Error()))
+			continue
+		}
+		inserted++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return mcp.NewToolResultError("commit: " + err.Error()), nil
+	}
+
+	result := fmt.Sprintf(`{"inserted": %d, "errors": %d, "total": %d}`, inserted, len(errors), len(rowsRaw))
+	if len(errors) > 0 {
+		result = fmt.Sprintf(`{"inserted": %d, "errors": %d, "total": %d, "error_details": %q}`,
+			inserted, len(errors), len(rowsRaw), strings.Join(errors, "; "))
+	}
+	return mcp.NewToolResultText(result), nil
 }
 
 // rowsToJSON converts sql.Rows to a slice of maps.

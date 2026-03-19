@@ -93,12 +93,18 @@ func (r *Runner) RunSequential(ctx context.Context, p config.Pipeline) (string, 
 				return prevOutput, fmt.Errorf("pipeline %s, step %s (iteration %d): %s", p.Name, step.Task, i, result.Error)
 			}
 
+			// Truncate output preview to avoid flooding logs.
+			preview := result.Output
+			if len(preview) > 500 {
+				preview = preview[:500] + "..."
+			}
 			r.logger.Info("step completed",
 				"pipeline", p.Name,
 				"iteration", i,
 				"step", stepIdx+1,
 				"task", step.Task,
 				"output_length", len(result.Output),
+				"output_preview", preview,
 			)
 
 			prevOutput = result.Output

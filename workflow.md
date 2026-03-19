@@ -909,6 +909,50 @@ server.ServeStdio(s)
 - Отображение `OPENAPI_AUTH_TYPE`, `OPENAPI_OAUTH2_TOKEN_IN`, `OPENAPI_TLS_INSECURE` в секции "Available MCP Servers"
 - `internal/wizard/envspec.go`: все 22 env vars для mcp-openapi в реестре
 
+### 2026-03-19 — Пайплайн daily-sip-processing: Word-отчёт, batch-инструменты, large-v3-turbo, SRT на диске
+
+**Формат отчёта: Word-документ вместо текстового сообщения Telegram**
+- Шаг `deliver-sip-report` полностью переработан: создаёт `.docx` файл с расшифровками в SRT-формате + краткое резюме на русском
+- Структура документа: заголовок, статистика, дайджест дня, затем по каждому звонку — краткое содержание, темы, задачи, полная расшифровка SRT
+- Отправка `.docx` через Telegram `send_document` вместо текстового `send_message`
+- Добавлен MCP-сервер `word` (`./bin/mcp-word`) в конфигурацию и домен `sip-calls`
+
+**Batch-инструменты для экономии токенов**
+- `batch_download` в mcp-openapi — скачивание всех файлов за 1 tool-call вместо N отдельных `download_file`
+- `batch_insert` в mcp-database — вставка всех записей в одной транзакции за 1 tool-call
+- `batch_transcribe` в mcp-whisper — транскрибирование всех файлов за 1 tool-call. Идемпотентно: пропускает файлы с существующим `.srt` на диске (status: `skipped`)
+- Промпт `fetch-sip-recordings` переписан: собирает URL через `downloadrecording`, скачивает все через `batch_download`, вставляет через `batch_insert`. ~15 tool-calls вместо ~130
+- Промпт `transcribe-sip-recordings`: модель sonnet → **haiku**, бюджет $5 → **$0.50**, max_turns 200 → **30**. Claude делает 3 tool-call (SELECT → batch_transcribe → UPDATE) вместо ~100
+
+**Хранение SRT-файлов на диске**
+- Колонка `transcription TEXT` заменена на `transcription_path TEXT` (путь к `.srt` файлу)
+- SRT-файлы хранятся рядом с WAV: `recording.wav` → `recording.wav.srt`
+- whisper-cli создаёт `.srt` напрямую — MCP-сервер больше не удаляет файл (убран `os.Remove`)
+- БД остаётся лёгкой (пути вместо мегабайтов текста), SRT-файлы доступны для любого плеера/редактора
+
+**Модель whisper large-v3-turbo**
+- Скачана модель `ggml-large-v3-turbo.bin` (1.6 GB) — значительно лучшее качество русской транскрипции
+- Добавлена в `download_model` (валидные модели: tiny, base, small, medium, large-v3, large-v3-turbo)
+- Конфигурация: `WHISPER_MODEL: ./data/whisper/models/ggml-large-v3-turbo.bin`
+
+**Исправление авто-определения языка в whisper**
+- Баг: whisper-cli без флага `-l` дефолтил в английский, а не auto-detect — русские разговоры транскрибировались на английском
+- Фикс: MCP-сервер теперь всегда передаёт `-l auto` (или указанный язык). Ранее при `language="auto"` флаг `-l` пропускался
+
+**Логирование output каждого шага pipeline**
+- `internal/pipeline/sequential.go`: добавлен `output_preview` (первые 500 символов) в лог `step completed`
+
+**Дедупликация записей**
+- Добавлен UNIQUE индекс на `recordings.filename` — защита от дубликатов при разных форматах `call_id`
+- Промпт fetch: INSERT только после проверки файла на диске
+
+**Прочее**
+- `DOMAIN.md` домена `sip-calls` обновлён: новая схема с `transcription_path`, описание файлов (wav, srt, docx)
+- Summarize: добавлен `filesystem` MCP для чтения SRT-файлов, бюджет увеличен, таймаут 30 мин
+- Deliver: таймаут 15 мин, добавлен `filesystem read_file` в allowed_tools
+- Refactoring mcp-openapi: `downloadOneFile()` — общая функция для `download_file` и `batch_download`
+- Refactoring mcp-whisper: `transcribeOne()` — общая функция для `transcribe_audio` и `batch_transcribe`
+
 ---
 
 ## Бэклог

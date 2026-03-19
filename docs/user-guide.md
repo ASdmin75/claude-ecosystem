@@ -572,9 +572,9 @@ mcp_servers:
 | **mcp-word** | `read_document`, `write_document`, `create_document` | Реализован |
 | **mcp-pdf** | `read_pdf`, `extract_text`, `extract_tables` | Реализован |
 | **mcp-openapi** | Динамические (из OpenAPI-спеки) | Реализован |
-| **mcp-whisper** | `transcribe_audio`, `list_models`, `download_model` | Реализован |
+| **mcp-whisper** | `transcribe_audio`, `batch_transcribe`, `list_models`, `download_model` | Реализован |
 | **mcp-google** | — | Stub |
-| **mcp-database** | `query`, `execute`, `list_tables`, `describe_table`, `check_exists`, `insert` | Реализован |
+| **mcp-database** | `query`, `execute`, `list_tables`, `describe_table`, `check_exists`, `insert`, `batch_insert` | Реализован |
 | **mcp-exportby** | `sync_catalog`, `get_unanalyzed`, `check_new`, `get_stats`, `get_pending_count`, `export_leads_excel`, `mark_exported`, `reject_companies` | Реализован |
 
 ### mcp-openapi — интеграция внешних API
@@ -713,16 +713,24 @@ mcp_servers:
 
 **Важно:** при использовании OAuth2 аутентификация прозрачна для Claude — не нужно включать auth-эндпоинты в OpenAPI спеку и передавать токены в промпте.
 
-#### Встроенный инструмент download_file
+#### Встроенные инструменты download_file и batch_download
 
-Каждый mcp-openapi сервер предоставляет встроенный инструмент `download_file` для скачивания бинарных файлов (аудио, изображения и т.д.):
+Каждый mcp-openapi сервер предоставляет инструменты для скачивания файлов:
+
+**`download_file`** — скачивание одного файла:
 
 | Параметр | Описание |
 |---|---|
 | `url` | Полный URL или относительный путь (автоматически дополняется base URL) |
 | `path` | Локальный путь для сохранения |
 
-Auth и extra headers применяются автоматически. Родительские директории создаются при необходимости. Имя инструмента: `mcp__{server_name}__download_file`.
+**`batch_download`** — скачивание множества файлов за один вызов (экономит токены):
+
+| Параметр | Описание |
+|---|---|
+| `files` | Массив объектов `{url, path}` |
+
+Возвращает per-file результаты (OK с количеством байт или ошибка). Auth и extra headers применяются автоматически. Родительские директории создаются при необходимости. Имена инструментов: `mcp__{server_name}__download_file`, `mcp__{server_name}__batch_download`.
 
 #### Именование инструментов
 
@@ -772,6 +780,8 @@ make setup-whisper
 
 Клонирует whisper.cpp, компилирует бинарник, скачивает модель `ggml-small.bin`. Требуется cmake и C++ компилятор. Для не-WAV форматов (MP3, FLAC, OGG, M4A) нужен ffmpeg.
 
+Для лучшего качества русского языка рекомендуется `large-v3-turbo` (скачивается через `download_model` или вручную).
+
 #### Конфигурация
 
 ```yaml
@@ -780,7 +790,7 @@ mcp_servers:
     command: ./bin/mcp-whisper
     env:
       WHISPER_BIN: ./data/whisper/bin/whisper-cli
-      WHISPER_MODEL: ./data/whisper/models/ggml-small.bin
+      WHISPER_MODEL: ./data/whisper/models/ggml-large-v3-turbo.bin
       WHISPER_MODELS_DIR: ./data/whisper/models
       WHISPER_THREADS: "8"
 ```
@@ -798,9 +808,10 @@ mcp_servers:
 
 | Инструмент | Описание |
 |---|---|
-| `transcribe_audio` | Транскрипция аудиофайла. Параметры: `path` (путь), `language` (auto/ru/en/...), `translate` (перевод на EN), `output_format` (text/srt/vtt) |
-| `list_models` | Список доступных моделей (tiny, base, small, medium, large-v3) с отметкой скачанных |
-| `download_model` | Скачивание модели с Hugging Face по имени |
+| `transcribe_audio` | Транскрипция одного аудиофайла. Параметры: `path`, `language` (auto/ru/en/...), `translate`, `output_format` (txt/srt/vtt/json). Для srt/vtt/json — файл сохраняется рядом с входным, путь возвращается как `file:<path>` в первой строке |
+| `batch_transcribe` | Транскрипция множества файлов за один вызов. Параметры: `files` (массив путей), `output_format`, `language`. Идемпотентно: пропускает файлы с существующим выходным файлом на диске (status: `skipped`). Возвращает JSON с per-file результатами. Экономит токены: 1 tool-call вместо N |
+| `list_models` | Список доступных моделей с отметкой скачанных |
+| `download_model` | Скачивание модели с Hugging Face. Модели: tiny, base, small, medium, large-v3, large-v3-turbo |
 
 #### Пример: пайплайн для заметок встречи
 
