@@ -220,7 +220,37 @@ tasks:
       permission_mode: bypassPermissions
     - name: research-vet-manufacturers
       domain: vet-manufacturers-belarus
-      prompt: "Дата исследования: {{.Date}}\n\nПроведи исследование производителей ветеринарных препаратов в Республике Беларусь.\n\nШАГ 0 — Инициализация сеанса:\n1. Сгенерируй уникальный session_id в формате: vet-YYYYMMDD-HHMMSS (например vet-20260318-143052)\n2. Выполни SELECT name, updated_at FROM manufacturers ORDER BY name — это список УЖЕ известных. НЕ ТРАТЬ бюджет на их повторный поиск.\n3. Создай запись в sync_log: INSERT INTO sync_log (session_id, notes) VALUES ('{session_id}', 'started')\n\nСтратегия работы:\n- ВСЕ INSERT и UPDATE должны содержать session_id текущего сеанса\n- Сохраняй каждого НОВОГО производителя в БД СРАЗУ после нахождения\n- Используй check_exists перед insert чтобы избежать дубликатов\n- Начни с официальных реестров, затем расширяй поиск\n- Для существующих записей: обновляй ТОЛЬКО если нашёл новую информацию\n\nЗадачи:\n1. Инициализация (ШАГ 0)\n2. Найди НОВЫХ производителей через поиск\n3. Для каждого: экспорт, авиатранспорт, страны назначения\n4. СРАЗУ сохраняй в БД с session_id текущего сеанса\n5. Обнови существующие если нашлась новая информация (тоже проставь session_id)\n6. Обнови sync_log: UPDATE sync_log SET manufacturers_added=N, manufacturers_updated=M, notes='completed' WHERE session_id='{session_id}'\n\nПо завершении выведи (ОБЯЗАТЕЛЬНО включи session_id в первой строке):\nSESSION_ID: {session_id}\n- Всего в БД\n- Новых добавлено / обновлено\n- Список экспортёров\n- Список авиаэкспортёров"
+      prompt: |-
+        Дата исследования: {{.Date}}
+
+        Проведи исследование производителей ветеринарных препаратов в Республике Беларусь.
+
+        ШАГ 0 — Инициализация сеанса:
+        1. Сгенерируй уникальный session_id в формате: vet-YYYYMMDD-HHMMSS (например vet-20260318-143052)
+        2. Выполни SELECT name, updated_at FROM manufacturers ORDER BY name — это список УЖЕ известных. НЕ ТРАТЬ бюджет на их повторный поиск.
+        3. Создай запись в sync_log: INSERT INTO sync_log (session_id, notes) VALUES ('{session_id}', 'started')
+
+        Стратегия работы:
+        - ВСЕ INSERT и UPDATE должны содержать session_id текущего сеанса
+        - Сохраняй каждого НОВОГО производителя в БД СРАЗУ после нахождения
+        - Используй check_exists перед insert чтобы избежать дубликатов
+        - Начни с официальных реестров, затем расширяй поиск
+        - Для существующих записей: обновляй ТОЛЬКО если нашёл новую информацию
+
+        Задачи:
+        1. Инициализация (ШАГ 0)
+        2. Найди НОВЫХ производителей через поиск
+        3. Для каждого: экспорт, авиатранспорт, страны назначения
+        4. СРАЗУ сохраняй в БД с session_id текущего сеанса
+        5. Обнови существующие если нашлась новая информация (тоже проставь session_id)
+        6. Обнови sync_log: UPDATE sync_log SET manufacturers_added=N, manufacturers_updated=M, notes='completed' WHERE session_id='{session_id}'
+
+        По завершении выведи (ОБЯЗАТЕЛЬНО включи session_id в первой строке):
+        SESSION_ID: {session_id}
+        - Всего в БД
+        - Новых добавлено / обновлено
+        - Список экспортёров
+        - Список авиаэкспортёров
       work_dir: .
       schedule: 0 8 * * 1
       tags:
@@ -247,7 +277,34 @@ tasks:
       permission_mode: dontAsk
     - name: compile-vet-manufacturers-excel
       domain: vet-manufacturers-belarus
-      prompt: "Сформируй Excel-отчёт по НОВЫМ производителям ветеринарных препаратов Беларуси, найденным в текущем сеансе.\n\nИсходные данные — предыдущий вывод:\n{{.PrevOutput}}\n\nИзвлеки SESSION_ID из предыдущего вывода (строка вида SESSION_ID: vet-XXXXXXXX-XXXXXX). Используй его для фильтрации.\n\nФильтрация: выгружай ТОЛЬКО записи текущего сеанса:\nWHERE session_id = '{извлечённый session_id}'\n\nСтруктура отчёта (3 листа):\n\n**Лист 1 — Новые производители (сеанс)**\nSQL: SELECT * FROM manufacturers WHERE session_id = '{session_id}'\nКолонки: Название | Юр. название | Адрес | Город | Сайт | Телефон | Email | № лицензии | Экспорт | Авиаэкспорт | Страны экспорта | Категории продуктов\n\n**Лист 2 — Новые экспортёры**\nSQL: SELECT * FROM manufacturers WHERE session_id = '{session_id}' AND exports_abroad = 1\nТе же колонки + выделить авиаэкспортёров цветом.\n\n**Лист 3 — Новые авиаэкспортёры**\nSQL: SELECT * FROM manufacturers WHERE session_id = '{session_id}' AND air_export = 1\nКолонки: Название | Страны | Примечания по авиадоставке | Категории товаров | Контакты\n\nЕсли записей нет — создай файл с пустыми таблицами (только заголовки).\nФайл: data/vet-manufacturers-belarus/vet-manufacturers-{{.Date}}.xlsx\nИспользуй mcp__excel__create_spreadsheet или mcp__excel__write_spreadsheet."
+      prompt: |-
+        Сформируй Excel-отчёт по НОВЫМ производителям ветеринарных препаратов Беларуси, найденным в текущем сеансе.
+
+        Исходные данные — предыдущий вывод:
+        {{.PrevOutput}}
+
+        Извлеки SESSION_ID из предыдущего вывода (строка вида SESSION_ID: vet-XXXXXXXX-XXXXXX). Используй его для фильтрации.
+
+        Фильтрация: выгружай ТОЛЬКО записи текущего сеанса:
+        WHERE session_id = '{извлечённый session_id}'
+
+        Структура отчёта (3 листа):
+
+        **Лист 1 — Новые производители (сеанс)**
+        SQL: SELECT * FROM manufacturers WHERE session_id = '{session_id}'
+        Колонки: Название | Юр. название | Адрес | Город | Сайт | Телефон | Email | № лицензии | Экспорт | Авиаэкспорт | Страны экспорта | Категории продуктов
+
+        **Лист 2 — Новые экспортёры**
+        SQL: SELECT * FROM manufacturers WHERE session_id = '{session_id}' AND exports_abroad = 1
+        Те же колонки + выделить авиаэкспортёров цветом.
+
+        **Лист 3 — Новые авиаэкспортёры**
+        SQL: SELECT * FROM manufacturers WHERE session_id = '{session_id}' AND air_export = 1
+        Колонки: Название | Страны | Примечания по авиадоставке | Категории товаров | Контакты
+
+        Если записей нет — создай файл с пустыми таблицами (только заголовки).
+        Файл: data/vet-manufacturers-belarus/vet-manufacturers-{{.Date}}.xlsx
+        Используй mcp__excel__create_spreadsheet или mcp__excel__write_spreadsheet.
       work_dir: .
       tags:
         - vet
@@ -318,13 +375,13 @@ tasks:
         Используй инструмент transcribe_audio с языком "ru".
         Выведи полный текст транскрипции.
       work_dir: .
+      model: haiku
+      timeout: 60m
       mcp_servers:
         - whisper
       allowed_tools:
         - mcp__whisper__transcribe_audio
         - mcp__whisper__list_models
-      timeout: 60m
-      model: haiku
     - name: summarize-transcription
       prompt: |
         Проанализируй транскрипцию из предыдущего шага и создай структурированные заметки:
@@ -336,8 +393,142 @@ tasks:
         Транскрипция:
         {{.PrevOutput}}
       work_dir: .
-      timeout: 10m
       model: haiku
+      timeout: 10m
+    - name: fetch-sip-recordings
+      domain: sip-calls
+      prompt: |-
+        Today is {{.Date}}. Fetch all call recordings from the Yeastar P-Series SIP station for yesterday and store them locally.
+
+        Authentication is handled automatically by the MCP server — no need to call getaccesstoken or pass access_token manually.
+
+        Steps:
+        1. Calculate yesterday's date from {{.Date}}.
+        2. Call listrecordings with page_size=10000 to get ALL recording files. The API returns records with a "time" field (format: DD/MM/YYYY HH:mm:ss). Filter the results client-side to keep only recordings where the date part matches yesterday.
+        3. If no recordings found for yesterday, output "0 recordings found for yesterday" and stop.
+        4. Ensure the local directory $DOMAIN_DATA_DIR/recordings/ exists (create if needed using filesystem tools).
+        5. For each recording from yesterday:
+           a. Check if uid already exists in the recordings table (SELECT query) — skip duplicates.
+           b. Call downloadrecording with the recording id to get the download_resource_url.
+           c. Use download_file tool with url="{download_resource_url}" (relative URL is OK, auth is added automatically) and path="$DOMAIN_DATA_DIR/recordings/{file}" to save the audio file.
+           d. INSERT INTO recordings (call_id, filename, caller, callee, duration, call_date, download_path) VALUES (uid, file, call_from_number, call_to_number, duration, time, full_path).
+        6. Output: total recordings found in API for yesterday, new recordings downloaded, skipped as duplicates.
+      work_dir: .
+      tags:
+        - sip
+        - yeastar
+        - fetch
+        - recordings
+      model: sonnet
+      timeout: 15m
+      mcp_servers:
+        - yeastar-api
+        - database
+        - filesystem
+      allowed_tools:
+        - mcp__yeastar-api__searchcdr
+        - mcp__yeastar-api__listcdr
+        - mcp__yeastar-api__listrecordings
+        - mcp__yeastar-api__downloadrecording
+        - mcp__yeastar-api__download_file
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__describe_table
+        - mcp__filesystem__write_file
+        - mcp__filesystem__read_file
+        - mcp__filesystem__create_directory
+        - mcp__filesystem__list_directory
+      max_budget_usd: 2
+      permission_mode: dontAsk
+    - name: transcribe-sip-recordings
+      domain: sip-calls
+      prompt: |-
+        Transcribe all pending call recordings from the Yeastar SIP station that have not yet been transcribed.
+
+        Steps:
+        1. Query the database for recordings pending transcription:
+           SELECT id, call_id, download_path, caller, callee, call_date, duration FROM recordings WHERE transcription IS NULL ORDER BY call_date DESC;
+        2. For each recording row:
+           a. Verify the audio file exists at download_path.
+           b. Transcribe the audio file using the whisper MCP transcription tool, passing the full file path.
+           c. On success: UPDATE recordings SET transcription = '<transcription_text>', processed_at = datetime('now') WHERE id = <id>.
+           d. On failure (file missing or transcription error): log the error, continue to the next recording — do not abort.
+        3. Output a summary: total transcribed successfully, total failed, total skipped (file not found).
+      work_dir: .
+      tags:
+        - sip
+        - whisper
+        - transcription
+      model: sonnet
+      timeout: 30m
+      mcp_servers:
+        - whisper
+        - database
+        - filesystem
+      allowed_tools:
+        - mcp__whisper__transcribe_audio
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__describe_table
+        - mcp__filesystem__list_directory
+        - mcp__filesystem__read_file
+      max_budget_usd: 1
+      permission_mode: dontAsk
+    - name: summarize-sip-transcriptions
+      domain: sip-calls
+      prompt: |-
+        Today is {{.Date}}. Analyze and summarize all transcribed call recordings from yesterday that have not yet been summarized.
+
+        Steps:
+        1. Calculate yesterday's date from {{.Date}} (format: YYYY-MM-DD).
+        2. Query: SELECT id, call_id, caller, callee, duration, transcription FROM recordings WHERE transcription IS NOT NULL AND summary IS NULL AND call_date = '<yesterday>';
+        3. For each recording, generate a JSON summary object with fields:
+           - brief: 2-3 sentence description of the conversation
+           - topics: list of key topics or issues discussed
+           - actions: list of action items or follow-ups mentioned (empty array if none)
+           - sentiment: 'positive', 'neutral', or 'negative'
+        4. UPDATE recordings SET summary = '<json_string>' WHERE id = <id>.
+        5. After processing all calls, compile a daily digest:
+           - Count total calls and sum total duration for yesterday
+           - Write a comprehensive digest (3-5 paragraphs) covering: call volume overview, most significant conversations, recurring themes, and consolidated list of all action items
+        6. INSERT OR REPLACE INTO daily_reports (report_date, total_calls, total_duration, digest) VALUES ('<yesterday>', <count>, <total_seconds>, '<digest_text>');
+        7. Output the full digest text so the next pipeline step can use it via {{.PrevOutput}}.
+      work_dir: .
+      tags:
+        - sip
+        - summary
+        - analysis
+      model: sonnet
+      timeout: 20m
+      mcp_servers:
+        - database
+      allowed_tools:
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__insert
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+      max_budget_usd: 1.5
+      permission_mode: dontAsk
+    - name: deliver-sip-report
+      domain: sip-calls
+      prompt: "Today is {{.Date}}. Deliver the daily SIP call recording report via Telegram.\n\nContext from previous step:\n{{.PrevOutput}}\n\nSteps:\n1. Calculate yesterday's date from {{.Date}}.\n2. Query daily_reports for report_date = '<yesterday>' to get total_calls, total_duration, digest.\n3. Query recordings for the top 5 most significant calls from yesterday (longest duration or with action items in summary JSON).\n4. Format and send a Telegram message:\n\n\U0001F4DE *Daily Call Report — <yesterday>*\n\n\U0001F4CA *Statistics:* <total_calls> calls · <total_duration_minutes> min total\n\n\U0001F4DD *Daily Digest:*\n<digest text, trimmed to fit Telegram limit if needed>\n\n\U0001F4CB *Top Calls:*\n<for each of top 5 calls: caller → callee, duration, brief summary>\n\n✅ *Action Items:*\n<consolidated list of all action items from all calls, or 'None' if empty>\n\n5. After sending, UPDATE daily_reports SET delivered_at = datetime('now') WHERE report_date = '<yesterday>'.\n6. Output: 'Report delivered successfully for <yesterday>: <total_calls> calls'."
+      work_dir: .
+      tags:
+        - sip
+        - report
+        - telegram
+      model: sonnet
+      timeout: 5m
+      mcp_servers:
+        - database
+        - telegram
+      allowed_tools:
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__telegram__send_message
+      max_budget_usd: 0.3
+      permission_mode: dontAsk
 pipelines:
     - name: review-fix
       mode: sequential
@@ -367,11 +558,11 @@ pipelines:
       allow_concurrent: false
     - name: meeting-notes
       mode: sequential
-      session_chain: true
       steps:
         - task: transcribe-audio
         - task: summarize-transcription
       max_iterations: 1
+      session_chain: true
     - name: vet-manufacturers-sync
       mode: sequential
       steps:
@@ -380,6 +571,14 @@ pipelines:
         - task: deliver-vet-manufacturers-report
       max_iterations: 1
       stop_signal: PIPELINE_DONE
+    - name: daily-sip-processing
+      mode: sequential
+      steps:
+        - task: fetch-sip-recordings
+        - task: transcribe-sip-recordings
+        - task: summarize-sip-transcriptions
+        - task: deliver-sip-report
+      max_iterations: 1
 mcp_servers:
     - name: database
       command: ./bin/mcp-database
@@ -400,6 +599,22 @@ mcp_servers:
         WHISPER_MODEL: ./data/whisper/models/ggml-small.bin
         WHISPER_MODELS_DIR: ./data/whisper/models
         WHISPER_THREADS: "8"
+    - name: yeastar-api
+      command: ./bin/mcp-openapi
+      env:
+        OPENAPI_BASE_URL: ${YEASTAR_BASE_URL}/openapi/v1.0
+        OPENAPI_SPEC_PATH: specs/yeastar-pseries.yaml
+        OPENAPI_EXTRA_HEADERS: "User-Agent:OpenAPI"
+        OPENAPI_TLS_INSECURE: "true"
+        OPENAPI_AUTH_TYPE: oauth2_client_credentials
+        OPENAPI_OAUTH2_TOKEN_URL: ${YEASTAR_BASE_URL}/openapi/v1.0/get_token
+        OPENAPI_OAUTH2_CLIENT_ID: ${YEASTAR_CLIENT_ID}
+        OPENAPI_OAUTH2_CLIENT_SECRET: ${YEASTAR_CLIENT_PASSWORD}
+        OPENAPI_OAUTH2_ID_FIELD: username
+        OPENAPI_OAUTH2_SECRET_FIELD: password
+        OPENAPI_OAUTH2_GRANT_TYPE: ""
+        OPENAPI_OAUTH2_TOKEN_IN: query
+        OPENAPI_OAUTH2_TOKEN_PARAM: access_token
 domains:
     export-by-aviation:
         description: Лиды с export.by — белорусские экспортёры, нуждающиеся в авиаперевозке грузов. MCP-сервер exportby выполняет скрейпинг сайта и хранит сырые данные в raw_companies. Задача analyze оценивает aviation_priority на основе данных в БД без обращения к сайту.
@@ -512,6 +727,25 @@ domains:
         mcp_servers:
             - database
             - excel
+    sip-calls:
+        description: Yeastar P-Series SIP station call recordings, transcriptions, and daily summaries
+        data_dir: data/sip-calls
+        db: sip-calls.db
+        schema: CREATE TABLE IF NOT EXISTS recordings (id INTEGER PRIMARY KEY AUTOINCREMENT, call_id TEXT UNIQUE, filename TEXT, caller TEXT, callee TEXT, duration INTEGER, call_date TEXT, download_path TEXT, transcription TEXT, summary TEXT, processed_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS daily_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, report_date TEXT UNIQUE, total_calls INTEGER, total_duration INTEGER, digest TEXT, delivered_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        domain_doc: DOMAIN.md
+        tasks:
+            - fetch-sip-recordings
+            - transcribe-sip-recordings
+            - summarize-sip-transcriptions
+            - deliver-sip-report
+        pipelines:
+            - daily-sip-processing
+        mcp_servers:
+            - yeastar-api
+            - database
+            - whisper
+            - telegram
+            - filesystem
     vet-manufacturers-belarus:
         description: Database of veterinary drug manufacturers in Belarus with export metadata
         data_dir: data/vet-manufacturers-belarus

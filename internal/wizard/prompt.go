@@ -107,6 +107,11 @@ const wizardJSONSchema = `{
       }
     }
   },
+    "setup_notes": {
+      "type": "string",
+      "description": "Human-readable notes about setup: external deps to install, API keys to obtain, services to configure. Optional."
+    }
+  },
   "required": ["summary", "tasks"]
 }`
 
@@ -172,7 +177,7 @@ MCP tool names follow the pattern: mcp__{server}__{tool}. Here are the exact too
 - **email**: mcp__email__send_email, mcp__email__read_inbox, mcp__email__search_emails
 - **telegram**: mcp__telegram__send_message, mcp__telegram__send_document
 - **filesystem**: mcp__filesystem__read_file, mcp__filesystem__write_file, mcp__filesystem__list_directory, mcp__filesystem__search_files, mcp__filesystem__copy_file
-- **openapi** (mcp-openapi): DYNAMIC tools — tool names are generated from the OpenAPI spec at startup. Pattern: mcp__{server_name}__{operationId_lowercase}. Example: if server is named "crm-api" and spec has operationId "getContacts", tool name is mcp__crm-api__getcontacts.
+- **openapi** (mcp-openapi): DYNAMIC tools — tool names are generated from the OpenAPI spec at startup. Pattern: mcp__{server_name}__{operationId_lowercase}. Example: if server is named "crm-api" and spec has operationId "getContacts", tool name is mcp__crm-api__getcontacts. Also provides a built-in mcp__{server_name}__download_file tool for downloading binary files (audio, images, etc.) to local paths.
 
 ## mcp-openapi Server
 
@@ -180,17 +185,45 @@ mcp-openapi dynamically generates MCP tools from an OpenAPI v2/v3 specification.
 
 The wizard CAN create new mcp-openapi server entries in the plan's "mcp_servers" array. When the user wants to connect an external API, create an mcp-openapi entry with the appropriate env vars. The created server can then be referenced by tasks in the same plan.
 
-Example mcp_servers entry in plan:
+Example mcp_servers entries in plan:
+
+Simple bearer auth:
 {"name": "crm-api", "command": "./bin/mcp-openapi", "env": {"OPENAPI_SPEC_PATH": "specs/crm.yaml", "OPENAPI_BASE_URL": "https://api.crm.example.com/v2", "OPENAPI_AUTH_TYPE": "bearer", "OPENAPI_AUTH_TOKEN": "${CRM_TOKEN}", "OPENAPI_INCLUDE_TAGS": "contacts,deals"}}
 
-Environment variables (configured in mcp_servers, not by wizard):
-- OPENAPI_SPEC_PATH (required): path to OpenAPI spec file
+OAuth2 with custom body fields and token in query param (e.g. Yeastar PBX):
+{"name": "yeastar-api", "command": "./bin/mcp-openapi", "env": {"OPENAPI_SPEC_PATH": "specs/yeastar.yaml", "OPENAPI_BASE_URL": "${YEASTAR_BASE_URL}/openapi/v1.0", "OPENAPI_AUTH_TYPE": "oauth2_client_credentials", "OPENAPI_OAUTH2_TOKEN_URL": "${YEASTAR_BASE_URL}/openapi/v1.0/get_token", "OPENAPI_OAUTH2_CLIENT_ID": "${YEASTAR_CLIENT_ID}", "OPENAPI_OAUTH2_CLIENT_SECRET": "${YEASTAR_CLIENT_SECRET}", "OPENAPI_OAUTH2_ID_FIELD": "username", "OPENAPI_OAUTH2_SECRET_FIELD": "password", "OPENAPI_OAUTH2_GRANT_TYPE": "", "OPENAPI_OAUTH2_TOKEN_IN": "query", "OPENAPI_OAUTH2_TOKEN_PARAM": "access_token", "OPENAPI_TLS_INSECURE": "true", "OPENAPI_EXTRA_HEADERS": "User-Agent:OpenAPI"}}
+
+Environment variables for mcp-openapi:
+**Core:**
+- OPENAPI_SPEC_PATH (required): path to OpenAPI spec file (e.g. specs/myapi.yaml)
 - OPENAPI_BASE_URL: override base URL from spec
-- OPENAPI_AUTH_TYPE: bearer, apikey, basic
-- OPENAPI_AUTH_TOKEN, OPENAPI_API_KEY, OPENAPI_BASIC_USER/PASS: credentials
+- OPENAPI_TLS_INSECURE: "true" to skip TLS certificate verification (self-signed certs)
+- OPENAPI_EXTRA_HEADERS: extra HTTP headers (comma-separated key:value pairs)
+- OPENAPI_TIMEOUT: HTTP timeout (e.g. "60s"), default 30s
+
+**Auth — simple types:**
+- OPENAPI_AUTH_TYPE: "bearer", "apikey", "basic", "oauth2", or "oauth2_client_credentials"
+- OPENAPI_AUTH_TOKEN: token for bearer auth
+- OPENAPI_API_KEY, OPENAPI_API_KEY_NAME, OPENAPI_API_KEY_IN: for apikey auth (header or query)
+- OPENAPI_BASIC_USER, OPENAPI_BASIC_PASS: for basic auth
+
+**Auth — OAuth2 client credentials (auto token management with refresh):**
+- OPENAPI_OAUTH2_TOKEN_URL (required): token endpoint URL
+- OPENAPI_OAUTH2_CLIENT_ID (required): client ID / username
+- OPENAPI_OAUTH2_CLIENT_SECRET (required): client secret / password
+- OPENAPI_OAUTH2_REFRESH_URL: refresh token endpoint (falls back to re-auth if empty)
+- OPENAPI_OAUTH2_ID_FIELD: body field name for client ID (default: "client_id"). Use "username" for APIs that expect username/password body.
+- OPENAPI_OAUTH2_SECRET_FIELD: body field name for client secret (default: "client_secret"). Use "password" for APIs that expect username/password body.
+- OPENAPI_OAUTH2_GRANT_TYPE: set to empty string "" to omit grant_type from body. Default includes "grant_type": "client_credentials".
+- OPENAPI_OAUTH2_TOKEN_IN: "header" (default, Authorization: Bearer) or "query" (appends ?param=token)
+- OPENAPI_OAUTH2_TOKEN_PARAM: query parameter name when TOKEN_IN=query (default: "access_token")
+
+**Filtering:**
 - OPENAPI_INCLUDE_TAGS: filter by tags (comma-separated)
 - OPENAPI_INCLUDE_PATHS: filter by path prefixes
 - OPENAPI_INCLUDE_OPS / OPENAPI_EXCLUDE_OPS: filter by operationId
+
+When using OAuth2, the MCP server handles authentication transparently — Claude does NOT need to call auth endpoints or pass tokens manually. Do NOT include auth endpoints in the OpenAPI spec when using OAuth2. Auth is added to every request automatically.
 
 Since mcp-openapi tools are dynamic, when adding allowed_tools for an openapi server, use the pattern mcp__{server_name}__{operationid_lowercase} based on the spec's operationId values. If you don't know exact operationIds, omit allowed_tools to allow all tools from that server.
 
@@ -225,7 +258,9 @@ IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi pattern) in allow
 			if strings.Contains(mcp.Command, "mcp-openapi") {
 				for k, v := range mcp.Env {
 					switch k {
-					case "OPENAPI_SPEC_PATH", "OPENAPI_BASE_URL", "OPENAPI_INCLUDE_TAGS", "OPENAPI_INCLUDE_PATHS":
+					case "OPENAPI_SPEC_PATH", "OPENAPI_BASE_URL", "OPENAPI_AUTH_TYPE",
+						"OPENAPI_INCLUDE_TAGS", "OPENAPI_INCLUDE_PATHS",
+						"OPENAPI_OAUTH2_TOKEN_IN", "OPENAPI_TLS_INSECURE":
 						sb.WriteString(fmt.Sprintf("    %s=%s\n", k, v))
 					}
 				}

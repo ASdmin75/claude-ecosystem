@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -57,8 +58,13 @@ type oauth2TokenManager struct {
 	mu              sync.Mutex
 	clientID        string
 	clientSecret    string
+	idField         string // JSON field name for client ID in token request body (default: "client_id")
+	secretField     string // JSON field name for client secret (default: "client_secret")
+	includeGrant    bool   // whether to include grant_type in token request
 	authEndpoint    string
 	refreshEndpoint string
+	tokenIn         string // "header" (default) or "query"
+	tokenParam      string // query param name when tokenIn="query" (default: "access_token")
 	accessToken     string
 	refreshToken    string
 	expiresAt       time.Time
@@ -69,30 +75,42 @@ func newOAuth2TokenManager(clientID, clientSecret, authEndpoint, refreshEndpoint
 	return &oauth2TokenManager{
 		clientID:        clientID,
 		clientSecret:    clientSecret,
+		idField:         "client_id",
+		secretField:     "client_secret",
+		includeGrant:    true,
 		authEndpoint:    authEndpoint,
 		refreshEndpoint: refreshEndpoint,
+		tokenIn:         "header",
+		tokenParam:      "access_token",
 		httpClient:      client,
 	}
 }
 
 type tokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	ExpiresIn    int    `json:"expires_in,omitempty"`
-	TokenType    string `json:"token_type,omitempty"`
+	AccessToken          string `json:"access_token"`
+	RefreshToken         string `json:"refresh_token,omitempty"`
+	ExpiresIn            int    `json:"expires_in,omitempty"`
+	AccessTokenExpireTime int   `json:"access_token_expire_time,omitempty"` // Yeastar-style
+	TokenType            string `json:"token_type,omitempty"`
+}
+
+// authBody builds the token request body using configured field names.
+func (tm *oauth2TokenManager) authBody() map[string]string {
+	body := map[string]string{
+		tm.idField:     tm.clientID,
+		tm.secretField: tm.clientSecret,
+	}
+	if tm.includeGrant {
+		body["grant_type"] = "client_credentials"
+	}
+	return body
 }
 
 // authenticate performs initial token exchange using client credentials.
 func (tm *oauth2TokenManager) authenticate() error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-
-	body := map[string]string{
-		"client_id":     tm.clientID,
-		"client_secret": tm.clientSecret,
-		"grant_type":    "client_credentials",
-	}
-	return tm.doTokenRequest(tm.authEndpoint, body)
+	return tm.doTokenRequest(tm.authEndpoint, tm.authBody())
 }
 
 // refresh exchanges refresh_token for a new access_token.
@@ -102,31 +120,19 @@ func (tm *oauth2TokenManager) refresh() error {
 	defer tm.mu.Unlock()
 
 	if tm.refreshEndpoint == "" || tm.refreshToken == "" {
-		// Fall back to full re-auth
-		body := map[string]string{
-			"client_id":     tm.clientID,
-			"client_secret": tm.clientSecret,
-			"grant_type":    "client_credentials",
-		}
-		return tm.doTokenRequest(tm.authEndpoint, body)
+		return tm.doTokenRequest(tm.authEndpoint, tm.authBody())
 	}
 
-	body := map[string]string{
-		"client_id":     tm.clientID,
-		"client_secret": tm.clientSecret,
-		"grant_type":    "refresh_token",
-		"refresh_token": tm.refreshToken,
+	body := tm.authBody()
+	if tm.includeGrant {
+		body["grant_type"] = "refresh_token"
 	}
+	body["refresh_token"] = tm.refreshToken
+
 	err := tm.doTokenRequest(tm.refreshEndpoint, body)
 	if err != nil {
-		// Refresh failed — try full re-auth
 		fmt.Fprintf(os.Stderr, "mcp-openapi: refresh failed (%v), re-authenticating\n", err)
-		reAuthBody := map[string]string{
-			"client_id":     tm.clientID,
-			"client_secret": tm.clientSecret,
-			"grant_type":    "client_credentials",
-		}
-		return tm.doTokenRequest(tm.authEndpoint, reAuthBody)
+		return tm.doTokenRequest(tm.authEndpoint, tm.authBody())
 	}
 	return nil
 }
@@ -172,8 +178,12 @@ func (tm *oauth2TokenManager) doTokenRequest(endpoint string, body map[string]st
 	if tr.RefreshToken != "" {
 		tm.refreshToken = tr.RefreshToken
 	}
-	if tr.ExpiresIn > 0 {
-		tm.expiresAt = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
+	expiry := tr.ExpiresIn
+	if expiry == 0 {
+		expiry = tr.AccessTokenExpireTime // Yeastar-style
+	}
+	if expiry > 0 {
+		tm.expiresAt = time.Now().Add(time.Duration(expiry) * time.Second)
 	} else {
 		tm.expiresAt = time.Time{} // unknown expiry
 	}
@@ -272,7 +282,12 @@ func main() {
 			timeout = d
 		}
 	}
-	httpClient = &http.Client{Timeout: timeout}
+	transport := &http.Transport{}
+	if os.Getenv("OPENAPI_TLS_INSECURE") == "true" {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+		fmt.Fprintf(os.Stderr, "mcp-openapi: TLS certificate verification disabled\n")
+	}
+	httpClient = &http.Client{Timeout: timeout, Transport: transport}
 
 	// Configure auth
 	authType = strings.ToLower(os.Getenv("OPENAPI_AUTH_TYPE"))
@@ -290,26 +305,60 @@ func main() {
 	basicPass = os.Getenv("OPENAPI_BASIC_PASS")
 
 	// OAuth2 client credentials flow
-	if authType == "oauth2" {
-		authEndpoint := os.Getenv("OPENAPI_AUTH_ENDPOINT")
+	if authType == "oauth2" || authType == "oauth2_client_credentials" {
+		authEndpoint := os.Getenv("OPENAPI_OAUTH2_TOKEN_URL")
 		if authEndpoint == "" {
-			fmt.Fprintf(os.Stderr, "OPENAPI_AUTH_ENDPOINT is required for oauth2 auth type\n")
+			authEndpoint = os.Getenv("OPENAPI_AUTH_ENDPOINT") // legacy
+		}
+		if authEndpoint == "" {
+			fmt.Fprintf(os.Stderr, "OPENAPI_OAUTH2_TOKEN_URL is required for %s auth type\n", authType)
 			os.Exit(1)
 		}
-		clientID := os.Getenv("OPENAPI_CLIENT_ID")
-		clientSecret := os.Getenv("OPENAPI_CLIENT_SECRET")
+		clientID := os.Getenv("OPENAPI_OAUTH2_CLIENT_ID")
+		if clientID == "" {
+			clientID = os.Getenv("OPENAPI_CLIENT_ID") // legacy
+		}
+		clientSecret := os.Getenv("OPENAPI_OAUTH2_CLIENT_SECRET")
+		if clientSecret == "" {
+			clientSecret = os.Getenv("OPENAPI_CLIENT_SECRET") // legacy
+		}
 		if clientID == "" || clientSecret == "" {
-			fmt.Fprintf(os.Stderr, "OPENAPI_CLIENT_ID and OPENAPI_CLIENT_SECRET are required for oauth2 auth type\n")
+			fmt.Fprintf(os.Stderr, "OPENAPI_OAUTH2_CLIENT_ID and OPENAPI_OAUTH2_CLIENT_SECRET are required for %s auth type\n", authType)
 			os.Exit(1)
 		}
-		refreshEndpoint := os.Getenv("OPENAPI_REFRESH_ENDPOINT")
+		refreshEndpoint := os.Getenv("OPENAPI_OAUTH2_REFRESH_URL")
+		if refreshEndpoint == "" {
+			refreshEndpoint = os.Getenv("OPENAPI_REFRESH_ENDPOINT") // legacy
+		}
 
 		tokenManager = newOAuth2TokenManager(clientID, clientSecret, authEndpoint, refreshEndpoint, httpClient)
+
+		// Configurable body field names (e.g. Yeastar uses "username"/"password" instead of "client_id"/"client_secret")
+		if v := os.Getenv("OPENAPI_OAUTH2_ID_FIELD"); v != "" {
+			tokenManager.idField = v
+		}
+		if v := os.Getenv("OPENAPI_OAUTH2_SECRET_FIELD"); v != "" {
+			tokenManager.secretField = v
+		}
+		// Disable grant_type field if set to empty
+		if v, ok := os.LookupEnv("OPENAPI_OAUTH2_GRANT_TYPE"); ok {
+			if v == "" {
+				tokenManager.includeGrant = false
+			}
+		}
+		// Token injection: "header" (default) or "query"
+		if v := os.Getenv("OPENAPI_OAUTH2_TOKEN_IN"); v != "" {
+			tokenManager.tokenIn = strings.ToLower(v)
+		}
+		if v := os.Getenv("OPENAPI_OAUTH2_TOKEN_PARAM"); v != "" {
+			tokenManager.tokenParam = v
+		}
+
 		if err := tokenManager.authenticate(); err != nil {
 			fmt.Fprintf(os.Stderr, "mcp-openapi: initial authentication failed: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "mcp-openapi: oauth2 authenticated successfully\n")
+		fmt.Fprintf(os.Stderr, "mcp-openapi: oauth2 authenticated (token_in=%s)\n", tokenManager.tokenIn)
 	}
 
 	// Parse extra headers
@@ -334,6 +383,21 @@ func main() {
 		s.AddTool(t, makeToolHandler(gt))
 		toolCount++
 	}
+
+	// Register built-in download_file tool
+	dlSchema, _ := json.Marshal(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"url":  map[string]any{"type": "string", "description": "Full URL or relative path to download. Relative paths are prefixed with the base URL."},
+			"path": map[string]any{"type": "string", "description": "Local file path to save the downloaded file to."},
+		},
+		"required": []string{"url", "path"},
+	})
+	s.AddTool(
+		mcp.NewToolWithRawSchema("download_file", "Download a file from a URL and save it to a local path. Use for binary files (audio, images, etc.) that cannot be handled as JSON.", dlSchema),
+		downloadFileHandler,
+	)
+	toolCount++
 
 	fmt.Fprintf(os.Stderr, "mcp-openapi: loaded %d tools from %s (base: %s)\n", toolCount, specPath, baseURL)
 
@@ -677,7 +741,7 @@ func executeOperation(op apiOperation, args map[string]any) mcp.CallToolResult {
 	result, statusCode := doExecute(op, args)
 
 	// Auto-retry on 401 for oauth2: refresh token and retry once
-	if statusCode == http.StatusUnauthorized && authType == "oauth2" && tokenManager != nil {
+	if statusCode == http.StatusUnauthorized && tokenManager != nil {
 		fmt.Fprintf(os.Stderr, "mcp-openapi: 401 received, refreshing token\n")
 		if err := tokenManager.refresh(); err != nil {
 			return errorResult("token refresh failed: " + err.Error())
@@ -801,13 +865,19 @@ func applyAuth(req *http.Request) error {
 		if authToken != "" {
 			req.Header.Set("Authorization", "Bearer "+authToken)
 		}
-	case "oauth2":
+	case "oauth2", "oauth2_client_credentials":
 		if tokenManager != nil {
 			token, err := tokenManager.getToken()
 			if err != nil {
 				return fmt.Errorf("oauth2 get token: %w", err)
 			}
-			req.Header.Set("Authorization", "Bearer "+token)
+			if tokenManager.tokenIn == "query" {
+				q := req.URL.Query()
+				q.Set(tokenManager.tokenParam, token)
+				req.URL.RawQuery = q.Encode()
+			} else {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
 		}
 	case "apikey":
 		if apiKey != "" {
@@ -853,4 +923,80 @@ func textResult(text string) mcp.CallToolResult {
 
 func errorResult(msg string) mcp.CallToolResult {
 	return *mcp.NewToolResultError(msg)
+}
+
+// downloadFileHandler downloads a file from a URL and saves it to a local path.
+func downloadFileHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
+	rawURL, _ := args["url"].(string)
+	destPath, _ := args["path"].(string)
+	if rawURL == "" || destPath == "" {
+		r := errorResult("both 'url' and 'path' are required")
+		return &r, nil
+	}
+
+	// If URL is relative, prepend base URL (strip API path suffix for download URLs)
+	if strings.HasPrefix(rawURL, "/") {
+		base := baseURL
+		if i := strings.Index(base, "/openapi/"); i > 0 {
+			base = base[:i]
+		}
+		rawURL = base + rawURL
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+	if err != nil {
+		r := errorResult("create request: " + err.Error())
+		return &r, nil
+	}
+
+	// Apply auth (adds token to header or query param)
+	if err := applyAuth(httpReq); err != nil {
+		r := errorResult("auth: " + err.Error())
+		return &r, nil
+	}
+
+	// Apply extra headers
+	for k, v := range extraHeaders {
+		httpReq.Header.Set(k, v)
+	}
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		r := errorResult("download failed: " + err.Error())
+		return &r, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		r := errorResult(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)))
+		return &r, nil
+	}
+
+	// Ensure parent directory exists
+	dir := destPath[:strings.LastIndex(destPath, "/")]
+	if dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			r := errorResult("create directory: " + err.Error())
+			return &r, nil
+		}
+	}
+
+	f, err := os.Create(destPath)
+	if err != nil {
+		r := errorResult("create file: " + err.Error())
+		return &r, nil
+	}
+	defer f.Close()
+
+	written, err := io.Copy(f, resp.Body)
+	if err != nil {
+		r := errorResult("write file: " + err.Error())
+		return &r, nil
+	}
+
+	r := textResult(fmt.Sprintf("Downloaded %d bytes to %s", written, destPath))
+	return &r, nil
 }

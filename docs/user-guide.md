@@ -616,33 +616,58 @@ mcp_servers:
 
 #### Переменные окружения
 
+**Основные:**
+
 | Переменная | Обяз. | Описание |
 |---|---|---|
 | `OPENAPI_SPEC_PATH` | **Да** | Путь к OpenAPI-спецификации (JSON/YAML) |
 | `OPENAPI_BASE_URL` | Нет | Переопределение base URL из спеки |
-| `OPENAPI_AUTH_TYPE` | Нет | `bearer`, `apikey`, `basic`, `oauth2` |
+| `OPENAPI_TLS_INSECURE` | Нет | `true` — отключить проверку TLS-сертификата (самоподписанные) |
+| `OPENAPI_EXTRA_HEADERS` | Нет | Доп. заголовки `Key:Value,Key2:Value2` |
+| `OPENAPI_TIMEOUT` | Нет | HTTP timeout (default: `30s`) |
+| `OPENAPI_MAX_TOOLS` | Нет | Лимит инструментов (default: 50) |
+
+**Аутентификация — простые типы:**
+
+| Переменная | Обяз. | Описание |
+|---|---|---|
+| `OPENAPI_AUTH_TYPE` | Нет | `bearer`, `apikey`, `basic`, `oauth2`, `oauth2_client_credentials` |
 | `OPENAPI_AUTH_TOKEN` | Нет | Bearer token |
 | `OPENAPI_API_KEY` | Нет | API key |
 | `OPENAPI_API_KEY_NAME` | Нет | Имя заголовка/параметра (default: `X-API-Key`) |
 | `OPENAPI_API_KEY_IN` | Нет | `header` (default) или `query` |
 | `OPENAPI_BASIC_USER` / `OPENAPI_BASIC_PASS` | Нет | Basic auth |
-| `OPENAPI_AUTH_ENDPOINT` | Нет* | URL для получения токена (oauth2) |
-| `OPENAPI_REFRESH_ENDPOINT` | Нет | URL для refresh токена (oauth2) |
-| `OPENAPI_CLIENT_ID` | Нет* | Client ID (oauth2) |
-| `OPENAPI_CLIENT_SECRET` | Нет* | Client secret (oauth2) |
+
+**Аутентификация — OAuth2 client credentials (автоматическое управление токенами):**
+
+| Переменная | Обяз. | Описание | Default |
+|---|---|---|---|
+| `OPENAPI_OAUTH2_TOKEN_URL` | **Да*** | URL получения токена (POST) | — |
+| `OPENAPI_OAUTH2_CLIENT_ID` | **Да*** | Client ID / логин | — |
+| `OPENAPI_OAUTH2_CLIENT_SECRET` | **Да*** | Client secret / пароль | — |
+| `OPENAPI_OAUTH2_REFRESH_URL` | Нет | URL refresh токена (fallback: re-auth) | — |
+| `OPENAPI_OAUTH2_ID_FIELD` | Нет | Имя поля логина в JSON body | `client_id` |
+| `OPENAPI_OAUTH2_SECRET_FIELD` | Нет | Имя поля пароля в JSON body | `client_secret` |
+| `OPENAPI_OAUTH2_GRANT_TYPE` | Нет | Значение grant_type (пустая строка = не включать) | `client_credentials` |
+| `OPENAPI_OAUTH2_TOKEN_IN` | Нет | Куда инжектировать токен: `header` или `query` | `header` |
+| `OPENAPI_OAUTH2_TOKEN_PARAM` | Нет | Имя query param при `TOKEN_IN=query` | `access_token` |
+
+*\* Обязательны при `OPENAPI_AUTH_TYPE=oauth2` или `oauth2_client_credentials`*
+
+**Фильтрация:**
+
+| Переменная | Обяз. | Описание |
+|---|---|---|
 | `OPENAPI_INCLUDE_TAGS` | Нет | Фильтр по тегам (через запятую) |
 | `OPENAPI_INCLUDE_PATHS` | Нет | Фильтр по path-префиксам |
 | `OPENAPI_INCLUDE_OPS` | Нет | Фильтр по operationId |
 | `OPENAPI_EXCLUDE_OPS` | Нет | Исключить по operationId |
-| `OPENAPI_MAX_TOOLS` | Нет | Лимит инструментов (default: 50) |
-| `OPENAPI_TIMEOUT` | Нет | HTTP timeout (default: `30s`) |
-| `OPENAPI_EXTRA_HEADERS` | Нет | Доп. заголовки `Key:Value,Key2:Value2` |
-
-*\* Обязательны при `OPENAPI_AUTH_TYPE=oauth2`*
 
 #### OAuth2 (client credentials flow)
 
-Для API с динамической авторизацией (api_key + api_secret → access_token + refresh_token):
+Для API с динамической авторизацией. MCP-сервер автоматически получает токен при старте, обновляет при истечении и инжектирует в каждый запрос — Claude не тратит ходы на аутентификацию.
+
+**Стандартный OAuth2** (token в Authorization: Bearer):
 
 ```yaml
 mcp_servers:
@@ -651,19 +676,53 @@ mcp_servers:
     env:
       OPENAPI_SPEC_PATH: specs/my-api.yaml
       OPENAPI_AUTH_TYPE: oauth2
-      OPENAPI_AUTH_ENDPOINT: https://api.example.com/auth/token
-      OPENAPI_REFRESH_ENDPOINT: https://api.example.com/auth/refresh
-      OPENAPI_CLIENT_ID: ${MY_API_KEY}
-      OPENAPI_CLIENT_SECRET: ${MY_API_SECRET}
+      OPENAPI_OAUTH2_TOKEN_URL: https://api.example.com/auth/token
+      OPENAPI_OAUTH2_CLIENT_ID: ${MY_API_KEY}
+      OPENAPI_OAUTH2_CLIENT_SECRET: ${MY_API_SECRET}
+      OPENAPI_OAUTH2_REFRESH_URL: https://api.example.com/auth/refresh
+```
+
+**Нестандартный OAuth2** (Yeastar PBX: username/password body, token в query param):
+
+```yaml
+mcp_servers:
+  - name: yeastar-api
+    command: ./bin/mcp-openapi
+    env:
+      OPENAPI_SPEC_PATH: specs/yeastar-pseries.yaml
+      OPENAPI_BASE_URL: ${YEASTAR_BASE_URL}/openapi/v1.0
+      OPENAPI_AUTH_TYPE: oauth2_client_credentials
+      OPENAPI_OAUTH2_TOKEN_URL: ${YEASTAR_BASE_URL}/openapi/v1.0/get_token
+      OPENAPI_OAUTH2_CLIENT_ID: ${YEASTAR_CLIENT_ID}
+      OPENAPI_OAUTH2_CLIENT_SECRET: ${YEASTAR_CLIENT_PASSWORD}
+      OPENAPI_OAUTH2_ID_FIELD: username
+      OPENAPI_OAUTH2_SECRET_FIELD: password
+      OPENAPI_OAUTH2_GRANT_TYPE: ""
+      OPENAPI_OAUTH2_TOKEN_IN: query
+      OPENAPI_OAUTH2_TOKEN_PARAM: access_token
+      OPENAPI_TLS_INSECURE: "true"
+      OPENAPI_EXTRA_HEADERS: "User-Agent:OpenAPI"
 ```
 
 Логика работы:
-1. При старте — POST на `AUTH_ENDPOINT` с `client_id` + `client_secret` → получение `access_token` + `refresh_token`
+1. При старте — POST на `TOKEN_URL` с настраиваемыми полями body → получение `access_token`
 2. Проактивный refresh — если токен истекает через < 30 сек, обновляет заранее
 3. Retry на 401 — автоматический refresh + повтор запроса
 4. Fallback — если refresh не удался, полная повторная авторизация
+5. Token injection — `header` (Authorization: Bearer) или `query` (?param=token) в зависимости от `TOKEN_IN`
 
-Если `OPENAPI_REFRESH_ENDPOINT` не задан — при необходимости refresh используется полная re-авторизация через `AUTH_ENDPOINT`.
+**Важно:** при использовании OAuth2 аутентификация прозрачна для Claude — не нужно включать auth-эндпоинты в OpenAPI спеку и передавать токены в промпте.
+
+#### Встроенный инструмент download_file
+
+Каждый mcp-openapi сервер предоставляет встроенный инструмент `download_file` для скачивания бинарных файлов (аудио, изображения и т.д.):
+
+| Параметр | Описание |
+|---|---|
+| `url` | Полный URL или относительный путь (автоматически дополняется base URL) |
+| `path` | Локальный путь для сохранения |
+
+Auth и extra headers применяются автоматически. Родительские директории создаются при необходимости. Имя инструмента: `mcp__{server_name}__download_file`.
 
 #### Именование инструментов
 

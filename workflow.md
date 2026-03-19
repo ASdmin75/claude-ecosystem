@@ -852,6 +852,63 @@ server.ServeStdio(s)
 - Типобезопасное извлечение аргументов: `req.RequireString()`, `req.GetInt()`, `req.BindArguments()`
 - Готовность к будущим MCP features (Resources, Prompts, Middleware)
 
+### 2026-03-19 — mcp-openapi: OAuth2 с настраиваемыми полями, download_file, Yeastar интеграция, SSE fix
+
+**Исправление SSE стриминга (500 на /api/v1/events и /executions/{id}/stream)**
+- Баг: `requestLogger` middleware оборачивал `http.ResponseWriter` в `statusWriter`, который не реализовывал `http.Flusher` → SSE handlers всегда возвращали 500 "streaming not supported"
+- Фикс: добавлен метод `Flush()` к `statusWriter` (`internal/api/router.go`) — делегирует вызов оригинальному `ResponseWriter`
+
+**mcp-openapi: настраиваемый OAuth2 для нестандартных API**
+
+Расширен OAuth2 flow для поддержки API с нестандартной авторизацией (например, Yeastar PBX: token в query param, username/password вместо client_id/client_secret):
+
+| Новая переменная | Описание | Default |
+|---|---|---|
+| `OPENAPI_OAUTH2_TOKEN_URL` | URL получения токена (заменяет `OPENAPI_AUTH_ENDPOINT`) | — |
+| `OPENAPI_OAUTH2_CLIENT_ID` | Логин (заменяет `OPENAPI_CLIENT_ID`) | — |
+| `OPENAPI_OAUTH2_CLIENT_SECRET` | Пароль (заменяет `OPENAPI_CLIENT_SECRET`) | — |
+| `OPENAPI_OAUTH2_REFRESH_URL` | URL refresh токена | — |
+| `OPENAPI_OAUTH2_ID_FIELD` | Имя поля в JSON body для логина | `client_id` |
+| `OPENAPI_OAUTH2_SECRET_FIELD` | Имя поля в JSON body для пароля | `client_secret` |
+| `OPENAPI_OAUTH2_GRANT_TYPE` | Значение grant_type (пустая строка = не включать) | `client_credentials` |
+| `OPENAPI_OAUTH2_TOKEN_IN` | Куда инжектировать токен: `header` или `query` | `header` |
+| `OPENAPI_OAUTH2_TOKEN_PARAM` | Имя query param при `TOKEN_IN=query` | `access_token` |
+
+- Auth type `oauth2_client_credentials` — alias для `oauth2` с теми же env vars
+- Парсинг Yeastar-формата expiry: `access_token_expire_time` (в дополнение к `expires_in`)
+- 401 retry упрощён: проверяет наличие `tokenManager` вместо `authType == "oauth2"`
+- Обратная совместимость: старые env vars (`OPENAPI_AUTH_ENDPOINT`, `OPENAPI_CLIENT_ID`, `OPENAPI_CLIENT_SECRET`) работают как fallback
+
+**mcp-openapi: TLS insecure mode**
+- Новая переменная `OPENAPI_TLS_INSECURE=true` — отключает проверку TLS-сертификата (самоподписанные сертификаты)
+- `crypto/tls` import, `http.Transport` с `InsecureSkipVerify`
+
+**mcp-openapi: встроенный инструмент `download_file`**
+- Новый tool `download_file` — скачивает файл по URL и сохраняет на диск (для бинарных файлов: аудио, изображения и т.д.)
+- Параметры: `url` (полный или относительный — автоматически дополняется base URL), `path` (локальный путь)
+- Автоматически применяет auth (Bearer/query token) и extra headers
+- Создаёт родительские директории при необходимости
+- Для относительных URL: strip `/openapi/...` suffix из base URL (для download URLs PBX)
+
+**OpenAPI спецификация Yeastar P-Series (`specs/yeastar-pseries.yaml`)**
+- 4 эндпоинта (get_token убран — auth автоматический): `searchCDR`, `listCDR`, `listRecordings`, `downloadRecording`
+- Полные response schemas: CDRRecord (25+ полей), RecordingRecord, RecordingDownloadResponse
+- Параметры access_token убраны из спеки — MCP сервер добавляет автоматически
+- Данные из официальной документации Yeastar P-Series Cloud Edition (help.yeastar.com)
+
+**Пайплайн daily-sip-processing**
+- Новый домен `sip-calls`: таблицы `recordings` и `daily_reports`
+- 4 задачи: `fetch-sip-recordings` (скачивание WAV), `transcribe-sip-recordings`, `summarize-sip-transcriptions`, `deliver-sip-report`
+- Промпт `fetch-sip-recordings`: auth автоматический, `listrecordings` + `downloadrecording` + `download_file`
+- `allowed_tools` для всех Yeastar API и filesystem/database инструментов
+
+**Wizard: документация OAuth2 и download_file**
+- `internal/wizard/prompt.go`: полная документация по OAuth2 env vars (core, simple auth, oauth2, filtering)
+- Два примера mcp_servers в промпте: простой bearer и OAuth2 Yeastar-style
+- `download_file` описан в секции openapi tool names
+- Отображение `OPENAPI_AUTH_TYPE`, `OPENAPI_OAUTH2_TOKEN_IN`, `OPENAPI_TLS_INSECURE` в секции "Available MCP Servers"
+- `internal/wizard/envspec.go`: все 22 env vars для mcp-openapi в реестре
+
 ---
 
 ## Бэклог

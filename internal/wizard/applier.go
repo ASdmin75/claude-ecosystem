@@ -2,6 +2,9 @@ package wizard
 
 import (
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/domain"
@@ -173,6 +176,9 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 		return nil, fmt.Errorf("saving config: %w", err)
 	}
 
+	// 7. Generate SETUP.md (non-fatal)
+	a.generateSetupDoc(plan, result)
+
 	return result, nil
 }
 
@@ -261,6 +267,28 @@ func (a *Applier) validate(plan *Plan) error {
 	}
 
 	return nil
+}
+
+// generateSetupDoc creates SETUP.md files from the plan. Non-fatal on failure.
+func (a *Applier) generateSetupDoc(plan *Plan, result *ApplyResult) {
+	content := GenerateSetupDoc(plan, a.cfg)
+	paths := resolveAllSetupPaths(plan)
+
+	for _, p := range paths {
+		dir := filepath.Dir(p)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("failed to create directory for SETUP.md: %v", err))
+			continue
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("failed to write %s: %v", p, err))
+			continue
+		}
+		slog.Info("wizard: wrote SETUP.md", "path", p)
+		if result.SetupDocPath == "" {
+			result.SetupDocPath = p
+		}
+	}
 }
 
 // rollback executes rollback functions in reverse order.

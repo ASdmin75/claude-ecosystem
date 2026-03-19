@@ -16,6 +16,7 @@ type Plan struct {
 	Agents      []AgentPlan     `json:"agents,omitempty"`
 	Tasks       []TaskPlan      `json:"tasks,omitempty"`
 	Pipelines   []PipelinePlan  `json:"pipelines,omitempty"`
+	SetupNotes  string         `json:"setup_notes,omitempty"`
 	Status      string         `json:"status"` // "draft", "applied", "discarded"
 }
 
@@ -84,8 +85,10 @@ type PipelinePlan struct {
 type ApplyResult struct {
 	MCPServersCreated []string `json:"mcp_servers_created,omitempty"`
 	DomainsCreated    []string `json:"domains_created,omitempty"`
-	AgentsCreated    []string `json:"agents_created,omitempty"`
-	TasksCreated     []string `json:"tasks_created,omitempty"`
-	PipelinesCreated []string `json:"pipelines_created,omitempty"`
-	Errors           []string `json:"errors,omitempty"`
+	AgentsCreated     []string `json:"agents_created,omitempty"`
+	TasksCreated      []string `json:"tasks_created,omitempty"`
+	PipelinesCreated  []string `json:"pipelines_created,omitempty"`
+	SetupDocPath      string   `json:"setup_doc_path,omitempty"`
+	Warnings          []string `json:"warnings,omitempty"`
+	Errors            []string `json:"errors,omitempty"`
 }

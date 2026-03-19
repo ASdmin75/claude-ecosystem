@@ -1,0 +1,759 @@
+openapi: 3.0.3
+info:
+  title: Yeastar P-Series PBX API
+  description: |
+    API for Yeastar P-Series PBX (Cloud Edition / Appliance Edition).
+    Covers authentication, CDR retrieval, and call recording management.
+
+    **Authentication flow:**
+    1. POST /get_token with Client ID + Client Secret to obtain access_token
+    2. Pass access_token as query parameter on all subsequent requests
+    3. Refresh token before 30-minute expiry using /refresh_token
+
+    **Required headers:** Every request MUST include `User-Agent: OpenAPI`.
+
+    **API path versions:**
+    - `openapi/v1.0` — default for all endpoints
+    - `openapi/v2.0` — only for Call Report interfaces with data from firmware v84.21.0.117+
+  version: 1.0.0
+  contact:
+    name: Yeastar
+    url: https://help.yeastar.com/en/p-series-cloud-edition/developer-guide/about-this-guide.html
+
+servers:
+  - url: https://pbx.example.yeastarcloud.com/openapi/v1.0
+    description: Yeastar P-Series PBX (overridden by OPENAPI_BASE_URL at runtime)
+
+security:
+  - accessToken: []
+
+paths:
+  /cdr/search:
+    get:
+      operationId: searchCDR
+      summary: Search call detail records
+      description: |
+        Search CDR records filtered by date range, caller/callee, status, and more.
+        Time parameters accept ISO 8601 format (YYYY/MM/DD HH:mm:ss) or Unix
+        timestamps in seconds. Results are paginated (max 10,000 per page).
+      tags:
+        - CDR
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+          description: Page number (starts at 1)
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10000
+            maximum: 10000
+          description: Number of records per page (max 10,000)
+        - name: start_time
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Filter start time. Format: YYYY/MM/DD HH:mm:ss or Unix timestamp in seconds"
+          example: "2025/12/19 10:40:00"
+        - name: end_time
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Filter end time. Format: YYYY/MM/DD HH:mm:ss or Unix timestamp in seconds"
+          example: "2025/12/19 10:45:00"
+        - name: call_from
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by caller phone number
+          example: "1001"
+        - name: call_to
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by callee phone number
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - ANSWERED
+              - NO ANSWER
+              - BUSY
+              - FAILED
+              - VOICEMAIL
+          description: Filter by call disposition status
+        - name: did
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Filter by DID number. Format: {did_number}:{trunk_name}"
+        - name: pin_code
+          in: query
+          required: false
+          schema:
+            type: string
+          description: PIN code for outbound call routing
+        - name: extension_group
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Extension group ID to filter calls by group members
+        - name: disposition_code_list
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated disposition code IDs
+        - name: call_note_remark
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by call note remark text
+        - name: sort_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - id
+              - uid
+              - time
+              - duration
+              - ring_duration
+              - talk_duration
+              - disposition
+              - src_trunk
+              - dst_trunk
+              - call_type
+              - did_number
+              - dod_number
+              - src_addr
+          description: Field to sort results by
+        - name: order_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+          description: Sort order (ascending or descending)
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - new
+              - legacy
+          description: "CDR data source: 'new' for v84.21.0.117+, 'legacy' for v84.21.0.66 and earlier"
+      responses:
+        "200":
+          description: CDR search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CDRSearchResponse"
+              example:
+                errcode: 0
+                errmsg: SUCCESS
+                total_number: 1
+                data:
+                  - time: "2025/12/19 10:40:07"
+                    call_from: "Phillip Huff<1001>"
+                    call_to: "Call Flow aaa<6901>"
+                    timestamp: 1766112007
+                    uid: "2025121910400711733"
+                    src_addr: "192.168.28.44:5062"
+                    duration: 10
+                    talk_duration: 10
+                    disposition: ANSWERED
+                    call_type: Internal
+                    call_from_number: "1001"
+                    call_from_name: Phillip Huff
+                    call_to_number: "6901"
+                    call_to_name: aaa
+                    call_id: "1766112007.0"
+                    call_note: null
+                    new_id: "66CD1EAE-AF80033C"
+
+  /cdr/list:
+    get:
+      operationId: listCDR
+      summary: Query CDR list
+      description: |
+        Retrieve the full CDR list with optional pagination and sorting.
+        Unlike /cdr/search, this endpoint does not support date range or
+        caller/callee filters. Use /cdr/search for filtered queries.
+      tags:
+        - CDR
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+          description: Page number (starts at 1)
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10000
+            maximum: 10000
+          description: Number of records per page (max 10,000)
+        - name: sort_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - id
+              - uid
+              - time
+              - duration
+              - ring_duration
+              - talk_duration
+              - disposition
+              - src_trunk
+              - dst_trunk
+              - call_type
+              - did_number
+              - dod_number
+              - src_addr
+          description: Field to sort results by
+        - name: order_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+          description: Sort order
+        - name: pin_code
+          in: query
+          required: false
+          schema:
+            type: string
+          description: PIN code for outbound call routing
+        - name: disposition_code_list
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated disposition code IDs
+        - name: call_note_remark
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by call note remark text
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - new
+              - legacy
+          description: "CDR data source: 'new' for v84.21.0.117+, 'legacy' for v84.21.0.66 and earlier"
+      responses:
+        "200":
+          description: CDR list results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CDRSearchResponse"
+
+  /recording/list:
+    get:
+      operationId: listRecordings
+      summary: Query recording file list
+      description: |
+        Retrieve a paginated list of call recording files with metadata
+        including file size, duration, caller/callee info, and archive status.
+      tags:
+        - Recordings
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+          description: Page number
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10000
+            maximum: 10000
+          description: Number of records per page
+        - name: sort_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - id
+              - time
+          description: Field to sort results by
+        - name: order_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+          description: Sort order
+      responses:
+        "200":
+          description: Recording list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordingListResponse"
+              example:
+                errcode: 0
+                errmsg: SUCCESS
+                total_number: 184
+                data:
+                  - id: 614
+                    time: "01/12/2022 17:36:24"
+                    uid: "2022011217362446627"
+                    call_from: "Evelyn<5566>"
+                    call_to: "Dave Harris<5556>"
+                    duration: 250
+                    size: 825588
+                    call_type: Internal
+                    file: "20220112173629-1641980184.14-5566-5556-Internal.wav"
+                    call_from_number: "5566"
+                    call_from_name: Evelyn
+                    call_to_number: "5556"
+                    call_to_name: Dave Harris
+
+  /recording/download:
+    get:
+      operationId: downloadRecording
+      summary: Download a recording file
+      description: |
+        Get the download URL for a specific call recording file.
+        Provide either `id` or `file` parameter (at least one is required).
+        The returned `download_resource_url` is valid for 30 minutes.
+        Construct the final download URL as: {base_url}{download_resource_url}?access_token={token}
+
+        Note: If the recording download format is set to .mp3 on the PBX,
+        only one concurrent download request is supported.
+      tags:
+        - Recordings
+      parameters:
+        - name: id
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Unique recording ID (from recording/list or cdr/search). Either id or file is required.
+          example: 1727
+        - name: file
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Recording filename. Either id or file is required.
+          example: "20220412173331-1649756009.12-2002-2005-Internal.wav"
+      responses:
+        "200":
+          description: Download URL for the recording file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordingDownloadResponse"
+              example:
+                errcode: 0
+                errmsg: SUCCESS
+                file: "20220412173331-1649756009.12-2002-2005-Internal.wav"
+                download_resource_url: "/api/download/Recording-X.7.0.6-1-download-20220412175901-M8zB66xYUNTNMr2D.wav"
+
+components:
+  securitySchemes:
+    accessToken:
+      type: apiKey
+      in: query
+      name: access_token
+      description: |
+        Access token obtained via POST /get_token.
+        Must be included as a query parameter on all requests except /get_token and /refresh_token.
+
+  schemas:
+    TokenResponse:
+      type: object
+      properties:
+        errcode:
+          type: integer
+          description: "Error code. 0 = success, non-zero = failure"
+          example: 0
+        errmsg:
+          type: string
+          description: Result message
+          enum:
+            - SUCCESS
+            - FAILURE
+          example: SUCCESS
+        access_token:
+          type: string
+          description: Access token for authenticating API calls
+          example: EXZMpZAO86mbrKm6rFtgeb3rfcpC9uqS
+        access_token_expire_time:
+          type: integer
+          description: Access token lifetime in seconds (default 1800)
+          example: 1800
+        refresh_token:
+          type: string
+          description: Token used to refresh access token without re-authenticating
+          example: SCduGecwbG9jIusiS8FxFUVn3kf0Q9R8
+        refresh_token_expire_time:
+          type: integer
+          description: Refresh token lifetime in seconds (default 86400)
+          example: 86400
+
+    CDRSearchResponse:
+      type: object
+      properties:
+        errcode:
+          type: integer
+          description: "Error code. 0 = success"
+          example: 0
+        errmsg:
+          type: string
+          example: SUCCESS
+        total_number:
+          type: integer
+          description: Total number of matching CDR records
+          example: 1
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/CDRRecord"
+
+    CDRRecord:
+      type: object
+      description: Call Detail Record
+      properties:
+        id:
+          type: integer
+          description: Record sequence number (legacy CDRs only)
+        new_id:
+          type: string
+          description: Primary key ID (new CDRs from v84.21.0.117+)
+          example: "66CD1EAE-AF80033C"
+        time:
+          type: string
+          description: Call timestamp
+          example: "2025/12/19 10:40:07"
+        timestamp:
+          type: integer
+          description: Unix timestamp of the call
+          example: 1766112007
+        call_from:
+          type: string
+          description: "Caller info in format: Name<Number>"
+          example: "Phillip Huff<1001>"
+        call_to:
+          type: string
+          description: "Callee info in format: Name<Number>"
+          example: "Call Flow aaa<6901>"
+        call_from_number:
+          type: string
+          description: Caller phone number
+          example: "1001"
+        call_from_name:
+          type: string
+          description: Caller display name
+          example: Phillip Huff
+        call_to_number:
+          type: string
+          description: Callee phone number
+          example: "6901"
+        call_to_name:
+          type: string
+          description: Callee display name
+          example: aaa
+        uid:
+          type: string
+          description: Unique CDR identifier
+          example: "2025121910400711733"
+        call_id:
+          type: string
+          description: Unique call identifier
+          example: "1766112007.0"
+        duration:
+          type: integer
+          description: Total call duration in seconds
+          example: 10
+        ring_duration:
+          type: integer
+          description: Ring time before answer in seconds
+        talk_duration:
+          type: integer
+          description: Conversation duration in seconds
+          example: 10
+        disposition:
+          type: string
+          description: Call disposition status
+          enum:
+            - ANSWERED
+            - NO ANSWER
+            - BUSY
+            - FAILED
+            - VOICEMAIL
+          example: ANSWERED
+        call_type:
+          type: string
+          description: Call direction type
+          enum:
+            - Inbound
+            - Outbound
+            - Internal
+          example: Internal
+        src_addr:
+          type: string
+          description: Caller device IP address and port
+          example: "192.168.28.44:5062"
+        src_trunk:
+          type: string
+          description: Inbound trunk name
+        dst_trunk:
+          type: string
+          description: Outbound trunk name
+        did_number:
+          type: string
+          description: DID number dialed by the caller
+        dod_number:
+          type: string
+          description: DOD number displayed to the callee
+        pin_code:
+          type: string
+          description: PIN code used for outbound routing
+        record_file:
+          type: string
+          description: Associated recording filename
+        reason:
+          type: string
+          description: Call termination reason (legacy CDRs only)
+        call_note:
+          $ref: "#/components/schemas/CallNote"
+        call_note_id:
+          type: string
+          description: Unique call note ID
+        enb_call_note:
+          type: integer
+          description: "Call note edit permission. 0 = no, non-zero = yes"
+        did:
+          type: string
+          description: DID number and associated trunk name
+        did_name:
+          type: string
+          description: Associated DID display name
+        shaken_attestation:
+          type: string
+          description: STIR/SHAKEN signature verification result
+          enum:
+            - A
+            - B
+            - C
+            - Invalid
+            - Unknown
+            - N/A
+
+    CallNote:
+      type: object
+      nullable: true
+      description: Call note attached to a CDR record
+      properties:
+        id:
+          type: string
+          description: Unique call note ID
+        group_id:
+          type: string
+          description: Call note group ID
+        disposition_code_list:
+          type: array
+          items:
+            $ref: "#/components/schemas/DispositionCode"
+        remark:
+          type: string
+          description: Call note remarks text
+        agent_name:
+          type: string
+          description: User who added the note
+        registration_time:
+          type: integer
+          format: int64
+          description: Unix timestamp when note was added
+        update_entry:
+          type: string
+          description: Context where note was modified
+          enum:
+            - in_call
+            - cdr
+            - new_cdr
+            - queue_agent
+
+    DispositionCode:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: Disposition code ID
+        name:
+          type: string
+          description: Disposition code label
+        description:
+          type: string
+          description: Disposition code description
+
+    RecordingListResponse:
+      type: object
+      properties:
+        errcode:
+          type: integer
+          description: "Error code. 0 = success"
+          example: 0
+        errmsg:
+          type: string
+          example: SUCCESS
+        total_number:
+          type: integer
+          description: Total number of recording files
+          example: 184
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecordingRecord"
+
+    RecordingRecord:
+      type: object
+      description: Call recording file metadata
+      properties:
+        id:
+          type: integer
+          description: Unique recording ID
+          example: 614
+        time:
+          type: string
+          description: Call timestamp
+          example: "01/12/2022 17:36:24"
+        uid:
+          type: string
+          description: Associated CDR unique identifier
+          example: "2022011217362446627"
+        call_from:
+          type: string
+          description: "Caller info in format: Name<Number>"
+          example: "Evelyn<5566>"
+        call_to:
+          type: string
+          description: "Callee info in format: Name<Number>"
+          example: "Dave Harris<5556>"
+        call_from_number:
+          type: string
+          description: Caller phone number
+          example: "5566"
+        call_from_name:
+          type: string
+          description: Caller display name
+          example: Evelyn
+        call_to_number:
+          type: string
+          description: Callee phone number
+          example: "5556"
+        call_to_name:
+          type: string
+          description: Callee display name
+          example: Dave Harris
+        duration:
+          type: integer
+          description: Call duration in seconds
+          example: 250
+        size:
+          type: integer
+          description: Recording file size in bytes
+          example: 825588
+        call_type:
+          type: string
+          description: Call direction type
+          enum:
+            - Inbound
+            - Outbound
+            - Internal
+          example: Internal
+        file:
+          type: string
+          description: Recording filename
+          example: "20220112173629-1641980184.14-5566-5556-Internal.wav"
+        archive_status:
+          type: string
+          description: Archive status on external server
+          enum:
+            - success
+            - failed
+            - retry
+            - jump_over
+            - ""
+        archive_path:
+          type: string
+          description: File path on the archive server
+        archive_type:
+          type: string
+          description: Archive server type (e.g. sharepoint)
+        file_path:
+          type: string
+          description: Local storage file path on PBX
+
+    RecordingDownloadResponse:
+      type: object
+      properties:
+        errcode:
+          type: integer
+          description: "Error code. 0 = success"
+          example: 0
+        errmsg:
+          type: string
+          example: SUCCESS
+        file:
+          type: string
+          description: Recording filename
+          example: "20220412173331-1649756009.12-2002-2005-Internal.wav"
+        download_resource_url:
+          type: string
+          description: "Relative download URL, valid for 30 minutes. Build full URL as: {base_url}{download_resource_url}?access_token={token}"
+          example: "/api/download/Recording-X.7.0.6-1-download-20220412175901-M8zB66xYUNTNMr2D.wav"
+
+    ErrorResponse:
+      type: object
+      properties:
+        errcode:
+          type: integer
+          description: Non-zero error code
+        errmsg:
+          type: string
+          description: Error message
+          example: FAILURE
