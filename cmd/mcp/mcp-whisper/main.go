@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -197,34 +199,70 @@ func handleBatchTranscribe(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		Error   string `json:"error,omitempty"`
 	}
 
-	results := make([]fileResult, 0, len(filesRaw))
-	success, skipped, failed := 0, 0, 0
+	// Determine concurrency: WHISPER_WORKERS env or default 4.
+	workers := 4
+	if w, err := strconv.Atoi(os.Getenv("WHISPER_WORKERS")); err == nil && w > 0 {
+		workers = w
+	}
 
-	for _, item := range filesRaw {
+	// Pre-filter: separate skipped from work items, preserving original order.
+	type workItem struct {
+		index int
+		path  string
+	}
+	results := make([]fileResult, len(filesRaw))
+	var toProcess []workItem
+	skipped := 0
+
+	for i, item := range filesRaw {
 		path, _ := item.(string)
 		if path == "" {
-			results = append(results, fileResult{Status: "error", Error: "empty path"})
-			failed++
+			results[i] = fileResult{Status: "error", Error: "empty path"}
 			continue
 		}
-
 		// Skip files that already have an output file on disk (idempotent).
 		if outputFormat != "txt" {
 			outFile := path + "." + outputFormat
 			if _, err := os.Stat(outFile); err == nil {
-				results = append(results, fileResult{Path: path, SRTPath: outFile, Status: "skipped"})
+				results[i] = fileResult{Path: path, SRTPath: outFile, Status: "skipped"}
 				skipped++
 				continue
 			}
 		}
+		toProcess = append(toProcess, workItem{index: i, path: path})
+	}
 
-		r := transcribeOne(ctx, path, language, outputFormat, modelPath, false)
-		if r.Err != nil {
-			results = append(results, fileResult{Path: path, Status: "error", Error: r.Err.Error()})
-			failed++
-		} else {
-			results = append(results, fileResult{Path: path, SRTPath: r.SRTPath, Status: "ok"})
+	// Process files in parallel using a worker pool.
+	jobs := make(chan workItem, len(toProcess))
+	var wg sync.WaitGroup
+
+	for range min(workers, len(toProcess)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				r := transcribeOne(ctx, job.path, language, outputFormat, modelPath, false)
+				if r.Err != nil {
+					results[job.index] = fileResult{Path: job.path, Status: "error", Error: r.Err.Error()}
+				} else {
+					results[job.index] = fileResult{Path: job.path, SRTPath: r.SRTPath, Status: "ok"}
+				}
+			}
+		}()
+	}
+	for _, item := range toProcess {
+		jobs <- item
+	}
+	close(jobs)
+	wg.Wait()
+
+	success, failed := 0, 0
+	for _, r := range results {
+		switch r.Status {
+		case "ok":
 			success++
+		case "error":
+			failed++
 		}
 	}
 

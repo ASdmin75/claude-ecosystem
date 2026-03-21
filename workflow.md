@@ -953,6 +953,22 @@ server.ServeStdio(s)
 - Refactoring mcp-openapi: `downloadOneFile()` — общая функция для `download_file` и `batch_download`
 - Refactoring mcp-whisper: `transcribeOne()` — общая функция для `transcribe_audio` и `batch_transcribe`
 
+### 2026-03-21 — Параллельная транскрипция в batch_transcribe, увеличение таймаута
+
+**Параллельный worker pool в mcp-whisper**
+- `batch_transcribe` переписан с последовательного цикла на параллельный worker pool (`sync.WaitGroup` + каналы)
+- Количество воркеров настраивается через `WHISPER_WORKERS` (по умолчанию 4)
+- Порядок результатов сохраняется (индексированная запись в слайс)
+- Пре-фильтрация (skip уже готовых файлов) выполняется до параллельной фазы
+- Причина: `batch_transcribe` 36 файлов моделью large-v3-turbo на CPU не укладывался в таймаут 180 мин и убивался по `signal: killed`
+
+**Конфигурация whisper для 8-ядерной машины**
+- `WHISPER_THREADS: "4"` (было "8"), `WHISPER_WORKERS: "2"` — 2 файла параллельно × 4 потока = 8 = все ядра CPU
+- Ранее 1 файл × 8 потоков = 8, теперь пропускная способность удвоена
+
+**Таймаут transcribe-sip-recordings**
+- Увеличен с `180m` до `360m` как запас на случай большого количества файлов
+
 ---
 
 ## Бэклог

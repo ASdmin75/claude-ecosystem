@@ -408,13 +408,14 @@ tasks:
         3. If no recordings found for yesterday, output "0 recordings found for yesterday" and stop.
         4. Ensure the local directory $DOMAIN_DATA_DIR/recordings/ exists (create if needed using filesystem tools).
         5. Query existing call_ids: SELECT call_id FROM recordings; — build a set of known UIDs to skip duplicates.
-        6. For each NEW recording (uid not in known set), call downloadrecording to get download_resource_url. Collect all {url, path} pairs.
-        7. Use batch_download tool with the full array of {url, path} pairs to download ALL files in one call. This is critical for efficiency.
-        8. Parse batch_download results. For each successfully downloaded file (marked "OK"), collect its metadata into a rows array.
-        9. Use batch_insert tool to insert all successful records into the "recordings" table at once:
-           table: "recordings"
-           rows: [{call_id, filename, caller, callee, duration, call_date, download_path}, ...]
-        10. Output: total recordings found in API for yesterday, new downloaded, skipped as duplicates, failed downloads.
+        6. Also list existing files in $DOMAIN_DATA_DIR/recordings/ to avoid re-downloading files already on disk (even if not yet in DB).
+        7. For each NEW recording (uid not in known set AND file not already on disk), call downloadrecording to get download_resource_url. Collect all {url, path} pairs.
+        8. Use batch_download tool with the full array of {url, path} pairs to download ALL files in one call. This is critical for efficiency.
+        9. Parse batch_download results. Skip any FAIL entries (do NOT insert them into DB). For each successfully downloaded file (marked "OK"), collect its metadata into a rows array.
+        10. Use batch_insert tool to insert all successful records into the "recordings" table at once:
+            table: "recordings"
+            rows: [{call_id, filename, caller, callee, duration, call_date, download_path}, ...]
+        11. Output: total recordings found in API for yesterday, new downloaded, skipped as duplicates, skipped as already on disk, failed downloads.
       work_dir: .
       tags:
         - sip
@@ -465,7 +466,7 @@ tasks:
         - whisper
         - transcription
       model: haiku
-      timeout: 180m
+      timeout: 360m
       max_turns: 30
       mcp_servers:
         - whisper
@@ -652,7 +653,8 @@ mcp_servers:
         WHISPER_BIN: ./data/whisper/bin/whisper-cli
         WHISPER_MODEL: ./data/whisper/models/ggml-large-v3-turbo.bin
         WHISPER_MODELS_DIR: ./data/whisper/models
-        WHISPER_THREADS: "8"
+        WHISPER_THREADS: "4"
+        WHISPER_WORKERS: "2"
     - name: word
       command: ./bin/mcp-word
     - name: yeastar-api

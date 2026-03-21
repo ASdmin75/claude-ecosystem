@@ -988,6 +988,15 @@ func downloadOneFile(ctx context.Context, rawURL, destPath string) (int64, error
 		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Detect API error responses disguised as successful downloads.
+	// Some APIs (e.g. Yeastar) return HTTP 200 with JSON error body
+	// instead of the expected binary content.
+	ct := resp.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "application/json") {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return 0, fmt.Errorf("expected binary file but got JSON response: %s", string(body))
+	}
+
 	dir := destPath[:strings.LastIndex(destPath, "/")]
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
