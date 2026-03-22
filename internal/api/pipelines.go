@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
+	"github.com/asdmin/claude-ecosystem/internal/depcheck"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/store"
 	"github.com/asdmin/claude-ecosystem/internal/task"
@@ -232,32 +233,97 @@ func (s *Server) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.findPipeline(name))
 }
 
-// handleDeletePipeline removes a pipeline from the config and persists to disk.
+// handleDeletePipeline removes a pipeline with cascade logic and backup.
 // DELETE /api/v1/pipelines/{name}
 func (s *Server) handleDeletePipeline(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-
-	var found bool
-	for i := range s.cfg.Pipelines {
-		if s.cfg.Pipelines[i].Name == name {
-			s.cfg.Pipelines = append(s.cfg.Pipelines[:i], s.cfg.Pipelines[i+1:]...)
-			found = true
-			break
-		}
-	}
-	if !found {
+	if s.findPipeline(name) == nil {
 		writeError(w, http.StatusNotFound, "pipeline not found: "+name)
 		return
 	}
 
+	if !s.guard.TryAcquire("config:write") {
+		writeError(w, http.StatusConflict, "another config modification is in progress")
+		return
+	}
+	defer s.guard.Release("config:write")
+
+	analysis := depcheck.AnalyzePipelineDelete(s.cfg, name)
+
+	// Backup config + cascade agent files.
+	configSnap, err := s.readConfigSnap()
+	if err != nil {
+		s.logger.Error("failed to read config for backup", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create backup")
+		return
+	}
+
+	parentEntry, err := s.backupMgr.CreateBackup(r.Context(), "pipeline", name, "delete", "", configSnap, nil)
+	if err != nil {
+		s.logger.Error("failed to create backup", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create backup: "+err.Error())
+		return
+	}
+
+	deleted := []string{"pipeline:" + name}
+
+	// Process cascade items: delete exclusive tasks and sub-agents.
+	for _, ci := range analysis.CascadeItems {
+		switch ci.Type {
+		case depcheck.EntitySubAgent:
+			// Backup agent .md file.
+			agentPath, pathErr := s.subagentMgr.GetFilePath(ci.Name)
+			if pathErr == nil {
+				files := map[string]string{"agents/" + ci.Name + ".md": agentPath}
+				_, _ = s.backupMgr.CreateBackup(r.Context(), "subagent", ci.Name, "cascade_delete", parentEntry.ID, "", files)
+			}
+			if err := s.subagentMgr.Delete(ci.Name); err != nil {
+				s.logger.Error("failed to cascade delete sub-agent", "name", ci.Name, "error", err)
+			} else {
+				deleted = append(deleted, "subagent:"+ci.Name)
+			}
+		case depcheck.EntityTask:
+			// Create child backup for cascade task.
+			_, _ = s.backupMgr.CreateBackup(r.Context(), "task", ci.Name, "cascade_delete", parentEntry.ID, "", nil)
+			// Remove task from config.
+			for i := range s.cfg.Tasks {
+				if s.cfg.Tasks[i].Name == ci.Name {
+					s.cfg.Tasks = append(s.cfg.Tasks[:i], s.cfg.Tasks[i+1:]...)
+					break
+				}
+			}
+			deleted = append(deleted, "task:"+ci.Name)
+		}
+	}
+
+	// Remove the pipeline itself.
+	for i := range s.cfg.Pipelines {
+		if s.cfg.Pipelines[i].Name == name {
+			s.cfg.Pipelines = append(s.cfg.Pipelines[:i], s.cfg.Pipelines[i+1:]...)
+			break
+		}
+	}
+
+	// Clean domain references.
+	var deletedTaskNames []string
+	for _, ci := range analysis.CascadeItems {
+		if ci.Type == depcheck.EntityTask {
+			deletedTaskNames = append(deletedTaskNames, ci.Name)
+		}
+	}
+	s.cleanDomainRefs(deletedTaskNames, []string{name})
+
 	if err := s.cfg.Save(); err != nil {
-		s.logger.Error("failed to save config", "error", err)
+		s.logger.Error("failed to save config after pipeline delete", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
 		return
 	}
 
-	s.logger.Info("pipeline deleted", "name", name)
-	w.WriteHeader(http.StatusNoContent)
+	s.logger.Info("pipeline deleted", "name", name, "backup_id", parentEntry.ID, "cascade_deleted", len(deleted)-1)
+	writeJSON(w, http.StatusOK, deleteResponse{
+		BackupID: parentEntry.ID,
+		Deleted:  deleted,
+	})
 }
 
 // handleRunPipeline runs a pipeline synchronously.

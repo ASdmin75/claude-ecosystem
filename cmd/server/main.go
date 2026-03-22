@@ -16,6 +16,7 @@ import (
 
 	"github.com/asdmin/claude-ecosystem/internal/api"
 	"github.com/asdmin/claude-ecosystem/internal/auth"
+	"github.com/asdmin/claude-ecosystem/internal/backup"
 	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/domain"
 	"github.com/asdmin/claude-ecosystem/internal/events"
@@ -212,11 +213,18 @@ func main() {
 		}
 	}
 
+	// Initialize backup manager
+	backupMgr, err := backup.New(db.DB(), cfg.Server.DataDir, logger)
+	if err != nil {
+		logger.Error("failed to initialize backup manager", "error", err)
+		os.Exit(1)
+	}
+
 	// Initialize REST API
 	apiServer := api.NewServer(
 		cfg, taskRunner, subagentMgr, mcpMgr, domainMgr,
 		db, db, authMw, pasetoMgr,
-		bus, guard, logger,
+		bus, guard, backupMgr, logger,
 	)
 
 	// Register pipeline schedules (needs apiServer for execution logic)

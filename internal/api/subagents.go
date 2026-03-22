@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/asdmin/claude-ecosystem/internal/depcheck"
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
 )
 
@@ -90,20 +91,51 @@ func (s *Server) handleUpdateSubAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, agent)
 }
 
-// handleDeleteSubAgent deletes a sub-agent by name.
+// handleDeleteSubAgent deletes a sub-agent with dependency checking and backup.
 // DELETE /api/v1/subagents/{name}
 func (s *Server) handleDeleteSubAgent(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	if err := s.subagentMgr.Delete(name); err != nil {
+	if _, err := s.subagentMgr.Get(name); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
+		s.logger.Error("failed to get sub-agent", "name", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to get sub-agent")
+		return
+	}
+
+	// Dependency check.
+	analysis := depcheck.AnalyzeSubAgentDelete(s.cfg, name)
+	if analysis.Blocked {
+		writeJSON(w, http.StatusConflict, analysis)
+		return
+	}
+
+	// Backup the .md file.
+	agentPath, pathErr := s.subagentMgr.GetFilePath(name)
+	var files map[string]string
+	if pathErr == nil {
+		files = map[string]string{"agents/" + name + ".md": agentPath}
+	}
+
+	entry, err := s.backupMgr.CreateBackup(r.Context(), "subagent", name, "delete", "", "", files)
+	if err != nil {
+		s.logger.Error("failed to create backup", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create backup: "+err.Error())
+		return
+	}
+
+	if err := s.subagentMgr.Delete(name); err != nil {
 		s.logger.Error("failed to delete sub-agent", "name", name, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to delete sub-agent")
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	s.logger.Info("sub-agent deleted", "name", name, "backup_id", entry.ID)
+	writeJSON(w, http.StatusOK, deleteResponse{
+		BackupID: entry.ID,
+		Deleted:  []string{"subagent:" + name},
+	})
 }

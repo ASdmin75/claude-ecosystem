@@ -84,6 +84,13 @@ func (m *Manager) initSingle(name string, d config.Domain) error {
 	return nil
 }
 
+// RemoveDomain removes a domain from the in-memory map.
+// The domain's data directory is left on disk as a safety measure.
+func (m *Manager) RemoveDomain(name string) {
+	delete(m.domains, name)
+	m.logger.Info("domain removed from manager", "domain", name)
+}
+
 // GetDomain returns a domain by name.
 func (m *Manager) GetDomain(name string) (config.Domain, bool) {
 	d, ok := m.domains[name]

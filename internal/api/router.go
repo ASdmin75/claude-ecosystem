@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asdmin/claude-ecosystem/internal/auth"
+	"github.com/asdmin/claude-ecosystem/internal/backup"
 	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/domain"
 	"github.com/asdmin/claude-ecosystem/internal/events"
@@ -37,6 +38,7 @@ type Server struct {
 	logger      *slog.Logger
 	cancels     sync.Map // map[executionID]context.CancelFunc
 	guard       *runguard.Guard
+	backupMgr   *backup.Manager
 	wizardGen   *wizard.Generator
 	wizardStore *wizard.PlanStore
 }
@@ -54,6 +56,7 @@ func NewServer(
 	paseto *auth.PASETOManager,
 	bus *events.Bus,
 	guard *runguard.Guard,
+	backupMgr *backup.Manager,
 	logger *slog.Logger,
 ) *Server {
 	s := &Server{
@@ -68,9 +71,10 @@ func NewServer(
 		paseto:      paseto,
 		bus:         bus,
 		guard:       guard,
+		backupMgr:   backupMgr,
 		logger:      logger,
 	}
-	s.wizardGen = wizard.NewGenerator(taskRunner, logger)
+	s.wizardGen = wizard.NewGenerator(taskRunner, subagentMgr, logger)
 	s.wizardStore = wizard.NewPlanStore()
 	s.cleanupStaleExecutions()
 	return s
@@ -118,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/tasks", s.withAuth(s.handleCreateTask))
 	mux.HandleFunc("GET /api/v1/tasks/{name}", s.withAuth(s.handleGetTask))
 	mux.HandleFunc("PUT /api/v1/tasks/{name}", s.withAuth(s.handleUpdateTask))
+	mux.HandleFunc("DELETE /api/v1/tasks/{name}", s.withAuth(s.handleDeleteTask))
 	mux.HandleFunc("POST /api/v1/tasks/{name}/run", s.withAuth(s.handleRunTask))
 	mux.HandleFunc("POST /api/v1/tasks/{name}/run-async", s.withAuth(s.handleRunTaskAsync))
 	mux.HandleFunc("GET /api/v1/tasks/{name}/stream", s.withAuth(s.handleTaskStream))
@@ -159,6 +164,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/wizard/plans/{id}", s.withAuth(s.handleWizardUpdatePlan))
 	mux.HandleFunc("POST /api/v1/wizard/plans/{id}/apply", s.withAuth(s.handleWizardApply))
 	mux.HandleFunc("DELETE /api/v1/wizard/plans/{id}", s.withAuth(s.handleWizardDiscard))
+
+	// Delete-info (pre-delete analysis)
+	mux.HandleFunc("GET /api/v1/tasks/{name}/delete-info", s.withAuth(s.handleTaskDeleteInfo))
+	mux.HandleFunc("GET /api/v1/pipelines/{name}/delete-info", s.withAuth(s.handlePipelineDeleteInfo))
+	mux.HandleFunc("GET /api/v1/subagents/{name}/delete-info", s.withAuth(s.handleSubAgentDeleteInfo))
+
+	// Backups
+	mux.HandleFunc("GET /api/v1/backups", s.withAuth(s.handleListBackups))
+	mux.HandleFunc("GET /api/v1/backups/{id}", s.withAuth(s.handleGetBackup))
+	mux.HandleFunc("POST /api/v1/backups/{id}/restore", s.withAuth(s.handleRestoreBackup))
 
 	// Dashboard
 	mux.HandleFunc("GET /api/v1/dashboard", s.withAuth(s.handleDashboard))

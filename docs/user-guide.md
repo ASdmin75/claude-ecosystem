@@ -296,10 +296,35 @@ curl -X POST -H "Authorization: Bearer <token>" \
   -d '{"name":"reviewer","description":"Code reviewer","instructions":"..."}' \
   http://localhost:3580/api/v1/subagents
 
-# Удаление
+# Удаление (с проверкой зависимостей и бэкапом)
 curl -X DELETE -H "Authorization: Bearer <token>" \
   http://localhost:3580/api/v1/subagents/reviewer
+
+# Предварительный анализ зависимостей
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:3580/api/v1/subagents/reviewer/delete-info
 ```
+
+### Безопасное удаление
+
+Удаление задач, пайплайнов и суб-агентов выполняется с проверкой зависимостей и автоматическим бэкапом:
+
+- **Задача:** нельзя удалить если используется в пайплайне. Сначала удалите пайплайн.
+- **Суб-агент:** нельзя удалить если используется в задаче. Сначала уберите ссылку из задачи.
+- **Пайплайн:** при удалении каскадно удаляются задачи и суб-агенты, которые принадлежат **только** этому пайплайну. Задачи, используемые в других пайплайнах, не удаляются.
+
+Перед удалением всегда создаётся бэкап (снимок `tasks.yaml` + файлы суб-агентов) в `data/backup/{id}/`. Восстановление через API:
+
+```bash
+# Список бэкапов
+curl -H "Authorization: Bearer <token>" http://localhost:3580/api/v1/backups
+
+# Восстановление
+curl -X POST -H "Authorization: Bearer <token>" \
+  http://localhost:3580/api/v1/backups/<backup-id>/restore
+```
+
+В Web UI удаление доступно через кнопку Delete — модальное окно покажет зависимости и каскадные элементы перед подтверждением.
 
 ### Использование в задачах
 
@@ -911,6 +936,10 @@ curl -X POST -H "Authorization: Bearer <token>" \
 |-------|------|----------|
 | GET | `/tasks` | Список задач |
 | GET | `/tasks/:name` | Получить задачу |
+| POST | `/tasks` | Создать задачу |
+| PUT | `/tasks/:name` | Обновить задачу |
+| DELETE | `/tasks/:name` | Удалить (с проверкой зависимостей и бэкапом) |
+| GET | `/tasks/:name/delete-info` | Анализ зависимостей перед удалением |
 | POST | `/tasks/:name/run` | Синхронный запуск |
 | POST | `/tasks/:name/run-async` | Асинхронный запуск → `execution_id` |
 | GET | `/tasks/:name/stream` | SSE-стрим вывода |
@@ -923,7 +952,8 @@ curl -X POST -H "Authorization: Bearer <token>" \
 | GET | `/subagents/:name` | Получить |
 | POST | `/subagents` | Создать |
 | PUT | `/subagents/:name` | Обновить |
-| DELETE | `/subagents/:name` | Удалить |
+| DELETE | `/subagents/:name` | Удалить (с проверкой зависимостей и бэкапом) |
+| GET | `/subagents/:name/delete-info` | Анализ зависимостей перед удалением |
 
 ### Пайплайны
 
@@ -931,6 +961,10 @@ curl -X POST -H "Authorization: Bearer <token>" \
 |-------|------|----------|
 | GET | `/pipelines` | Список |
 | GET | `/pipelines/:name` | Получить |
+| POST | `/pipelines` | Создать |
+| PUT | `/pipelines/:name` | Обновить |
+| DELETE | `/pipelines/:name` | Удалить (каскад + бэкап) |
+| GET | `/pipelines/:name/delete-info` | Анализ каскадного удаления |
 | POST | `/pipelines/:name/run` | Синхронный запуск |
 | POST | `/pipelines/:name/run-async` | Асинхронный запуск |
 
@@ -950,6 +984,14 @@ curl -X POST -H "Authorization: Bearer <token>" \
 | GET | `/mcp-servers` | Список + статус |
 | POST | `/mcp-servers/:name/start` | Запустить |
 | POST | `/mcp-servers/:name/stop` | Остановить |
+
+### Бэкапы
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| GET | `/backups` | Список бэкапов (фильтр: `entity_type`) |
+| GET | `/backups/:id` | Детали бэкапа |
+| POST | `/backups/:id/restore` | Восстановить из бэкапа |
 
 ### Dashboard
 

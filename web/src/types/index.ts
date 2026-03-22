@@ -169,3 +169,33 @@ export interface ApplyResult {
   pipelines_created?: string[]
   errors?: string[]
 }
+
+// Delete / Backup types
+export interface Dependency {
+  type: 'task' | 'pipeline' | 'subagent' | 'domain'
+  name: string
+}
+
+export interface DeleteAnalysis {
+  entity: Dependency
+  used_by: Dependency[]
+  can_delete: boolean
+  cascade_items: Dependency[]
+  blocked: boolean
+  block_reason?: string
+}
+
+export interface DeleteResponse {
+  backup_id: string
+  deleted: string[]
+}
+
+export interface BackupEntry {
+  id: string
+  entity_type: string
+  entity_name: string
+  action: string
+  parent_id: string
+  created_at: string
+  restored_at?: string
+}

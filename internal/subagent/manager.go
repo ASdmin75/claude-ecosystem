@@ -159,6 +159,35 @@ func (m *Manager) Update(agent *SubAgent) error {
 	return nil
 }
 
+// CreateFromBytes writes a sub-agent .md file from raw bytes (used for restore from backup).
+// Writes to the project scope by default.
+func (m *Manager) CreateFromBytes(name string, data []byte) error {
+	dir := m.projectDir
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create agents directory: %w", err)
+	}
+	path := filepath.Join(dir, name+".md")
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("sub-agent %q already exists", name)
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// GetFilePath returns the absolute file path for a sub-agent (checking project first, then user).
+func (m *Manager) GetFilePath(name string) (string, error) {
+	for _, dir := range []string{m.projectDir, m.userDir} {
+		path := filepath.Join(dir, name+".md")
+		if _, err := os.Stat(path); err == nil {
+			absPath, err := filepath.Abs(path)
+			if err != nil {
+				return path, nil
+			}
+			return absPath, nil
+		}
+	}
+	return "", fmt.Errorf("sub-agent %q not found", name)
+}
+
 // Delete removes a sub-agent .md file. Checks project scope first, then user.
 func (m *Manager) Delete(name string) error {
 	for _, dir := range []string{m.projectDir, m.userDir} {

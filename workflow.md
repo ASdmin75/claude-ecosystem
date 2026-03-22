@@ -969,6 +969,65 @@ server.ServeStdio(s)
 **Таймаут transcribe-sip-recordings**
 - Увеличен с `180m` до `360m` как запас на случай большого количества файлов
 
+### 2026-03-22 — Безопасное удаление с бэкапом и проверкой зависимостей
+
+**Проблема:** удаление задач, пайплайнов и суб-агентов не проверяло зависимости (удаление задачи, используемой в пайплайне, ломало конфигурацию), не создавало бэкапов, и у задач (tasks) вообще отсутствовал DELETE-эндпоинт.
+
+**Новый пакет `internal/depcheck/` — анализ зависимостей**
+- Чистые функции (без I/O) для анализа `*config.Config`
+- `AnalyzeTaskDelete(cfg, name)` — блокирует удаление если задача используется в пайплайне
+- `AnalyzePipelineDelete(cfg, name)` — определяет каскадные элементы: задачи эксклюзивные для данного пайплайна + их эксклюзивные суб-агенты
+- `AnalyzeSubAgentDelete(cfg, name)` — блокирует удаление если агент используется в задаче
+- `DeleteAnalysis`: `Entity`, `UsedBy`, `CanDelete`, `CascadeItems`, `Blocked`, `BlockReason`
+- Unit-тесты: 7 тестов (блокировка, каскад, эксклюзивность, множественные ссылки)
+
+**Новый пакет `internal/backup/` — бэкап и восстановление**
+- SQLite-таблица `backup_log` (миграция в `backup.New()`)
+- Файловые бэкапы в `data/backup/{uuid}/` (копии `.md` файлов суб-агентов)
+- `config_snap` — полный снимок `tasks.yaml` на момент удаления (для безопасного restore)
+- Каскадное удаление: parent backup + child entries связанные через `parent_id`
+- Методы: `CreateBackup`, `ListBackups`, `GetBackup`, `RestoreFiles`, `MarkRestored`, `GetChildren`
+- Менеджер доменов: добавлен `RemoveDomain()` — удаление из in-memory map (data dir остаётся на диске)
+- Менеджер суб-агентов: добавлены `CreateFromBytes()` (восстановление из бэкапа) и `GetFilePath()`
+
+**Новые API-эндпоинты**
+- `DELETE /api/v1/tasks/{name}` — удаление задачи с проверкой зависимостей + бэкап
+- `GET /api/v1/tasks/{name}/delete-info` — предварительный анализ (фронтенд вызывает перед показом модального окна)
+- `GET /api/v1/pipelines/{name}/delete-info` — анализ каскадного удаления пайплайна
+- `GET /api/v1/subagents/{name}/delete-info` — анализ зависимостей суб-агента
+- `GET /api/v1/backups` — список бэкапов (фильтр по `entity_type`)
+- `GET /api/v1/backups/{id}` — детали бэкапа
+- `POST /api/v1/backups/{id}/restore` — восстановление из бэкапа (с проверкой конфликтов имён и валидацией конфигурации)
+
+**Улучшенные DELETE-эндпоинты**
+- `DELETE /api/v1/pipelines/{name}` — каскадное удаление эксклюзивных задач + суб-агентов, бэкап конфигурации + файлов агентов, очистка ссылок в доменах
+- `DELETE /api/v1/subagents/{name}` — проверка зависимостей (блокировка если используется в задачах), бэкап `.md` файла
+- Все DELETE-эндпоинты возвращают `{backup_id, deleted: [...]}` вместо `204 No Content`
+- Сериализация через `runguard.Guard("config:write")` — защита от конкурентных модификаций
+
+**Web UI**
+- Улучшенный `ConfirmModal` — отображение `DeleteAnalysis`: секция "Used by" с цветными бейджами типов, секция "Will also be deleted" для каскадных элементов, блокировка кнопки Delete при наличии зависимостей с объяснением причины, индикатор загрузки
+- `TaskList` — новая кнопка Delete: prefetch `delete-info` → ConfirmModal → delete + toast
+- `PipelineList` — замена `window.confirm` на ConfirmModal с отображением каскадных элементов
+- `SubAgentList` — замена `window.confirm` на ConfirmModal с отображением зависимостей
+- API-клиент: `deleteTask`, `getTaskDeleteInfo`, `getPipelineDeleteInfo`, `getSubAgentDeleteInfo`, `listBackups`, `restoreBackup`
+- TypeScript-типы: `DeleteAnalysis`, `Dependency`, `DeleteResponse`, `BackupEntry`
+
+**Логика зависимостей:**
+| Сценарий | Поведение |
+|---|---|
+| Задача в 2+ пайплайнах | Блокировка — удалите сначала пайплайны |
+| Задача эксклюзивна для 1 пайплайна | Каскадное удаление вместе с пайплайном |
+| Суб-агент в задачах | Блокировка — удалите из задач |
+| Суб-агент эксклюзивен для каскадной задачи | Каскадное удаление |
+| Домен | Никогда не удаляется каскадно, только очистка ссылок |
+| Восстановление при конфликте имён | 409 — удалите/переименуйте существующую сущность |
+
+**Затронутые файлы:**
+- Новые: `internal/depcheck/checker.go` (+test), `internal/backup/manager.go`, `internal/api/delete.go`, `internal/api/backups.go`
+- Изменённые: `internal/api/router.go`, `internal/api/tasks.go`, `internal/api/pipelines.go`, `internal/api/subagents.go`, `internal/domain/manager.go`, `internal/subagent/manager.go`, `internal/store/sqlite/sqlite.go`, `cmd/server/main.go`
+- Фронтенд: `web/src/types/index.ts`, `web/src/api/client.ts`, `web/src/components/ConfirmModal.tsx`, `web/src/components/TaskList.tsx`, `web/src/components/PipelineList.tsx`, `web/src/components/SubAgentList.tsx`
+
 ---
 
 ## Бэклог
@@ -1002,6 +1061,8 @@ server.ServeStdio(s)
 - [x] Hot reload tasks.yaml (fsnotify + debounce → scheduler/watcher перерегистрация)
 - [x] Управление MCP-серверами через UI
 - [x] Тёмная тема
+- [x] Безопасное удаление задач/пайплайнов/суб-агентов (зависимости, каскад, бэкап, ConfirmModal)
+- [x] Восстановление удалённых элементов из бэкапа (REST API)
 
 ### Инфраструктура
 - [x] Unit-тесты: auth, events, runguard, subagent, task, store/sqlite (45+ новых тестов)

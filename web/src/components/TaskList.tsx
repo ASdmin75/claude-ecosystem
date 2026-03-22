@@ -2,7 +2,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { useState } from 'react'
-import type { Task } from '../types'
+import type { Task, DeleteAnalysis } from '../types'
+import ConfirmModal from './ConfirmModal'
 
 const emptyTask: Task = {
   name: '', prompt: '', work_dir: '.',
@@ -16,6 +17,8 @@ export default function TaskList() {
   const [result, setResult] = useState<string | null>(null)
   const [editing, setEditing] = useState<Task | null>(null)
   const [isNew, setIsNew] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [deleteAnalysis, setDeleteAnalysis] = useState<DeleteAnalysis | null>(null)
 
   const runMutation = useMutation({
     mutationFn: (name: string) => api.runTaskAsync(name),
@@ -43,6 +46,24 @@ export default function TaskList() {
     },
   })
 
+  const deleteMutation = useMutation({
+    mutationFn: (name: string) => api.deleteTask(name),
+    onSuccess: () => {
+      setEditing(null)
+      setIsNew(false)
+      setDeleteTarget(null)
+      setDeleteAnalysis(null)
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      setResult('Task deleted successfully')
+    },
+    onError: (err) => { setDeleteTarget(null); setDeleteAnalysis(null); setResult(`Delete failed: ${err.message}`) },
+  })
+
+  function requestDelete(name: string) {
+    setDeleteTarget(name)
+    api.getTaskDeleteInfo(name).then(setDeleteAnalysis).catch(() => setDeleteAnalysis(null))
+  }
+
   function close() { setEditing(null); setIsNew(false) }
 
   function startNew() {
@@ -62,32 +83,31 @@ export default function TaskList() {
   if (isLoading) return <p className="text-gray-500 dark:text-gray-400">Loading...</p>
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-4">
+    <div className="flex flex-col h-[calc(100vh-3rem)]">
+      <div className="flex justify-between items-center mb-4 shrink-0">
         <h2 className="text-xl font-bold">Tasks</h2>
         <button onClick={editing ? close : startNew} className="px-3 py-1 bg-gray-900 dark:bg-gray-700 text-white text-sm rounded">
           {editing ? 'Cancel' : 'New Task'}
         </button>
       </div>
       {result && (
-        <div className="text-sm mb-4 p-2 bg-gray-100 dark:bg-gray-800 rounded flex justify-between items-center">
+        <div className="text-sm mb-4 p-2 bg-gray-100 dark:bg-gray-800 rounded flex justify-between items-center shrink-0">
           <span>{result}</span>
           <button onClick={() => navigate('/executions')} className="text-blue-600 dark:text-blue-400 hover:underline text-xs ml-2">View Executions</button>
         </div>
       )}
       {saveError && (
-        <p className="text-sm mb-4 p-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded">Save failed: {saveError.message}</p>
+        <p className="text-sm mb-4 p-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded shrink-0">Save failed: {saveError.message}</p>
       )}
 
-      <div className="flex gap-4">
-        <div className={editing ? 'w-1/2' : 'w-full'}>
+      <div className="flex gap-4 min-h-0 flex-1">
+        <div className="w-1/2 overflow-y-auto">
           <div className="space-y-3">
             {tasks?.map((t) => (
-              <div key={t.name} className={`bg-white dark:bg-gray-800 p-4 rounded-lg shadow dark:shadow-gray-950 flex justify-between items-start ${editing?.name === t.name && !isNew ? 'ring-2 ring-blue-300 dark:ring-blue-600' : ''}`}>
-                <div
-                  className="flex-1 cursor-pointer"
-                  onClick={() => { setEditing({ ...t }); setIsNew(false) }}
-                >
+              <div key={t.name} className={`bg-white dark:bg-gray-800 p-4 rounded-lg shadow dark:shadow-gray-950 flex justify-between items-start cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 ${editing?.name === t.name && !isNew ? 'ring-2 ring-blue-300 dark:ring-blue-600' : ''}`}
+                onClick={() => { setEditing({ ...t }); setIsNew(false) }}
+              >
+                <div className="flex-1">
                   <h3 className="font-semibold">{t.name}</h3>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                     {t.schedule && <span className="mr-3">Schedule: {t.schedule}</span>}
@@ -98,17 +118,23 @@ export default function TaskList() {
                 </div>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => { setEditing({ ...t }); setIsNew(false) }}
-                    className="px-3 py-1 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-sm rounded hover:bg-gray-300 dark:hover:bg-gray-600"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => { setRunning(t.name); runMutation.mutate(t.name) }}
+                    onClick={(e) => { e.stopPropagation(); setRunning(t.name); runMutation.mutate(t.name) }}
                     disabled={running === t.name}
                     className="px-3 py-1 bg-gray-900 dark:bg-gray-700 text-white text-sm rounded hover:bg-gray-800 dark:hover:bg-gray-600 disabled:opacity-50"
                   >
                     {running === t.name ? 'Running...' : 'Run'}
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setEditing({ ...t }); setIsNew(false) }}
+                    className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-sm"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); requestDelete(t.name) }}
+                    className="text-red-400 hover:text-red-600 dark:hover:text-red-300 text-sm"
+                  >
+                    Delete
                   </button>
                 </div>
               </div>
@@ -116,8 +142,8 @@ export default function TaskList() {
           </div>
         </div>
 
-        {editing && (
-          <div className="w-1/2">
+        <div className="w-1/2 overflow-y-auto">
+          {editing ? (
             <TaskEditor
               task={editing}
               isNew={isNew}
@@ -126,9 +152,23 @@ export default function TaskList() {
               onCancel={close}
               saving={saving}
             />
-          </div>
-        )}
+          ) : (
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-950 p-8 text-center text-gray-400 dark:text-gray-500">
+              <p className="text-sm">Select a task to view or edit</p>
+            </div>
+          )}
+        </div>
       </div>
+
+      <ConfirmModal
+        open={deleteTarget !== null}
+        title={`Delete task "${deleteTarget}"?`}
+        message="This will remove the task from the configuration. A backup will be created."
+        details={deleteAnalysis}
+        onConfirm={() => deleteTarget && deleteMutation.mutate(deleteTarget)}
+        onCancel={() => { setDeleteTarget(null); setDeleteAnalysis(null) }}
+        loading={deleteMutation.isPending}
+      />
     </div>
   )
 }

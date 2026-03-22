@@ -40,6 +40,11 @@ func New(dbPath string) (*Store, error) {
 	return s, nil
 }
 
+// DB returns the underlying *sql.DB for use by other packages that share the database.
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
 	return s.db.Close()

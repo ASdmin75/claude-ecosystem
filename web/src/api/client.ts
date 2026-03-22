@@ -1,4 +1,4 @@
-import type { DashboardData, Task, SubAgent, Pipeline, Execution, ExecutionResult, MCPServer, WizardPlan, ApplyResult } from '../types'
+import type { DashboardData, Task, SubAgent, Pipeline, Execution, ExecutionResult, MCPServer, WizardPlan, ApplyResult, DeleteAnalysis, DeleteResponse, BackupEntry } from '../types'
 
 const BASE = '/api/v1'
 
@@ -54,6 +54,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ template_vars: vars }),
     }),
+  deleteTask: (name: string) =>
+    request<DeleteResponse>(`/tasks/${name}`, { method: 'DELETE' }),
+  getTaskDeleteInfo: (name: string) =>
+    request<DeleteAnalysis>(`/tasks/${name}/delete-info`),
 
   // Sub-agents
   listSubAgents: () => request<SubAgent[]>('/subagents'),
@@ -63,7 +67,9 @@ export const api = {
   updateSubAgent: (name: string, agent: Partial<SubAgent>) =>
     request<SubAgent>(`/subagents/${name}`, { method: 'PUT', body: JSON.stringify(agent) }),
   deleteSubAgent: (name: string) =>
-    request<void>(`/subagents/${name}`, { method: 'DELETE' }),
+    request<DeleteResponse>(`/subagents/${name}`, { method: 'DELETE' }),
+  getSubAgentDeleteInfo: (name: string) =>
+    request<DeleteAnalysis>(`/subagents/${name}/delete-info`),
 
   // Pipelines
   listPipelines: () => request<Pipeline[]>('/pipelines'),
@@ -72,7 +78,9 @@ export const api = {
   updatePipeline: (name: string, pipeline: Partial<Pipeline>) =>
     request<Pipeline>(`/pipelines/${name}`, { method: 'PUT', body: JSON.stringify(pipeline) }),
   deletePipeline: (name: string) =>
-    request<void>(`/pipelines/${name}`, { method: 'DELETE' }),
+    request<DeleteResponse>(`/pipelines/${name}`, { method: 'DELETE' }),
+  getPipelineDeleteInfo: (name: string) =>
+    request<DeleteAnalysis>(`/pipelines/${name}/delete-info`),
   runPipeline: (name: string) =>
     request<ExecutionResult>(`/pipelines/${name}/run`, { method: 'POST' }),
   runPipelineAsync: (name: string) =>
@@ -95,6 +103,12 @@ export const api = {
     request<void>(`/mcp-servers/${name}/start`, { method: 'POST' }),
   stopMCPServer: (name: string) =>
     request<void>(`/mcp-servers/${name}/stop`, { method: 'POST' }),
+
+  // Backups
+  listBackups: () => request<BackupEntry[]>('/backups'),
+  getBackup: (id: string) => request<BackupEntry>(`/backups/${id}`),
+  restoreBackup: (id: string) =>
+    request<{ status: string }>(`/backups/${id}/restore`, { method: 'POST' }),
 
   // Wizard
   wizardGenerate: (description: string, workDir?: string) =>

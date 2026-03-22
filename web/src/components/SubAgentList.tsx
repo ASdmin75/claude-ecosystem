@@ -3,7 +3,8 @@ import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '../api/client'
 import { useState } from 'react'
-import type { SubAgent } from '../types'
+import type { SubAgent, DeleteAnalysis } from '../types'
+import ConfirmModal from './ConfirmModal'
 
 const emptyForm: Partial<SubAgent> = {
   name: '', description: '', instructions: '', model: '', scope: 'user',
@@ -15,6 +16,8 @@ export default function SubAgentList() {
   const { data: agents, isLoading } = useQuery({ queryKey: ['subagents'], queryFn: api.listSubAgents })
   const [editing, setEditing] = useState<Partial<SubAgent> | null>(null)
   const [isNew, setIsNew] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [deleteAnalysis, setDeleteAnalysis] = useState<DeleteAnalysis | null>(null)
 
   const createMutation = useMutation({
     mutationFn: (agent: Partial<SubAgent>) => api.createSubAgent(agent),
@@ -27,16 +30,21 @@ export default function SubAgentList() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (name: string) => {
-      if (!window.confirm(`Delete sub-agent "${name}"?`)) throw new Error('cancelled')
-      return api.deleteSubAgent(name)
-    },
+    mutationFn: (name: string) => api.deleteSubAgent(name),
     onSuccess: () => {
       setEditing(null)
       setIsNew(false)
+      setDeleteTarget(null)
+      setDeleteAnalysis(null)
       queryClient.invalidateQueries({ queryKey: ['subagents'] })
     },
+    onError: () => { setDeleteTarget(null); setDeleteAnalysis(null) },
   })
+
+  function requestDelete(name: string) {
+    setDeleteTarget(name)
+    api.getSubAgentDeleteInfo(name).then(setDeleteAnalysis).catch(() => setDeleteAnalysis(null))
+  }
 
   function close() { setEditing(null); setIsNew(false) }
 
@@ -62,18 +70,18 @@ export default function SubAgentList() {
   if (isLoading) return <p className="text-gray-500 dark:text-gray-400">Loading...</p>
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-4">
+    <div className="flex flex-col h-[calc(100vh-3rem)]">
+      <div className="flex justify-between items-center mb-4 shrink-0">
         <h2 className="text-xl font-bold">Sub-Agents</h2>
         <button onClick={editing ? close : startNew} className="px-3 py-1 bg-gray-900 dark:bg-gray-700 text-white text-sm rounded">
           {editing ? 'Cancel' : 'New Sub-Agent'}
         </button>
       </div>
 
-      {error && <p className="text-sm mb-4 p-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded">{error.message}</p>}
+      {error && <p className="text-sm mb-4 p-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded shrink-0">{error.message}</p>}
 
-      <div className="flex gap-4">
-        <div className={editing ? 'w-1/2' : 'w-full'}>
+      <div className="flex gap-4 min-h-0 flex-1">
+        <div className="w-1/2 overflow-y-auto">
           <div className="space-y-3">
             {agents?.map((a) => (
               <div
@@ -99,7 +107,7 @@ export default function SubAgentList() {
                   </div>
                   <div className="flex gap-2">
                     <button onClick={(e) => { e.stopPropagation(); startEdit(a) }} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-sm">Edit</button>
-                    <button onClick={(e) => { e.stopPropagation(); deleteMutation.mutate(a.name) }} className="text-red-400 hover:text-red-600 dark:hover:text-red-300 text-sm">Delete</button>
+                    <button onClick={(e) => { e.stopPropagation(); requestDelete(a.name) }} className="text-red-400 hover:text-red-600 dark:hover:text-red-300 text-sm">Delete</button>
                   </div>
                 </div>
               </div>
@@ -108,8 +116,8 @@ export default function SubAgentList() {
           </div>
         </div>
 
-        {editing && (
-          <div className="w-1/2">
+        <div className="w-1/2 overflow-y-auto">
+          {editing ? (
             <AgentEditor
               agent={editing}
               isNew={isNew}
@@ -118,9 +126,23 @@ export default function SubAgentList() {
               onCancel={close}
               saving={saving}
             />
-          </div>
-        )}
+          ) : (
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-950 p-8 text-center text-gray-400 dark:text-gray-500">
+              <p className="text-sm">Select an agent to view or edit</p>
+            </div>
+          )}
+        </div>
       </div>
+
+      <ConfirmModal
+        open={deleteTarget !== null}
+        title={`Delete sub-agent "${deleteTarget}"?`}
+        message="This will remove the sub-agent file. A backup will be created."
+        details={deleteAnalysis}
+        onConfirm={() => deleteTarget && deleteMutation.mutate(deleteTarget)}
+        onCancel={() => { setDeleteTarget(null); setDeleteAnalysis(null) }}
+        loading={deleteMutation.isPending}
+      />
     </div>
   )
 }

@@ -1,7 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useState } from 'react'
-import type { Pipeline } from '../types'
+import type { Pipeline, DeleteAnalysis } from '../types'
+import ConfirmModal from './ConfirmModal'
 
 const emptyForm: Partial<Pipeline> = {
   name: '', mode: 'sequential', steps: [{ task: '' }], max_iterations: 1, stop_signal: '', collector: '', schedule: '',
@@ -13,6 +14,8 @@ export default function PipelineList() {
   const [editing, setEditing] = useState<Partial<Pipeline> | null>(null)
   const [isNew, setIsNew] = useState(false)
   const [result, setResult] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [deleteAnalysis, setDeleteAnalysis] = useState<DeleteAnalysis | null>(null)
 
   const createMutation = useMutation({
     mutationFn: (p: Partial<Pipeline>) => api.createPipeline(p),
@@ -25,16 +28,22 @@ export default function PipelineList() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (name: string) => {
-      if (!window.confirm(`Delete pipeline "${name}"?`)) throw new Error('cancelled')
-      return api.deletePipeline(name)
-    },
+    mutationFn: (name: string) => api.deletePipeline(name),
     onSuccess: () => {
       setEditing(null)
       setIsNew(false)
+      setDeleteTarget(null)
+      setDeleteAnalysis(null)
       queryClient.invalidateQueries({ queryKey: ['pipelines'] })
+      setResult('Pipeline deleted successfully')
     },
+    onError: (err) => { setDeleteTarget(null); setDeleteAnalysis(null); setResult(`Delete failed: ${err.message}`) },
   })
+
+  function requestDelete(name: string) {
+    setDeleteTarget(name)
+    api.getPipelineDeleteInfo(name).then(setDeleteAnalysis).catch(() => setDeleteAnalysis(null))
+  }
 
   const runMutation = useMutation({
     mutationFn: (name: string) => api.runPipelineAsync(name),
@@ -66,19 +75,19 @@ export default function PipelineList() {
   if (isLoading) return <p className="text-gray-500 dark:text-gray-400">Loading...</p>
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-4">
+    <div className="flex flex-col h-[calc(100vh-3rem)]">
+      <div className="flex justify-between items-center mb-4 shrink-0">
         <h2 className="text-xl font-bold">Pipelines</h2>
         <button onClick={editing ? close : startNew} className="px-3 py-1 bg-gray-900 dark:bg-gray-700 text-white text-sm rounded">
           {editing ? 'Cancel' : 'New Pipeline'}
         </button>
       </div>
 
-      {result && <p className="text-sm mb-4 p-2 bg-gray-100 dark:bg-gray-800 rounded">{result}</p>}
-      {error && <p className="text-sm mb-4 p-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded">{error.message}</p>}
+      {result && <p className="text-sm mb-4 p-2 bg-gray-100 dark:bg-gray-800 rounded shrink-0">{result}</p>}
+      {error && <p className="text-sm mb-4 p-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded shrink-0">{error.message}</p>}
 
-      <div className="flex gap-4">
-        <div className={editing ? 'w-1/2' : 'w-full'}>
+      <div className="flex gap-4 min-h-0 flex-1">
+        <div className="w-1/2 overflow-y-auto">
           <div className="space-y-3">
             {pipelines?.map((p) => (
               <div
@@ -107,7 +116,7 @@ export default function PipelineList() {
                   <div className="flex gap-2">
                     <button onClick={(e) => { e.stopPropagation(); runMutation.mutate(p.name) }} className="px-3 py-1 bg-gray-900 dark:bg-gray-700 text-white text-sm rounded hover:bg-gray-800 dark:hover:bg-gray-600">Run</button>
                     <button onClick={(e) => { e.stopPropagation(); startEdit(p) }} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-sm">Edit</button>
-                    <button onClick={(e) => { e.stopPropagation(); deleteMutation.mutate(p.name) }} className="text-red-400 hover:text-red-600 dark:hover:text-red-300 text-sm">Delete</button>
+                    <button onClick={(e) => { e.stopPropagation(); requestDelete(p.name) }} className="text-red-400 hover:text-red-600 dark:hover:text-red-300 text-sm">Delete</button>
                   </div>
                 </div>
               </div>
@@ -116,8 +125,8 @@ export default function PipelineList() {
           </div>
         </div>
 
-        {editing && (
-          <div className="w-1/2">
+        <div className="w-1/2 overflow-y-auto">
+          {editing ? (
             <PipelineEditor
               pipeline={editing}
               isNew={isNew}
@@ -126,9 +135,23 @@ export default function PipelineList() {
               onCancel={close}
               saving={saving}
             />
-          </div>
-        )}
+          ) : (
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-950 p-8 text-center text-gray-400 dark:text-gray-500">
+              <p className="text-sm">Select a pipeline to view or edit</p>
+            </div>
+          )}
+        </div>
       </div>
+
+      <ConfirmModal
+        open={deleteTarget !== null}
+        title={`Delete pipeline "${deleteTarget}"?`}
+        message="This will remove the pipeline from the configuration. A backup will be created."
+        details={deleteAnalysis}
+        onConfirm={() => deleteTarget && deleteMutation.mutate(deleteTarget)}
+        onCancel={() => { setDeleteTarget(null); setDeleteAnalysis(null) }}
+        loading={deleteMutation.isPending}
+      />
     </div>
   )
 }

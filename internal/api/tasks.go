@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
+	"github.com/asdmin/claude-ecosystem/internal/depcheck"
 	"github.com/asdmin/claude-ecosystem/internal/events"
 	"github.com/asdmin/claude-ecosystem/internal/store"
 	"github.com/asdmin/claude-ecosystem/internal/task"
@@ -126,6 +127,67 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("task updated", "name", name)
 	writeJSON(w, http.StatusOK, s.findTask(name))
+}
+
+// handleDeleteTask deletes a task with dependency checking and backup.
+// DELETE /api/v1/tasks/{name}
+func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if s.findTask(name) == nil {
+		writeError(w, http.StatusNotFound, "task not found: "+name)
+		return
+	}
+
+	if !s.guard.TryAcquire("config:write") {
+		writeError(w, http.StatusConflict, "another config modification is in progress")
+		return
+	}
+	defer s.guard.Release("config:write")
+
+	// Dependency check.
+	analysis := depcheck.AnalyzeTaskDelete(s.cfg, name)
+	if analysis.Blocked {
+		writeJSON(w, http.StatusConflict, analysis)
+		return
+	}
+
+	// Backup.
+	configSnap, err := s.readConfigSnap()
+	if err != nil {
+		s.logger.Error("failed to read config for backup", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create backup")
+		return
+	}
+
+	entry, err := s.backupMgr.CreateBackup(r.Context(), "task", name, "delete", "", configSnap, nil)
+	if err != nil {
+		s.logger.Error("failed to create backup", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create backup: "+err.Error())
+		return
+	}
+
+	// Remove from config.
+	for i := range s.cfg.Tasks {
+		if s.cfg.Tasks[i].Name == name {
+			s.cfg.Tasks = append(s.cfg.Tasks[:i], s.cfg.Tasks[i+1:]...)
+			break
+		}
+	}
+
+	// Clean domain references.
+	s.cleanDomainRefs([]string{name}, nil)
+
+	if err := s.cfg.Save(); err != nil {
+		s.logger.Error("failed to save config after task delete", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
+		return
+	}
+
+	s.logger.Info("task deleted", "name", name, "backup_id", entry.ID)
+	writeJSON(w, http.StatusOK, deleteResponse{
+		BackupID: entry.ID,
+		Deleted:  []string{"task:" + name},
+	})
 }
 
 // handleRunTask runs a task synchronously and returns the result.
