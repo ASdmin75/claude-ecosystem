@@ -66,25 +66,33 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse the backed-up config snapshot.
-	if entry.ConfigSnap == "" {
-		writeError(w, http.StatusBadRequest, "backup has no config snapshot")
-		return
-	}
-	var snapCfg config.Config
-	if err := yaml.Unmarshal([]byte(entry.ConfigSnap), &snapCfg); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to parse backup config: "+err.Error())
-		return
+	// Parse the backed-up config snapshot (required for task and pipeline restores).
+	var snapCfg *config.Config
+	if entry.ConfigSnap != "" {
+		var cfg config.Config
+		if err := yaml.Unmarshal([]byte(entry.ConfigSnap), &cfg); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to parse backup config: "+err.Error())
+			return
+		}
+		snapCfg = &cfg
 	}
 
 	switch entry.EntityType {
 	case "task":
-		if err := s.restoreTask(&snapCfg, entry.EntityName); err != nil {
+		if snapCfg == nil {
+			writeError(w, http.StatusBadRequest, "backup has no config snapshot")
+			return
+		}
+		if err := s.restoreTask(snapCfg, entry.EntityName); err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
 	case "pipeline":
-		if err := s.restorePipeline(r, &snapCfg, entry); err != nil {
+		if snapCfg == nil {
+			writeError(w, http.StatusBadRequest, "backup has no config snapshot")
+			return
+		}
+		if err := s.restorePipeline(r, snapCfg, entry); err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -124,13 +132,35 @@ func (s *Server) restoreTask(snapCfg *config.Config, taskName string) error {
 		return errConflict("task \"" + taskName + "\" already exists, delete or rename it first")
 	}
 	// Find task in snapshot.
+	var found bool
 	for _, t := range snapCfg.Tasks {
 		if t.Name == taskName {
 			s.cfg.Tasks = append(s.cfg.Tasks, t)
-			return nil
+			found = true
+			break
 		}
 	}
-	return errConflict("task \"" + taskName + "\" not found in backup snapshot")
+	if !found {
+		return errConflict("task \"" + taskName + "\" not found in backup snapshot")
+	}
+
+	// Restore domains that referenced this task.
+	for k, d := range snapCfg.Domains {
+		if _, exists := s.cfg.Domains[k]; exists {
+			continue
+		}
+		for _, t := range d.Tasks {
+			if t == taskName {
+				if s.cfg.Domains == nil {
+					s.cfg.Domains = make(map[string]config.Domain)
+				}
+				s.cfg.Domains[k] = d
+				break
+			}
+		}
+	}
+
+	return nil
 }
 
 func (s *Server) restorePipeline(r *http.Request, snapCfg *config.Config, entry *backup.Entry) error {
@@ -173,6 +203,48 @@ func (s *Server) restorePipeline(r *http.Request, snapCfg *config.Config, entry 
 			}
 		}
 	}
+
+	// Restore domains that referenced this pipeline or its cascade entities.
+	restoredEntities := map[string]struct{}{entry.EntityName: {}}
+	for _, child := range children {
+		restoredEntities[child.EntityName] = struct{}{}
+	}
+	for k, d := range snapCfg.Domains {
+		if _, exists := s.cfg.Domains[k]; exists {
+			continue
+		}
+		// Check if the domain references any restored entity.
+		refs := false
+		for _, p := range d.Pipelines {
+			if _, ok := restoredEntities[p]; ok {
+				refs = true
+				break
+			}
+		}
+		if !refs {
+			for _, t := range d.Tasks {
+				if _, ok := restoredEntities[t]; ok {
+					refs = true
+					break
+				}
+			}
+		}
+		if !refs {
+			for _, a := range d.Agents {
+				if _, ok := restoredEntities[a]; ok {
+					refs = true
+					break
+				}
+			}
+		}
+		if refs {
+			if s.cfg.Domains == nil {
+				s.cfg.Domains = make(map[string]config.Domain)
+			}
+			s.cfg.Domains[k] = d
+		}
+	}
+
 	return nil
 }
 

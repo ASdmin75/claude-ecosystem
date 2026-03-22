@@ -98,3 +98,53 @@ func TestCleanDomainRefs_MultiDomain(t *testing.T) {
 		t.Fatalf("expected d2.Agents=[], got %v", d2.Agents)
 	}
 }
+
+func TestCleanDomainRefs_MCPServers(t *testing.T) {
+	s := &Server{cfg: &config.Config{
+		Domains: map[string]config.Domain{
+			"d1": {Tasks: []string{"t1"}, MCPServers: []string{"db", "excel"}},
+		},
+	}}
+	s.cleanDomainRefs([]string{"t1"}, nil, nil, []string{"db", "excel"})
+
+	// All refs removed → domain should be deleted.
+	if _, ok := s.cfg.Domains["d1"]; ok {
+		t.Fatal("expected orphaned domain 'd1' to be deleted")
+	}
+}
+
+func TestCleanDomainRefs_MCPServersPartial(t *testing.T) {
+	s := &Server{cfg: &config.Config{
+		Domains: map[string]config.Domain{
+			"d1": {Tasks: []string{"t1"}, MCPServers: []string{"db", "excel", "telegram"}},
+		},
+	}}
+	// Only some MCP servers cleaned — domain should remain because telegram is still referenced.
+	s.cleanDomainRefs([]string{"t1"}, nil, nil, []string{"db", "excel"})
+
+	d, ok := s.cfg.Domains["d1"]
+	if !ok {
+		t.Fatal("expected domain 'd1' to remain (still has mcp_servers)")
+	}
+	if len(d.MCPServers) != 1 || d.MCPServers[0] != "telegram" {
+		t.Fatalf("expected MCPServers=[telegram], got %v", d.MCPServers)
+	}
+}
+
+func TestCleanDomainRefs_MCPServersOnlyNoOrphan(t *testing.T) {
+	s := &Server{cfg: &config.Config{
+		Domains: map[string]config.Domain{
+			"d1": {Tasks: []string{"t1"}, MCPServers: []string{"db"}},
+		},
+	}}
+	// Remove task but not MCP server — domain should remain.
+	s.cleanDomainRefs([]string{"t1"}, nil, nil)
+
+	d, ok := s.cfg.Domains["d1"]
+	if !ok {
+		t.Fatal("expected domain 'd1' to remain (still has mcp_servers)")
+	}
+	if len(d.MCPServers) != 1 {
+		t.Fatalf("expected MCPServers=[db], got %v", d.MCPServers)
+	}
+}

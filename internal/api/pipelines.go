@@ -267,6 +267,24 @@ func (s *Server) handleDeletePipeline(w http.ResponseWriter, r *http.Request) {
 
 	deleted := []string{"pipeline:" + name}
 
+	// Pre-collect names and MCP servers for domain cleanup (before tasks are removed from config).
+	var deletedTaskNames []string
+	var deletedAgentNames []string
+	cascadeMCPSet := map[string]struct{}{}
+	for _, ci := range analysis.CascadeItems {
+		switch ci.Type {
+		case depcheck.EntityTask:
+			deletedTaskNames = append(deletedTaskNames, ci.Name)
+			if t := s.findTask(ci.Name); t != nil {
+				for _, ms := range t.MCPServers {
+					cascadeMCPSet[ms] = struct{}{}
+				}
+			}
+		case depcheck.EntitySubAgent:
+			deletedAgentNames = append(deletedAgentNames, ci.Name)
+		}
+	}
+
 	// Process cascade items: delete exclusive tasks and sub-agents.
 	for _, ci := range analysis.CascadeItems {
 		switch ci.Type {
@@ -283,8 +301,8 @@ func (s *Server) handleDeletePipeline(w http.ResponseWriter, r *http.Request) {
 				deleted = append(deleted, "subagent:"+ci.Name)
 			}
 		case depcheck.EntityTask:
-			// Create child backup for cascade task.
-			_, _ = s.backupMgr.CreateBackup(r.Context(), "task", ci.Name, "cascade_delete", parentEntry.ID, "", nil)
+			// Create child backup for cascade task (include config snapshot so task can be restored individually).
+			_, _ = s.backupMgr.CreateBackup(r.Context(), "task", ci.Name, "cascade_delete", parentEntry.ID, configSnap, nil)
 			// Remove task from config.
 			for i := range s.cfg.Tasks {
 				if s.cfg.Tasks[i].Name == ci.Name {
@@ -304,21 +322,17 @@ func (s *Server) handleDeletePipeline(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Clean domain references.
-	var deletedTaskNames []string
-	for _, ci := range analysis.CascadeItems {
-		if ci.Type == depcheck.EntityTask {
-			deletedTaskNames = append(deletedTaskNames, ci.Name)
+	// Only clean MCP server refs that are exclusive to cascade tasks (not used by surviving tasks).
+	for _, t := range s.cfg.Tasks {
+		for _, ms := range t.MCPServers {
+			delete(cascadeMCPSet, ms)
 		}
 	}
-	// Collect deleted agent names for domain cleanup.
-	var deletedAgentNames []string
-	for _, ci := range analysis.CascadeItems {
-		if ci.Type == depcheck.EntitySubAgent {
-			deletedAgentNames = append(deletedAgentNames, ci.Name)
-		}
+	var deletedMCPNames []string
+	for ms := range cascadeMCPSet {
+		deletedMCPNames = append(deletedMCPNames, ms)
 	}
-	s.cleanDomainRefs(deletedTaskNames, []string{name}, deletedAgentNames)
+	s.cleanDomainRefs(deletedTaskNames, []string{name}, deletedAgentNames, deletedMCPNames)
 
 	if err := s.cfg.Save(); err != nil {
 		s.logger.Error("failed to save config after pipeline delete", "error", err)

@@ -137,6 +137,8 @@ func (s *Server) handleDeleteSubAgent(w http.ResponseWriter, r *http.Request) {
 	s.cleanDomainRefs(nil, nil, []string{name})
 	if err := s.cfg.Save(); err != nil {
 		s.logger.Error("failed to save config after sub-agent delete", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
+		return
 	}
 
 	s.logger.Info("sub-agent deleted", "name", name, "backup_id", entry.ID)

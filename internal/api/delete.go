@@ -63,10 +63,14 @@ func (s *Server) readConfigSnap() (string, error) {
 	return string(data), nil
 }
 
-// cleanDomainRefs removes deleted task, pipeline, and agent names from all
-// domain reference lists. Domains left with no tasks, pipelines, or agents
+// cleanDomainRefs removes deleted task, pipeline, agent, and MCP server names
+// from all domain reference lists. Domains left with no remaining references
 // are removed entirely.
-func (s *Server) cleanDomainRefs(taskNames []string, pipelineNames []string, agentNames []string) {
+func (s *Server) cleanDomainRefs(taskNames []string, pipelineNames []string, agentNames []string, mcpServerNames ...[]string) {
+	var mcpNames []string
+	if len(mcpServerNames) > 0 {
+		mcpNames = mcpServerNames[0]
+	}
 	for k, d := range s.cfg.Domains {
 		changed := false
 		for _, tn := range taskNames {
@@ -96,9 +100,18 @@ func (s *Server) cleanDomainRefs(taskNames []string, pipelineNames []string, age
 				}
 			}
 		}
+		for _, mn := range mcpNames {
+			for i, m := range d.MCPServers {
+				if m == mn {
+					d.MCPServers = append(d.MCPServers[:i], d.MCPServers[i+1:]...)
+					changed = true
+					break
+				}
+			}
+		}
 		if changed {
 			// Remove domain entirely if it has no remaining references.
-			if len(d.Tasks) == 0 && len(d.Pipelines) == 0 && len(d.Agents) == 0 {
+			if len(d.Tasks) == 0 && len(d.Pipelines) == 0 && len(d.Agents) == 0 && len(d.MCPServers) == 0 {
 				delete(s.cfg.Domains, k)
 			} else {
 				s.cfg.Domains[k] = d

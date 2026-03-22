@@ -166,6 +166,12 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Collect MCP servers before removing the task from config.
+	var taskMCPServers []string
+	if t := s.findTask(name); t != nil {
+		taskMCPServers = append(taskMCPServers, t.MCPServers...)
+	}
+
 	// Remove from config.
 	for i := range s.cfg.Tasks {
 		if s.cfg.Tasks[i].Name == name {
@@ -174,8 +180,23 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Only clean MCP server refs not used by surviving tasks.
+	mcpSet := make(map[string]struct{})
+	for _, ms := range taskMCPServers {
+		mcpSet[ms] = struct{}{}
+	}
+	for _, t := range s.cfg.Tasks {
+		for _, ms := range t.MCPServers {
+			delete(mcpSet, ms)
+		}
+	}
+	var exclusiveMCP []string
+	for ms := range mcpSet {
+		exclusiveMCP = append(exclusiveMCP, ms)
+	}
+
 	// Clean domain references.
-	s.cleanDomainRefs([]string{name}, nil, nil)
+	s.cleanDomainRefs([]string{name}, nil, nil, exclusiveMCP)
 
 	if err := s.cfg.Save(); err != nil {
 		s.logger.Error("failed to save config after task delete", "error", err)
