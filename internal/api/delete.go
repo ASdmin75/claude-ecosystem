@@ -63,9 +63,10 @@ func (s *Server) readConfigSnap() (string, error) {
 	return string(data), nil
 }
 
-// cleanDomainRefs removes a task name from all domain Tasks lists
-// and removes a pipeline name from all domain Pipelines lists.
-func (s *Server) cleanDomainRefs(taskNames []string, pipelineNames []string) {
+// cleanDomainRefs removes deleted task, pipeline, and agent names from all
+// domain reference lists. Domains left with no tasks, pipelines, or agents
+// are removed entirely.
+func (s *Server) cleanDomainRefs(taskNames []string, pipelineNames []string, agentNames []string) {
 	for k, d := range s.cfg.Domains {
 		changed := false
 		for _, tn := range taskNames {
@@ -86,8 +87,22 @@ func (s *Server) cleanDomainRefs(taskNames []string, pipelineNames []string) {
 				}
 			}
 		}
+		for _, an := range agentNames {
+			for i, a := range d.Agents {
+				if a == an {
+					d.Agents = append(d.Agents[:i], d.Agents[i+1:]...)
+					changed = true
+					break
+				}
+			}
+		}
 		if changed {
-			s.cfg.Domains[k] = d
+			// Remove domain entirely if it has no remaining references.
+			if len(d.Tasks) == 0 && len(d.Pipelines) == 0 && len(d.Agents) == 0 {
+				delete(s.cfg.Domains, k)
+			} else {
+				s.cfg.Domains[k] = d
+			}
 		}
 	}
 }

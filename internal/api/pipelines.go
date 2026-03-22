@@ -311,7 +311,14 @@ func (s *Server) handleDeletePipeline(w http.ResponseWriter, r *http.Request) {
 			deletedTaskNames = append(deletedTaskNames, ci.Name)
 		}
 	}
-	s.cleanDomainRefs(deletedTaskNames, []string{name})
+	// Collect deleted agent names for domain cleanup.
+	var deletedAgentNames []string
+	for _, ci := range analysis.CascadeItems {
+		if ci.Type == depcheck.EntitySubAgent {
+			deletedAgentNames = append(deletedAgentNames, ci.Name)
+		}
+	}
+	s.cleanDomainRefs(deletedTaskNames, []string{name}, deletedAgentNames)
 
 	if err := s.cfg.Save(); err != nil {
 		s.logger.Error("failed to save config after pipeline delete", "error", err)

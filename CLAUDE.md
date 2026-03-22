@@ -62,7 +62,7 @@ Optional `domains` section defines business data domains linked to tasks. Each d
 
 All under `/api/v1/`. Auth required (PASETO or bearer token) except `/auth/login`.
 
-Key endpoints: task CRUD + delete + run, sub-agent CRUD + delete, pipeline CRUD + delete + run, execution history, MCP server management, SSE streaming (`/events` for global event stream, `/executions/{id}/stream` for per-execution), dashboard stats, backup/restore. Delete endpoints perform dependency checking (blocks if entity is referenced), create backups before deletion, and support cascade delete for pipelines (exclusive tasks/agents). Pre-delete analysis available via `GET /{entity}/{name}/delete-info`. Backup management: `GET /backups`, `POST /backups/{id}/restore`. Auth supports query param `?token=` for SSE (EventSource limitation).
+Key endpoints: task CRUD + delete + run, sub-agent CRUD + delete, pipeline CRUD + delete + run, execution history, MCP server management, SSE streaming (`/events` for global event stream, `/executions/{id}/stream` for per-execution), dashboard stats, backup/restore. Delete endpoints perform dependency checking (blocks if entity is referenced), create backups before deletion, and support cascade delete for pipelines (exclusive tasks/agents). Domain references (tasks, pipelines, agents) are cleaned on delete; orphaned domains (no remaining refs) are removed automatically. Pre-delete analysis available via `GET /{entity}/{name}/delete-info`. Backup management: `GET /backups`, `POST /backups/{id}/restore`. Auth supports query param `?token=` for SSE (EventSource limitation).
 
 ## Web UI
 

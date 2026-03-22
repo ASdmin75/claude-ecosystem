@@ -175,7 +175,7 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Clean domain references.
-	s.cleanDomainRefs([]string{name}, nil)
+	s.cleanDomainRefs([]string{name}, nil, nil)
 
 	if err := s.cfg.Save(); err != nil {
 		s.logger.Error("failed to save config after task delete", "error", err)

@@ -1022,13 +1022,31 @@ server.ServeStdio(s)
 | Задача эксклюзивна для 1 пайплайна | Каскадное удаление вместе с пайплайном |
 | Суб-агент в задачах | Блокировка — удалите из задач |
 | Суб-агент эксклюзивен для каскадной задачи | Каскадное удаление |
-| Домен | Никогда не удаляется каскадно, только очистка ссылок |
+| Домен | Автоматически удаляется когда все ссылки (tasks, pipelines, agents) очищены |
 | Восстановление при конфликте имён | 409 — удалите/переименуйте существующую сущность |
 
 **Затронутые файлы:**
 - Новые: `internal/depcheck/checker.go` (+test), `internal/backup/manager.go`, `internal/api/delete.go`, `internal/api/backups.go`
 - Изменённые: `internal/api/router.go`, `internal/api/tasks.go`, `internal/api/pipelines.go`, `internal/api/subagents.go`, `internal/domain/manager.go`, `internal/subagent/manager.go`, `internal/store/sqlite/sqlite.go`, `cmd/server/main.go`
 - Фронтенд: `web/src/types/index.ts`, `web/src/api/client.ts`, `web/src/components/ConfirmModal.tsx`, `web/src/components/TaskList.tsx`, `web/src/components/PipelineList.tsx`, `web/src/components/SubAgentList.tsx`
+
+### 2026-03-22 — Исправление очистки доменов при каскадном удалении
+
+**Проблема:** при удалении пайплайна `cleanDomainRefs()` очищала только ссылки на задачи и пайплайны из доменов, но не на суб-агентов. Осиротевшие домены (без задач, пайплайнов и агентов) оставались в `tasks.yaml`. При отдельном удалении суб-агента (`DELETE /api/v1/subagents/{name}`) очистка доменных ссылок вообще не вызывалась.
+
+**Исправления в `internal/api/delete.go`:**
+- `cleanDomainRefs()` принимает 3-й параметр `agentNames []string` — очистка ссылок на агентов из `Domain.Agents`
+- Автоматическое удаление осиротевших доменов: если после очистки у домена нет `Tasks`, `Pipelines` и `Agents`, запись домена удаляется из конфигурации
+- Unit-тесты: 6 тестов (`delete_test.go`) — очистка tasks/pipelines/agents, удаление осиротевших доменов, multi-domain сценарии
+
+**Исправления в `internal/api/pipelines.go`:**
+- `handleDeletePipeline` собирает имена каскадно удалённых агентов и передаёт в `cleanDomainRefs()`
+
+**Исправления в `internal/api/subagents.go`:**
+- `handleDeleteSubAgent` теперь вызывает `cleanDomainRefs(nil, nil, []string{name})` + `s.cfg.Save()`
+
+**Очистка данных:**
+- Удалён осиротевший домен `radiation-control-equipment` из `tasks.yaml` (агент и пайплайн были удалены ранее, но домен остался)
 
 ---
 

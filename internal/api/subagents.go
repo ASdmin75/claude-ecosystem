@@ -133,6 +133,12 @@ func (s *Server) handleDeleteSubAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clean domain references.
+	s.cleanDomainRefs(nil, nil, []string{name})
+	if err := s.cfg.Save(); err != nil {
+		s.logger.Error("failed to save config after sub-agent delete", "error", err)
+	}
+
 	s.logger.Info("sub-agent deleted", "name", name, "backup_id", entry.ID)
 	writeJSON(w, http.StatusOK, deleteResponse{
 		BackupID: entry.ID,

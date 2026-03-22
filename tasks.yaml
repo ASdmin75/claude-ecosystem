@@ -424,7 +424,6 @@ tasks:
         - recordings
       model: sonnet
       timeout: 30m
-      max_turns: 200
       mcp_servers:
         - yeastar-api
         - database
@@ -444,6 +443,7 @@ tasks:
         - mcp__filesystem__read_file
         - mcp__filesystem__create_directory
         - mcp__filesystem__list_directory
+      max_turns: 200
       max_budget_usd: 3
       permission_mode: dontAsk
     - name: transcribe-sip-recordings
@@ -467,7 +467,6 @@ tasks:
         - transcription
       model: haiku
       timeout: 360m
-      max_turns: 30
       mcp_servers:
         - whisper
         - database
@@ -475,6 +474,7 @@ tasks:
         - mcp__whisper__batch_transcribe
         - mcp__database__query
         - mcp__database__execute
+      max_turns: 30
       max_budget_usd: 0.5
       permission_mode: dontAsk
     - name: summarize-sip-transcriptions
@@ -518,47 +518,7 @@ tasks:
       permission_mode: dontAsk
     - name: deliver-sip-report
       domain: sip-calls
-      prompt: |-
-        Today is {{.Date}}. Create a Word document with the daily SIP call report and send it via Telegram.
-        ALL text in the document must be in Russian.
-
-        Context from previous step:
-        {{.PrevOutput}}
-
-        Steps:
-        1. Calculate yesterday's date from {{.Date}} (format: YYYY-MM-DD).
-        2. Query daily_reports for report_date = '<yesterday>' to get total_calls, total_duration, digest.
-        3. Query all recordings for yesterday:
-           SELECT id, caller, callee, duration, call_date, transcription_path, summary FROM recordings WHERE call_date = '<yesterday>' ORDER BY call_date;
-        4. Create a Word document at $DOMAIN_DATA_DIR/reports/report-<yesterday>.docx using the word MCP create_document tool.
-           Title: "Отчёт по звонкам — <yesterday>"
-           Content structure (build as a single text block with \n separators):
-
-           Статистика: <total_calls> звонков, общая продолжительность <total_duration_minutes> мин
-
-           Краткое резюме дня:
-           <digest text from daily_reports in Russian>
-
-           Then for EACH recording, add a section:
-           ---
-           Звонок #<N>: <caller> → <callee> (<duration> сек)
-
-           Краткое содержание:
-           <brief from summary JSON>
-
-           Ключевые темы: <topics from summary JSON, comma-separated>
-
-           Задачи: <actions from summary JSON, or "Нет">
-
-           Расшифровка (SRT):
-           <read the SRT file from transcription_path using filesystem read_file and include the full content>
-
-        5. Ensure the directory $DOMAIN_DATA_DIR/reports/ exists (use filesystem create_directory).
-        6. After creating the document, send it via Telegram using the send_document tool with:
-           - file_path: $DOMAIN_DATA_DIR/reports/report-<yesterday>.docx
-           - caption: "📞 Отчёт по звонкам за <yesterday>: <total_calls> звонков, <total_duration_minutes> мин"
-        7. UPDATE daily_reports SET delivered_at = datetime('now') WHERE report_date = '<yesterday>'.
-        8. Output: 'Report delivered successfully for <yesterday>: <total_calls> calls'.
+      prompt: "Today is {{.Date}}. Create a Word document with the daily SIP call report and send it via Telegram.\nALL text in the document must be in Russian.\n\nContext from previous step:\n{{.PrevOutput}}\n\nSteps:\n1. Calculate yesterday's date from {{.Date}} (format: YYYY-MM-DD).\n2. Query daily_reports for report_date = '<yesterday>' to get total_calls, total_duration, digest.\n3. Query all recordings for yesterday:\n   SELECT id, caller, callee, duration, call_date, transcription_path, summary FROM recordings WHERE call_date = '<yesterday>' ORDER BY call_date;\n4. Create a Word document at $DOMAIN_DATA_DIR/reports/report-<yesterday>.docx using the word MCP create_document tool.\n   Title: \"Отчёт по звонкам — <yesterday>\"\n   Content structure (build as a single text block with \\n separators):\n\n   Статистика: <total_calls> звонков, общая продолжительность <total_duration_minutes> мин\n\n   Краткое резюме дня:\n   <digest text from daily_reports in Russian>\n\n   Then for EACH recording, add a section:\n   ---\n   Звонок #<N>: <caller> → <callee> (<duration> сек)\n\n   Краткое содержание:\n   <brief from summary JSON>\n\n   Ключевые темы: <topics from summary JSON, comma-separated>\n\n   Задачи: <actions from summary JSON, or \"Нет\">\n\n   Расшифровка (SRT):\n   <read the SRT file from transcription_path using filesystem read_file and include the full content>\n\n5. Ensure the directory $DOMAIN_DATA_DIR/reports/ exists (use filesystem create_directory).\n6. After creating the document, send it via Telegram using the send_document tool with:\n   - file_path: $DOMAIN_DATA_DIR/reports/report-<yesterday>.docx\n   - caption: \"\U0001F4DE Отчёт по звонкам за <yesterday>: <total_calls> звонков, <total_duration_minutes> мин\"\n7. UPDATE daily_reports SET delivered_at = datetime('now') WHERE report_date = '<yesterday>'.\n8. Output: 'Report delivered successfully for <yesterday>: <total_calls> calls'."
       work_dir: .
       tags:
         - sip
@@ -660,19 +620,19 @@ mcp_servers:
     - name: yeastar-api
       command: ./bin/mcp-openapi
       env:
-        OPENAPI_BASE_URL: ${YEASTAR_BASE_URL}/openapi/v1.0
-        OPENAPI_SPEC_PATH: specs/yeastar-pseries.yaml
-        OPENAPI_EXTRA_HEADERS: "User-Agent:OpenAPI"
-        OPENAPI_TLS_INSECURE: "true"
         OPENAPI_AUTH_TYPE: oauth2_client_credentials
-        OPENAPI_OAUTH2_TOKEN_URL: ${YEASTAR_BASE_URL}/openapi/v1.0/get_token
-        OPENAPI_OAUTH2_CLIENT_ID: ${YEASTAR_CLIENT_ID}
-        OPENAPI_OAUTH2_CLIENT_SECRET: ${YEASTAR_CLIENT_PASSWORD}
+        OPENAPI_BASE_URL: https://ooolkp.ddnsfree.com:8088/openapi/v1.0
+        OPENAPI_EXTRA_HEADERS: User-Agent:OpenAPI
+        OPENAPI_OAUTH2_CLIENT_ID: QjAXpODKZuyOTtkua6Ln7MUZbpERiUkY
+        OPENAPI_OAUTH2_CLIENT_SECRET: PP3ZslAyflfYYgNhXpKlw0pUgirn2t47
+        OPENAPI_OAUTH2_GRANT_TYPE: ""
         OPENAPI_OAUTH2_ID_FIELD: username
         OPENAPI_OAUTH2_SECRET_FIELD: password
-        OPENAPI_OAUTH2_GRANT_TYPE: ""
         OPENAPI_OAUTH2_TOKEN_IN: query
         OPENAPI_OAUTH2_TOKEN_PARAM: access_token
+        OPENAPI_OAUTH2_TOKEN_URL: https://ooolkp.ddnsfree.com:8088/openapi/v1.0/get_token
+        OPENAPI_SPEC_PATH: specs/yeastar-pseries.yaml
+        OPENAPI_TLS_INSECURE: "true"
 domains:
     export-by-aviation:
         description: Лиды с export.by — белорусские экспортёры, нуждающиеся в авиаперевозке грузов. MCP-сервер exportby выполняет скрейпинг сайта и хранит сырые данные в raw_companies. Задача analyze оценивает aviation_priority на основе данных в БД без обращения к сайту.
