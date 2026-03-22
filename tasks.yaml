@@ -745,6 +745,49 @@ domains:
         mcp_servers:
             - database
             - excel
+    rad-control-manufacturers-belarus:
+        description: Database of radiation control and dosimetry equipment manufacturers in Belarus with export and air freight metadata
+        data_dir: data/rad-control-manufacturers-belarus
+        db: rad-control-manufacturers.db
+        schema: |-
+            CREATE TABLE IF NOT EXISTS manufacturers (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              legal_name TEXT,
+              address TEXT,
+              city TEXT,
+              website TEXT,
+              phone TEXT,
+              email TEXT,
+              license_no TEXT,
+              license_issuer TEXT,
+              exports_abroad INTEGER DEFAULT 0,
+              air_export INTEGER DEFAULT 0,
+              export_countries TEXT,
+              air_export_notes TEXT,
+              product_categories TEXT,
+              certification_info TEXT,
+              source TEXT,
+              session_id TEXT,
+              notes TEXT,
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(name)
+            );
+            CREATE TABLE IF NOT EXISTS research_sessions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              session_id TEXT UNIQUE,
+              started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+              completed_at TEXT,
+              new_found INTEGER DEFAULT 0,
+              status TEXT DEFAULT 'in_progress'
+            );
+        domain_doc: DOMAIN.md
+        mcp_servers:
+            - database
+            - excel
+            - filesystem
+            - telegram
     sip-calls:
         description: Yeastar P-Series SIP station call recordings, transcriptions, and daily summaries
         data_dir: data/sip-calls

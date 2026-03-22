@@ -129,13 +129,13 @@ export default function ExecutionHistory() {
   if (isLoading) return <p className="text-gray-500 dark:text-gray-400">Loading...</p>
 
   return (
-    <div>
-      <h2 className="text-xl font-bold mb-4">Execution History</h2>
-      <div className="flex gap-4">
-        <div className={selected ? 'w-1/2' : 'w-full'}>
+    <div className="flex flex-col h-[calc(100vh-3rem)]">
+      <h2 className="text-xl font-bold mb-4 shrink-0">Execution History</h2>
+      <div className="flex gap-4 min-h-0 flex-1">
+        <div className="w-1/2 overflow-y-auto">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-950 overflow-hidden">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 dark:bg-gray-700/50">
+              <thead className="bg-gray-50 dark:bg-gray-700/50 sticky top-0 z-10">
                 <tr>
                   <th className="text-left px-4 py-2">Task</th>
                   <th className="text-left px-4 py-2">Status</th>
@@ -200,8 +200,8 @@ export default function ExecutionHistory() {
           </div>
         </div>
 
-        {selected && (
-          <div className="w-1/2 min-w-0">
+        <div className="w-1/2 overflow-y-auto min-w-0">
+          {selected ? (
             <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-950 p-4 overflow-hidden">
               <div className="flex justify-between items-start mb-4">
                 <div>
@@ -302,8 +302,12 @@ export default function ExecutionHistory() {
                 </div>
               )}
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-950 p-8 text-center text-gray-400 dark:text-gray-500">
+              <p className="text-sm">Select an execution to view details</p>
+            </div>
+          )}
+        </div>
       </div>
 
       <ConfirmModal

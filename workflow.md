@@ -1070,6 +1070,26 @@ server.ServeStdio(s)
 **Исправления обработки ошибок (`internal/api/subagents.go`):**
 - `handleDeleteSubAgent`: ошибка `cfg.Save()` теперь возвращает HTTP 500 клиенту вместо тихого логирования
 
+### 2026-03-22 — Файловые бэкапы tasks.yaml на диск
+
+**Проблема:** при удалении пайплайна конфигурационный снимок (`tasks.yaml`) сохранялся только в SQLite (поле `config_snap`), но не как физический файл на диске. В директории бэкапа `data/backup/{id}/` были видны только файлы суб-агентов (`.md`). Это создавало впечатление, что задачи и конфигурация не попадают в бэкап.
+
+**Исправление (`internal/backup/manager.go`):**
+- `CreateBackup()` теперь сохраняет `configSnap` как файл `tasks.yaml` в директорию бэкапа на диске
+- Файл создаётся для всех бэкап-записей, имеющих configSnap (parent pipeline, cascade tasks, standalone tasks)
+- Логика восстановления не изменена — по-прежнему использует `config_snap` из SQLite
+
+**Результат — структура `data/backup/{id}/` после удаления пайплайна:**
+```
+data/backup/
+  {parent-pipeline-id}/
+    tasks.yaml              ← полный снимок конфигурации
+  {cascade-task-id}/
+    tasks.yaml              ← полный снимок конфигурации
+  {cascade-agent-id}/
+    agents/reviewer.md      ← файл суб-агента
+```
+
 ---
 
 ## Бэклог

@@ -91,6 +91,14 @@ func (m *Manager) CreateBackup(ctx context.Context, entityType, entityName, acti
 		return nil, fmt.Errorf("create backup dir: %w", err)
 	}
 
+	// Save config snapshot as tasks.yaml file for disk-based inspection.
+	if configSnap != "" {
+		snapPath := filepath.Join(dir, "tasks.yaml")
+		if err := os.WriteFile(snapPath, []byte(configSnap), 0o644); err != nil {
+			return nil, fmt.Errorf("write config snapshot: %w", err)
+		}
+	}
+
 	// Copy files.
 	var fileList []string
 	for relPath, srcPath := range filesToCopy {

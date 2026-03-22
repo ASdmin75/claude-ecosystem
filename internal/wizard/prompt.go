@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
+	"github.com/asdmin/claude-ecosystem/internal/subagent"
 )
 
 // wizardJSONSchema constrains Claude's output to the Plan structure.
@@ -116,7 +117,7 @@ const wizardJSONSchema = `{
 }`
 
 // buildWizardPrompt creates the system prompt for the wizard's Claude call.
-func buildWizardPrompt(req GenerateRequest, cfg *config.Config) string {
+func buildWizardPrompt(req GenerateRequest, cfg *config.Config, agents []subagent.SubAgent) string {
 	var sb strings.Builder
 
 	sb.WriteString(`You are a configuration wizard for Claude Ecosystem — a Go orchestrator that runs Claude Code CLI as automated tasks.
@@ -246,6 +247,7 @@ IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi pattern) in allow
 9. Generate a clear summary explaining the plan
 10. When using agents in allowed_tools, include "Agent" in the list
 11. For tasks with MCP tools, list ALL MCP tools the task might need in allowed_tools
+12. When the user asks to create something "like" or "similar to" an existing entity, use the full details provided below to clone and adapt it. Preserve structural patterns (MCP servers, agents, domain setup) unless the user explicitly requests changes.
 
 `)
 
@@ -269,30 +271,9 @@ IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi pattern) in allow
 		sb.WriteString("\n")
 	}
 
-	// Add existing entity names to avoid conflicts
-	if len(cfg.Tasks) > 0 {
-		sb.WriteString("## Existing Tasks (avoid name conflicts)\n\n")
-		for _, t := range cfg.Tasks {
-			sb.WriteString(fmt.Sprintf("- %s\n", t.Name))
-		}
-		sb.WriteString("\n")
-	}
-
-	if len(cfg.Pipelines) > 0 {
-		sb.WriteString("## Existing Pipelines (avoid name conflicts)\n\n")
-		for _, p := range cfg.Pipelines {
-			sb.WriteString(fmt.Sprintf("- %s\n", p.Name))
-		}
-		sb.WriteString("\n")
-	}
-
-	if len(cfg.Domains) > 0 {
-		sb.WriteString("## Existing Domains (avoid name conflicts)\n\n")
-		for name := range cfg.Domains {
-			sb.WriteString(fmt.Sprintf("- %s\n", name))
-		}
-		sb.WriteString("\n")
-	}
+	// Add existing entities with full details for clone/adapt workflows.
+	// Falls back to name-only format if the prompt grows too large.
+	writeFullEntities(&sb, cfg, agents)
 
 	// Add user request
 	sb.WriteString("## User Request\n\n")
@@ -310,4 +291,163 @@ IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi pattern) in allow
 	sb.WriteString("\n\nIMPORTANT: Output ONLY the JSON object. No other text before or after it. Do NOT use any tools.")
 
 	return sb.String()
+}
+
+// writeFullEntities appends detailed existing entity information to the prompt
+// so the wizard can clone and adapt existing configurations.
+func writeFullEntities(sb *strings.Builder, cfg *config.Config, agents []subagent.SubAgent) {
+	if len(cfg.Tasks) > 0 {
+		sb.WriteString("## Existing Tasks (use as reference or avoid name conflicts)\n\n")
+		for _, t := range cfg.Tasks {
+			writeTask(sb, t)
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(cfg.Pipelines) > 0 {
+		sb.WriteString("## Existing Pipelines (use as reference or avoid name conflicts)\n\n")
+		for _, p := range cfg.Pipelines {
+			writePipeline(sb, p)
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(cfg.Domains) > 0 {
+		sb.WriteString("## Existing Domains (use as reference or avoid name conflicts)\n\n")
+		for name, d := range cfg.Domains {
+			writeDomain(sb, name, d)
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(agents) > 0 {
+		sb.WriteString("## Existing Agents (use as reference or avoid name conflicts)\n\n")
+		for _, a := range agents {
+			writeAgent(sb, a)
+		}
+		sb.WriteString("\n")
+	}
+}
+
+func writeTask(sb *strings.Builder, t config.Task) {
+	fmt.Fprintf(sb, "- name: %s\n", t.Name)
+	fmt.Fprintf(sb, "  prompt: %q\n", truncateField(t.Prompt, 500))
+	if t.WorkDir != "" {
+		fmt.Fprintf(sb, "  work_dir: %s\n", t.WorkDir)
+	}
+	if t.Schedule != "" {
+		fmt.Fprintf(sb, "  schedule: %q\n", t.Schedule)
+	}
+	if t.Model != "" {
+		fmt.Fprintf(sb, "  model: %s\n", t.Model)
+	}
+	if t.Timeout != "" {
+		fmt.Fprintf(sb, "  timeout: %s\n", t.Timeout)
+	}
+	if len(t.Agents) > 0 {
+		fmt.Fprintf(sb, "  agents: [%s]\n", strings.Join(t.Agents, ", "))
+	}
+	if len(t.MCPServers) > 0 {
+		fmt.Fprintf(sb, "  mcp_servers: [%s]\n", strings.Join(t.MCPServers, ", "))
+	}
+	if len(t.AllowedTools) > 0 {
+		fmt.Fprintf(sb, "  allowed_tools: [%s]\n", strings.Join(t.AllowedTools, ", "))
+	}
+	if t.Domain != "" {
+		fmt.Fprintf(sb, "  domain: %s\n", t.Domain)
+	}
+	if t.MaxTurns > 0 {
+		fmt.Fprintf(sb, "  max_turns: %d\n", t.MaxTurns)
+	}
+	if t.MaxBudgetUSD > 0 {
+		fmt.Fprintf(sb, "  max_budget_usd: %.2f\n", t.MaxBudgetUSD)
+	}
+	if t.PermissionMode != "" {
+		fmt.Fprintf(sb, "  permission_mode: %s\n", t.PermissionMode)
+	}
+	if len(t.Tags) > 0 {
+		fmt.Fprintf(sb, "  tags: [%s]\n", strings.Join(t.Tags, ", "))
+	}
+}
+
+func writePipeline(sb *strings.Builder, p config.Pipeline) {
+	fmt.Fprintf(sb, "- name: %s\n", p.Name)
+	if p.Mode != "" {
+		fmt.Fprintf(sb, "  mode: %s\n", p.Mode)
+	}
+	if len(p.Steps) > 0 {
+		steps := make([]string, len(p.Steps))
+		for i, s := range p.Steps {
+			steps[i] = s.Task
+		}
+		fmt.Fprintf(sb, "  steps: [%s]\n", strings.Join(steps, ", "))
+	}
+	if p.MaxIterations > 0 {
+		fmt.Fprintf(sb, "  max_iterations: %d\n", p.MaxIterations)
+	}
+	if p.StopSignal != "" {
+		fmt.Fprintf(sb, "  stop_signal: %q\n", p.StopSignal)
+	}
+	if p.SessionChain {
+		sb.WriteString("  session_chain: true\n")
+	}
+	if p.Schedule != "" {
+		fmt.Fprintf(sb, "  schedule: %q\n", p.Schedule)
+	}
+}
+
+func writeDomain(sb *strings.Builder, name string, d config.Domain) {
+	fmt.Fprintf(sb, "- name: %s\n", name)
+	if d.Description != "" {
+		fmt.Fprintf(sb, "  description: %q\n", d.Description)
+	}
+	if d.DataDir != "" {
+		fmt.Fprintf(sb, "  data_dir: %s\n", d.DataDir)
+	}
+	if d.DB != "" {
+		fmt.Fprintf(sb, "  db: %s\n", d.DB)
+	}
+	if d.Schema != "" {
+		fmt.Fprintf(sb, "  schema: %q\n", truncateField(d.Schema, 400))
+	}
+	if len(d.Tasks) > 0 {
+		fmt.Fprintf(sb, "  tasks: [%s]\n", strings.Join(d.Tasks, ", "))
+	}
+	if len(d.Pipelines) > 0 {
+		fmt.Fprintf(sb, "  pipelines: [%s]\n", strings.Join(d.Pipelines, ", "))
+	}
+	if len(d.Agents) > 0 {
+		fmt.Fprintf(sb, "  agents: [%s]\n", strings.Join(d.Agents, ", "))
+	}
+	if len(d.MCPServers) > 0 {
+		fmt.Fprintf(sb, "  mcp_servers: [%s]\n", strings.Join(d.MCPServers, ", "))
+	}
+}
+
+func writeAgent(sb *strings.Builder, a subagent.SubAgent) {
+	fmt.Fprintf(sb, "- name: %s\n", a.Name)
+	fmt.Fprintf(sb, "  description: %q\n", a.Description)
+	if len(a.Tools) > 0 {
+		fmt.Fprintf(sb, "  tools: [%s]\n", strings.Join(a.Tools, ", "))
+	}
+	if a.Model != "" {
+		fmt.Fprintf(sb, "  model: %s\n", a.Model)
+	}
+	if a.PermissionMode != "" {
+		fmt.Fprintf(sb, "  permission_mode: %s\n", a.PermissionMode)
+	}
+	if a.Instructions != "" {
+		fmt.Fprintf(sb, "  instructions: %q\n", truncateField(a.Instructions, 300))
+	}
+	if a.Scope != "" {
+		fmt.Fprintf(sb, "  scope: %s\n", a.Scope)
+	}
+}
+
+// truncateField shortens a string to maxLen, appending a note about total length.
+func truncateField(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + fmt.Sprintf("... (%d chars total)", len(s))
 }

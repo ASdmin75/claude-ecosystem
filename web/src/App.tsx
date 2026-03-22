@@ -74,8 +74,8 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen flex bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
-      <nav className="w-56 bg-gray-900 dark:bg-gray-950 dark:border-r dark:border-gray-800 text-white p-4 space-y-2">
+    <div className="h-screen flex overflow-hidden bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
+      <nav className="w-56 shrink-0 bg-gray-900 dark:bg-gray-950 dark:border-r dark:border-gray-800 text-white p-4 space-y-2 overflow-y-auto">
         <h1 className="text-lg font-bold mb-6">Claude Ecosystem</h1>
         {navItems.map((item) => (
           <Link
@@ -105,7 +105,7 @@ export default function App() {
           </button>
         </div>
       </nav>
-      <main className="flex-1 p-6 bg-gray-50 dark:bg-gray-900">
+      <main className="flex-1 overflow-y-auto p-6 bg-gray-50 dark:bg-gray-900">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/wizard" element={<Wizard />} />

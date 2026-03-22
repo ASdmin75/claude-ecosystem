@@ -8,24 +8,34 @@ import (
 	"strings"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
+	"github.com/asdmin/claude-ecosystem/internal/subagent"
 	"github.com/asdmin/claude-ecosystem/internal/task"
 	"github.com/google/uuid"
 )
 
 // Generator uses the task runner to invoke Claude for plan generation.
 type Generator struct {
-	runner *task.Runner
-	logger *slog.Logger
+	runner      *task.Runner
+	subagentMgr *subagent.Manager
+	logger      *slog.Logger
 }
 
 // NewGenerator creates a new Generator.
-func NewGenerator(runner *task.Runner, logger *slog.Logger) *Generator {
-	return &Generator{runner: runner, logger: logger}
+func NewGenerator(runner *task.Runner, subagentMgr *subagent.Manager, logger *slog.Logger) *Generator {
+	return &Generator{runner: runner, subagentMgr: subagentMgr, logger: logger}
 }
 
 // Generate runs Claude with the wizard prompt and parses the output into a Plan.
 func (g *Generator) Generate(ctx context.Context, req GenerateRequest, cfg *config.Config) (*Plan, error) {
-	prompt := buildWizardPrompt(req, cfg)
+	var agents []subagent.SubAgent
+	if g.subagentMgr != nil {
+		var err error
+		agents, err = g.subagentMgr.List()
+		if err != nil {
+			g.logger.Warn("wizard: failed to list agents, proceeding without", "error", err)
+		}
+	}
+	prompt := buildWizardPrompt(req, cfg, agents)
 
 	syntheticTask := config.Task{
 		Name:           "_wizard-generate",
