@@ -248,6 +248,8 @@ IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi pattern) in allow
 10. When using agents in allowed_tools, include "Agent" in the list
 11. For tasks with MCP tools, list ALL MCP tools the task might need in allowed_tools
 12. When the user asks to create something "like" or "similar to" an existing entity, use the full details provided below to clone and adapt it. Preserve structural patterns (MCP servers, agents, domain setup) unless the user explicitly requests changes.
+13. CRITICAL — stop_signal safety: if a pipeline has a stop_signal, ONLY the LAST step's prompt may instruct Claude to output that signal. Non-final step prompts must NEVER mention or output the stop_signal text, because the pipeline engine checks for it after EVERY step and will skip remaining steps if found early. If the pipeline has max_iterations: 1 and no iterative review loop, prefer omitting stop_signal entirely.
+14. Pipeline data flow: in sequential pipelines, {{.PrevOutput}} carries the text output from the previous step. Each step MUST output all data that the next step needs (IDs, counts, file paths, summaries). NEVER instruct a step to "return only the file path" — this strips context that later steps depend on. Delivery/report steps should extract all needed data from {{.PrevOutput}} text, NOT by reading binary files (xlsx, pdf, etc.) which filesystem tools cannot parse. Binary files should only be referenced by path for sending (e.g., telegram send_document).
 
 `)
 

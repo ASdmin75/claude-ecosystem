@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/domain"
@@ -31,9 +32,11 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 	var rollbacks []func()
 
 	// Validate before mutating
-	if err := a.validate(plan); err != nil {
+	warnings, err := a.validate(plan)
+	if err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
+	result.Warnings = warnings
 
 	// 1. MCP Servers (must come first so tasks can reference them)
 	for _, mp := range plan.MCPServers {
@@ -182,8 +185,10 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 	return result, nil
 }
 
-// validate checks for duplicate names and valid references.
-func (a *Applier) validate(plan *Plan) error {
+// validate checks for duplicate names, valid references, and tool/permission consistency.
+// Returns warnings (non-fatal issues) and an error (fatal issues that block apply).
+func (a *Applier) validate(plan *Plan) ([]string, error) {
+	var warnings []string
 	// Check duplicate task names
 	taskNames := make(map[string]bool)
 	for _, t := range a.cfg.Tasks {
@@ -191,7 +196,7 @@ func (a *Applier) validate(plan *Plan) error {
 	}
 	for _, t := range plan.Tasks {
 		if taskNames[t.Name] {
-			return fmt.Errorf("task %q already exists", t.Name)
+			return nil, fmt.Errorf("task %q already exists", t.Name)
 		}
 		taskNames[t.Name] = true
 	}
@@ -203,7 +208,7 @@ func (a *Applier) validate(plan *Plan) error {
 	}
 	for _, p := range plan.Pipelines {
 		if pipelineNames[p.Name] {
-			return fmt.Errorf("pipeline %q already exists", p.Name)
+			return nil, fmt.Errorf("pipeline %q already exists", p.Name)
 		}
 		pipelineNames[p.Name] = true
 	}
@@ -211,7 +216,7 @@ func (a *Applier) validate(plan *Plan) error {
 	// Check duplicate domain names
 	for _, d := range plan.Domains {
 		if _, exists := a.cfg.Domains[d.Name]; exists {
-			return fmt.Errorf("domain %q already exists", d.Name)
+			return nil, fmt.Errorf("domain %q already exists", d.Name)
 		}
 	}
 
@@ -227,7 +232,7 @@ func (a *Applier) validate(plan *Plan) error {
 			if !agentNames[agentName] {
 				// Check if agent exists already
 				if _, err := a.subagentMgr.Get(agentName); err != nil {
-					return fmt.Errorf("task %q references unknown agent %q", t.Name, agentName)
+					return nil, fmt.Errorf("task %q references unknown agent %q", t.Name, agentName)
 				}
 			}
 		}
@@ -240,10 +245,10 @@ func (a *Applier) validate(plan *Plan) error {
 	}
 	for _, mcp := range plan.MCPServers {
 		if mcpNames[mcp.Name] {
-			return fmt.Errorf("MCP server %q already exists", mcp.Name)
+			return nil, fmt.Errorf("MCP server %q already exists", mcp.Name)
 		}
 		if mcp.Command == "" {
-			return fmt.Errorf("MCP server %q has empty command", mcp.Name)
+			return nil, fmt.Errorf("MCP server %q has empty command", mcp.Name)
 		}
 		mcpNames[mcp.Name] = true
 	}
@@ -252,7 +257,7 @@ func (a *Applier) validate(plan *Plan) error {
 	for _, t := range plan.Tasks {
 		for _, m := range t.MCPServers {
 			if !mcpNames[m] {
-				return fmt.Errorf("task %q references unknown MCP server %q", t.Name, m)
+				return nil, fmt.Errorf("task %q references unknown MCP server %q", t.Name, m)
 			}
 		}
 	}
@@ -261,12 +266,83 @@ func (a *Applier) validate(plan *Plan) error {
 	for _, p := range plan.Pipelines {
 		for _, step := range p.Steps {
 			if !taskNames[step] {
-				return fmt.Errorf("pipeline %q references unknown task %q", p.Name, step)
+				return nil, fmt.Errorf("pipeline %q references unknown task %q", p.Name, step)
 			}
 		}
 	}
 
-	return nil
+	// Validate stop_signal not present in non-final step prompts
+	planTaskPrompts := make(map[string]string)
+	for _, t := range plan.Tasks {
+		planTaskPrompts[t.Name] = t.Prompt
+	}
+	for _, p := range plan.Pipelines {
+		if p.StopSignal == "" || len(p.Steps) < 2 {
+			continue
+		}
+		for i, step := range p.Steps {
+			if i == len(p.Steps)-1 {
+				break // last step is allowed to contain the stop signal
+			}
+			prompt := planTaskPrompts[step]
+			if prompt != "" && strings.Contains(prompt, p.StopSignal) {
+				return nil, fmt.Errorf(
+					"pipeline %q: non-final step %q (step %d of %d) prompt contains stop_signal %q — "+
+						"this will cause the pipeline to stop before reaching later steps; "+
+						"remove the signal from this step's prompt or move it to the last step only",
+					p.Name, step, i+1, len(p.Steps), p.StopSignal,
+				)
+			}
+		}
+	}
+
+	// Validate tool/permission consistency for tasks
+	for _, t := range plan.Tasks {
+		needsDontAsk := len(t.MCPServers) > 0 || len(t.Agents) > 0
+		if needsDontAsk && t.PermissionMode != "" && t.PermissionMode != "dontAsk" {
+			return nil, fmt.Errorf(
+				"task %q uses MCP servers or agents but permission_mode is %q (must be \"dontAsk\" for automated tool use)",
+				t.Name, t.PermissionMode,
+			)
+		}
+
+		if len(t.Agents) > 0 && len(t.AllowedTools) > 0 {
+			hasAgent := false
+			for _, tool := range t.AllowedTools {
+				if tool == "Agent" {
+					hasAgent = true
+					break
+				}
+			}
+			if !hasAgent {
+				return nil, fmt.Errorf(
+					"task %q has agents %v but \"Agent\" is not in allowed_tools — Claude won't be able to delegate to agents",
+					t.Name, t.Agents,
+				)
+			}
+		}
+
+		if len(t.MCPServers) > 0 && len(t.AllowedTools) > 0 {
+			for _, server := range t.MCPServers {
+				prefix := "mcp__" + server + "__"
+				found := false
+				for _, tool := range t.AllowedTools {
+					if strings.HasPrefix(tool, prefix) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					warnings = append(warnings, fmt.Sprintf(
+						"task %q references MCP server %q but allowed_tools has no tools with prefix %q",
+						t.Name, server, prefix,
+					))
+				}
+			}
+		}
+	}
+
+	return warnings, nil
 }
 
 // generateSetupDoc creates SETUP.md files from the plan. Non-fatal on failure.

@@ -305,6 +305,14 @@ tasks:
         Если записей нет — создай файл с пустыми таблицами (только заголовки).
         Файл: data/vet-manufacturers-belarus/vet-manufacturers-{{.Date}}.xlsx
         Используй mcp__excel__create_spreadsheet или mcp__excel__write_spreadsheet.
+
+        В конце ОБЯЗАТЕЛЬНО выведи всю эту информацию (deliver-шаг зависит от неё):
+        SESSION_ID: <session_id>
+        NEW_COUNT: <количество новых>
+        EXPORTERS: <количество экспортёров>
+        AIR_EXPORTERS: <количество авиаэкспортёров>
+        FILE: <путь к файлу>
+        Краткая сводка: топ-3 компании с категориями продукции (если есть).
       work_dir: .
       tags:
         - vet
@@ -333,23 +341,25 @@ tasks:
       prompt: |-
         Отправь отчёт по НОВЫМ производителям ветеринарных препаратов Беларуси.
 
-        Данные из предыдущего шага:
+        Данные из предыдущего шага (здесь уже есть вся нужная информация — НЕ пытайся читать xlsx файл):
         {{.PrevOutput}}
 
-        Извлеки SESSION_ID из данных предыдущего шага.
+        Извлеки SESSION_ID и статистику из текста выше.
+
+        Путь к файлу отчёта: data/vet-manufacturers-belarus/vet-manufacturers-{{.Date}}.xlsx
 
         Действия:
-        1. Найди файл отчёта data/vet-manufacturers-belarus/vet-manufacturers-{{.Date}}.xlsx
-        2. Отправь в Telegram сообщение с резюме:
-           - Дата: {{.Date}}, сеанс: {session_id}
+        1. Проверь что файл существует через mcp__filesystem__list_directory (папка data/vet-manufacturers-belarus/)
+        2. Отправь в Telegram текстовое сообщение с резюме (данные бери из PrevOutput, НЕ читай xlsx):
+           - Дата: {{.Date}}, сеанс: <SESSION_ID>
            - Новых производителей добавлено в этом сеансе
            - Из них экспортёров
            - Из них авиаэкспортёров
            - Список новых авиаэкспортёров с их странами
            - Общее кол-во производителей в БД (итого за всё время)
-        3. Прикрепи Excel-файл (только новые за сеанс)
+        3. Отправь файл xlsx как документ в Telegram через mcp__telegram__send_document указав путь к файлу.
 
-        Если новых не найдено — отправь короткое сообщение: "Сеанс {session_id}: новых производителей не найдено. Всего в БД: N".
+        Если новых не найдено — отправь короткое сообщение: "Сеанс <SESSION_ID>: новых производителей не найдено. Всего в БД: N".
         Формат — краткий деловой отчёт на русском языке.
       work_dir: .
       tags:
@@ -544,6 +554,143 @@ tasks:
         - mcp__filesystem__read_file
       max_budget_usd: 1
       permission_mode: dontAsk
+    - name: research-rad-control-manufacturers
+      domain: rad-control-manufacturers-belarus
+      prompt: |
+        Дата исследования: {{.Date}}
+
+        Проведи исследование производителей оборудования радиационного контроля в Республике Беларусь.
+
+        ШАГ 0 — Инициализация сеанса:
+        1. Сгенерируй уникальный session_id в формате: rad-YYYYMMDD-HHMMSS (например rad-20260318-143052)
+        2. Выполни SELECT name, updated_at FROM manufacturers ORDER BY name — это список УЖЕ известных производителей
+        3. Вывести: SESSION_ID: <session_id>
+
+        Используй агента rad-control-manufacturers-researcher для проведения исследования.
+
+        Агент должен:
+        - Найти НОВЫХ производителей дозиметров, радиационных мониторов, детекторов и другого оборудования радиационного контроля
+        - Проверить каждую компанию на предмет экспорта и авиаперевозок
+        - Сохранить каждого нового производителя в БД
+        - Завершить сеанс и вывести итоги
+
+        В конце выведи ОБЯЗАТЕЛЬНО:
+        SESSION_ID: <session_id>
+        NEW_COUNT: <количество новых>
+      work_dir: .
+      schedule: 0 8 * * 1
+      tags:
+        - rad-control
+        - belarus
+        - research
+        - manufacturers
+      model: sonnet
+      timeout: 30m
+      agents:
+        - rad-control-manufacturers-researcher
+      mcp_servers:
+        - database
+      allowed_tools:
+        - Agent
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__insert
+        - mcp__database__check_exists
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+      max_turns: 25
+      max_budget_usd: 8
+      permission_mode: dontAsk
+    - name: compile-rad-control-manufacturers-excel
+      domain: rad-control-manufacturers-belarus
+      prompt: |
+        Сформируй Excel-отчёт по НОВЫМ производителям оборудования радиационного контроля Беларуси, найденным в текущем сеансе.
+
+        Исходные данные — предыдущий вывод:
+        {{.PrevOutput}}
+
+        Извлеки SESSION_ID из предыдущего вывода (строка вида SESSION_ID: rad-XXXXXXXX-XXXXXX). Используй его для фильтрации.
+
+        Фильтрация: выгружай только записи WHERE session_id = '<извлечённый session_id>'.
+
+        SQL для получения данных:
+        SELECT name, legal_name, city, website, phone, email, product_categories, product_types, certifications, exports_abroad, export_countries, air_export, air_export_notes, regulatory_approvals, source, source_url, created_at FROM manufacturers WHERE session_id = '<session_id>' ORDER BY name;
+
+        Если NEW_COUNT = 0 или данных нет — создай файл с одним листом «No new data» и соответствующим сообщением.
+
+        Структура Excel-файла:
+        1. Лист «Manufacturers» — таблица со всеми найденными производителями (все поля выше)
+        2. Лист «Summary» — итоги: дата, session_id, количество новых, разбивка по городам и категориям продукции
+
+        Сохрани файл: data/rad-control-manufacturers-belarus/rad-control-manufacturers-{{.Date}}.xlsx
+
+        В конце ОБЯЗАТЕЛЬНО выведи всю эту информацию (deliver-шаг зависит от неё):
+        SESSION_ID: <session_id>
+        NEW_COUNT: <количество>
+        FILE: <путь к файлу>
+        Краткая сводка: топ-3 компании с категориями продукции (если есть).
+      work_dir: .
+      tags:
+        - rad-control
+        - belarus
+        - excel
+        - report
+      model: sonnet
+      timeout: 10m
+      mcp_servers:
+        - database
+        - excel
+        - filesystem
+      allowed_tools:
+        - mcp__database__query
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+        - mcp__excel__create_spreadsheet
+        - mcp__excel__write_spreadsheet
+        - mcp__excel__add_styled_table
+        - mcp__filesystem__write_file
+        - mcp__filesystem__list_directory
+      max_turns: 20
+      permission_mode: dontAsk
+    - name: deliver-rad-control-manufacturers-report
+      domain: rad-control-manufacturers-belarus
+      prompt: |
+        Отправь отчёт по НОВЫМ производителям оборудования радиационного контроля Беларуси.
+
+        Данные из предыдущего шага (здесь уже есть вся нужная информация — НЕ пытайся читать xlsx файл):
+        {{.PrevOutput}}
+
+        Извлеки SESSION_ID и количество новых производителей из текста выше.
+
+        Путь к файлу отчёта: data/rad-control-manufacturers-belarus/rad-control-manufacturers-{{.Date}}.xlsx
+
+        Действия:
+        1. Проверь что файл существует через mcp__filesystem__list_directory (папка data/rad-control-manufacturers-belarus/)
+        2. Отправь в Telegram текстовое сообщение с резюме (используй данные из PrevOutput, НЕ читай xlsx):
+           - Дата: {{.Date}}, сеанс: <SESSION_ID>
+           - Найдено новых производителей: <количество>
+           - Топ-3 новых компании (если есть): название и категория продукции
+        3. Отправь файл xlsx как документ в Telegram через mcp__telegram__send_document указав путь к файлу.
+
+        Если новых производителей 0 — отправь только текстовое сообщение «Новых производителей не найдено» без файла.
+      work_dir: .
+      tags:
+        - rad-control
+        - belarus
+        - telegram
+        - delivery
+      model: haiku
+      timeout: 5m
+      mcp_servers:
+        - telegram
+        - filesystem
+      allowed_tools:
+        - mcp__telegram__send_message
+        - mcp__telegram__send_document
+        - mcp__filesystem__list_directory
+        - mcp__filesystem__read_file
+      max_turns: 10
+      permission_mode: dontAsk
 pipelines:
     - name: review-fix
       mode: sequential
@@ -585,7 +732,6 @@ pipelines:
         - task: compile-vet-manufacturers-excel
         - task: deliver-vet-manufacturers-report
       max_iterations: 1
-      stop_signal: PIPELINE_DONE
     - name: daily-sip-processing
       mode: sequential
       steps:
@@ -593,6 +739,13 @@ pipelines:
         - task: transcribe-sip-recordings
         - task: summarize-sip-transcriptions
         - task: deliver-sip-report
+      max_iterations: 1
+    - name: rad-control-manufacturers-sync
+      mode: sequential
+      steps:
+        - task: research-rad-control-manufacturers
+        - task: compile-rad-control-manufacturers-excel
+        - task: deliver-rad-control-manufacturers-report
       max_iterations: 1
 mcp_servers:
     - name: database
@@ -746,7 +899,7 @@ domains:
             - database
             - excel
     rad-control-manufacturers-belarus:
-        description: Database of radiation control and dosimetry equipment manufacturers in Belarus with export and air freight metadata
+        description: Database of radiation control equipment manufacturers in Belarus with export metadata
         data_dir: data/rad-control-manufacturers-belarus
         db: rad-control-manufacturers.db
         schema: |-
@@ -759,35 +912,47 @@ domains:
               website TEXT,
               phone TEXT,
               email TEXT,
+              unp TEXT,
+              product_categories TEXT,
+              product_types TEXT,
+              certifications TEXT,
               license_no TEXT,
               license_issuer TEXT,
               exports_abroad INTEGER DEFAULT 0,
               air_export INTEGER DEFAULT 0,
               export_countries TEXT,
               air_export_notes TEXT,
-              product_categories TEXT,
-              certification_info TEXT,
+              regulatory_approvals TEXT,
               source TEXT,
+              source_url TEXT,
               session_id TEXT,
               notes TEXT,
-              created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-              updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+              raw_json TEXT,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(name)
             );
             CREATE TABLE IF NOT EXISTS research_sessions (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
-              session_id TEXT UNIQUE,
-              started_at TEXT DEFAULT CURRENT_TIMESTAMP,
-              completed_at TEXT,
-              new_found INTEGER DEFAULT 0,
-              status TEXT DEFAULT 'in_progress'
+              session_id TEXT UNIQUE NOT NULL,
+              started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              completed_at DATETIME,
+              new_count INTEGER DEFAULT 0,
+              notes TEXT
             );
         domain_doc: DOMAIN.md
+        tasks:
+            - research-rad-control-manufacturers
+            - compile-rad-control-manufacturers-excel
+            - deliver-rad-control-manufacturers-report
+        pipelines:
+            - rad-control-manufacturers-sync
+        agents:
+            - rad-control-manufacturers-researcher
         mcp_servers:
             - database
             - excel
             - filesystem
-            - telegram
     sip-calls:
         description: Yeastar P-Series SIP station call recordings, transcriptions, and daily summaries
         data_dir: data/sip-calls

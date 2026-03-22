@@ -110,8 +110,21 @@ func (s *Server) cleanDomainRefs(taskNames []string, pipelineNames []string, age
 			}
 		}
 		if changed {
-			// Remove domain entirely if it has no remaining references.
-			if len(d.Tasks) == 0 && len(d.Pipelines) == 0 && len(d.Agents) == 0 && len(d.MCPServers) == 0 {
+			// Remove domain entirely if it has no remaining entity references.
+			// MCP servers are shared tools, not dependents — they don't keep a domain alive.
+			if len(d.Tasks) == 0 && len(d.Pipelines) == 0 && len(d.Agents) == 0 {
+				// Remove data directory from disk.
+				if d.DataDir != "" {
+					if err := os.RemoveAll(d.DataDir); err != nil {
+						s.logger.Error("failed to remove domain data dir", "domain", k, "path", d.DataDir, "error", err)
+					} else {
+						s.logger.Info("domain data dir removed", "domain", k, "path", d.DataDir)
+					}
+				}
+				// Remove from domain manager's in-memory map.
+				if s.domainMgr != nil {
+					s.domainMgr.RemoveDomain(k)
+				}
 				delete(s.cfg.Domains, k)
 			} else {
 				s.cfg.Domains[k] = d

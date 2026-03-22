@@ -10,6 +10,7 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/depcheck"
 	"github.com/asdmin/claude-ecosystem/internal/events"
+	"github.com/asdmin/claude-ecosystem/internal/outputcheck"
 	"github.com/asdmin/claude-ecosystem/internal/store"
 	"github.com/asdmin/claude-ecosystem/internal/task"
 	"github.com/google/uuid"
@@ -125,6 +126,20 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 					Status:      "failed",
 					Error:       fmt.Sprintf("step %s failed: %s", step.Task, result.Error),
 					Output:      lastOutput,
+					Iterations:  iterations,
+					DurationMS:  time.Since(start).Milliseconds(),
+				}
+			}
+
+			// Detect soft failures: exit code 0 but output indicates task was not completed.
+			if reason := outputcheck.CheckStepOutput(result.Output); reason != "" {
+				s.logger.Error("pipeline step soft-failed", "pipeline", pipelineName, "step", stepIdx+1, "task", step.Task, "reason", reason, "duration", stepDuration)
+				return pipelineRunResponse{
+					ExecutionID: execID,
+					Pipeline:    pipelineName,
+					Status:      "failed",
+					Error:       fmt.Sprintf("step %s: output indicates failure: %s", step.Task, reason),
+					Output:      result.Output,
 					Iterations:  iterations,
 					DurationMS:  time.Since(start).Milliseconds(),
 				}

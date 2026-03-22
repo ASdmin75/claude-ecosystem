@@ -1,13 +1,21 @@
 package api
 
 import (
+	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
+	"github.com/asdmin/claude-ecosystem/internal/domain"
 )
 
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 1}))
+}
+
 func TestCleanDomainRefs_Tasks(t *testing.T) {
-	s := &Server{cfg: &config.Config{
+	s := &Server{logger: testLogger(), cfg: &config.Config{
 		Domains: map[string]config.Domain{
 			"d1": {Tasks: []string{"a", "b", "c"}, Pipelines: []string{"p1"}, Agents: []string{"ag1"}},
 		},
@@ -20,7 +28,7 @@ func TestCleanDomainRefs_Tasks(t *testing.T) {
 }
 
 func TestCleanDomainRefs_Pipelines(t *testing.T) {
-	s := &Server{cfg: &config.Config{
+	s := &Server{logger: testLogger(), cfg: &config.Config{
 		Domains: map[string]config.Domain{
 			"d1": {Tasks: []string{"a"}, Pipelines: []string{"p1", "p2"}, Agents: []string{"ag1"}},
 		},
@@ -33,7 +41,7 @@ func TestCleanDomainRefs_Pipelines(t *testing.T) {
 }
 
 func TestCleanDomainRefs_Agents(t *testing.T) {
-	s := &Server{cfg: &config.Config{
+	s := &Server{logger: testLogger(), cfg: &config.Config{
 		Domains: map[string]config.Domain{
 			"d1": {Tasks: []string{"a"}, Pipelines: []string{"p1"}, Agents: []string{"ag1", "ag2"}},
 		},
@@ -46,7 +54,7 @@ func TestCleanDomainRefs_Agents(t *testing.T) {
 }
 
 func TestCleanDomainRefs_OrphanRemoval(t *testing.T) {
-	s := &Server{cfg: &config.Config{
+	s := &Server{logger: testLogger(), cfg: &config.Config{
 		Domains: map[string]config.Domain{
 			"keep":   {Tasks: []string{"a"}, Agents: []string{"ag1"}},
 			"remove": {Tasks: []string{"b"}, Agents: []string{"ag2"}},
@@ -63,7 +71,7 @@ func TestCleanDomainRefs_OrphanRemoval(t *testing.T) {
 }
 
 func TestCleanDomainRefs_NoChangeNoOrphan(t *testing.T) {
-	s := &Server{cfg: &config.Config{
+	s := &Server{logger: testLogger(), cfg: &config.Config{
 		Domains: map[string]config.Domain{
 			"d1": {Tasks: []string{"a"}, Agents: []string{"ag1"}},
 		},
@@ -77,7 +85,7 @@ func TestCleanDomainRefs_NoChangeNoOrphan(t *testing.T) {
 }
 
 func TestCleanDomainRefs_MultiDomain(t *testing.T) {
-	s := &Server{cfg: &config.Config{
+	s := &Server{logger: testLogger(), cfg: &config.Config{
 		Domains: map[string]config.Domain{
 			"d1": {Tasks: []string{"shared"}, Agents: []string{"ag1"}},
 			"d2": {Tasks: []string{"shared", "other"}, Agents: []string{"ag1"}},
@@ -100,7 +108,7 @@ func TestCleanDomainRefs_MultiDomain(t *testing.T) {
 }
 
 func TestCleanDomainRefs_MCPServers(t *testing.T) {
-	s := &Server{cfg: &config.Config{
+	s := &Server{logger: testLogger(), cfg: &config.Config{
 		Domains: map[string]config.Domain{
 			"d1": {Tasks: []string{"t1"}, MCPServers: []string{"db", "excel"}},
 		},
@@ -114,37 +122,74 @@ func TestCleanDomainRefs_MCPServers(t *testing.T) {
 }
 
 func TestCleanDomainRefs_MCPServersPartial(t *testing.T) {
-	s := &Server{cfg: &config.Config{
+	s := &Server{logger: testLogger(), cfg: &config.Config{
 		Domains: map[string]config.Domain{
 			"d1": {Tasks: []string{"t1"}, MCPServers: []string{"db", "excel", "telegram"}},
 		},
 	}}
-	// Only some MCP servers cleaned — domain should remain because telegram is still referenced.
+	// All entity refs (tasks) removed — domain should be deleted even though telegram MCP remains.
+	// MCP servers are shared tools, not dependents that keep a domain alive.
 	s.cleanDomainRefs([]string{"t1"}, nil, nil, []string{"db", "excel"})
 
-	d, ok := s.cfg.Domains["d1"]
-	if !ok {
-		t.Fatal("expected domain 'd1' to remain (still has mcp_servers)")
-	}
-	if len(d.MCPServers) != 1 || d.MCPServers[0] != "telegram" {
-		t.Fatalf("expected MCPServers=[telegram], got %v", d.MCPServers)
+	if _, ok := s.cfg.Domains["d1"]; ok {
+		t.Fatal("expected orphaned domain 'd1' to be deleted (MCP servers don't keep domain alive)")
 	}
 }
 
 func TestCleanDomainRefs_MCPServersOnlyNoOrphan(t *testing.T) {
-	s := &Server{cfg: &config.Config{
+	s := &Server{logger: testLogger(), cfg: &config.Config{
 		Domains: map[string]config.Domain{
 			"d1": {Tasks: []string{"t1"}, MCPServers: []string{"db"}},
 		},
 	}}
-	// Remove task but not MCP server — domain should remain.
+	// Remove task — domain should be deleted even though MCP server remains.
 	s.cleanDomainRefs([]string{"t1"}, nil, nil)
 
-	d, ok := s.cfg.Domains["d1"]
-	if !ok {
-		t.Fatal("expected domain 'd1' to remain (still has mcp_servers)")
+	if _, ok := s.cfg.Domains["d1"]; ok {
+		t.Fatal("expected orphaned domain 'd1' to be deleted (MCP servers don't keep domain alive)")
 	}
-	if len(d.MCPServers) != 1 {
-		t.Fatalf("expected MCPServers=[db], got %v", d.MCPServers)
+}
+
+func TestCleanDomainRefs_RemovesDataDir(t *testing.T) {
+	// Create a temporary data directory to simulate a domain's data dir.
+	tmpDir := t.TempDir()
+	dataDir := filepath.Join(tmpDir, "data", "mydom")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Write a file inside to make sure RemoveAll works.
+	if err := os.WriteFile(filepath.Join(dataDir, "test.db"), []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := testLogger()
+	domains := map[string]config.Domain{
+		"mydom": {Name: "mydom", DataDir: dataDir, Tasks: []string{"t1"}},
+	}
+	domMgr := domain.New(domains, logger)
+
+	s := &Server{
+		logger:    logger,
+		domainMgr: domMgr,
+		cfg: &config.Config{
+			Domains: domains,
+		},
+	}
+
+	s.cleanDomainRefs([]string{"t1"}, nil, nil)
+
+	// Domain should be removed from config.
+	if _, ok := s.cfg.Domains["mydom"]; ok {
+		t.Fatal("expected orphaned domain 'mydom' to be removed from config")
+	}
+
+	// Data directory should be removed from disk.
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Fatalf("expected data dir %s to be removed from disk, but it still exists", dataDir)
+	}
+
+	// Domain should be removed from domain manager.
+	if _, ok := domMgr.GetDomain("mydom"); ok {
+		t.Fatal("expected domain 'mydom' to be removed from domain manager")
 	}
 }

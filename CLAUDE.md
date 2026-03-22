@@ -37,6 +37,7 @@ Requires Go 1.26+. The `claude` CLI must be on PATH (or set `claude_bin` in task
 - **`pipeline/`** — Runs sequential (loop with `{{.PrevOutput}}`) or parallel (errgroup) pipelines. Factory `Run()` dispatches by mode.
 - **`subagent/`** — CRUD manager for `.claude/agents/*.md` files. Parses YAML frontmatter + markdown. Generates `--agents` JSON for task runner.
 - **`mcpmanager/`** — Process lifecycle for MCP servers (lazy start, SIGTERM/SIGKILL shutdown, health). Generates `--mcp-config` temp files.
+- **`outputcheck/`** — Pipeline step output validator. Detects "soft failures" where Claude exits 0 but output indicates the task was not completed (permission requests, tool unavailability, asking for input). Used by both API and CLI pipeline runners.
 - **`depcheck/`** — Pure-function dependency analyzer for safe deletion. Checks if tasks/agents are referenced by pipelines before allowing delete. Computes cascade items (exclusive tasks/agents) for pipeline deletion.
 - **`backup/`** — Backup manager for safe deletion with restore capability. SQLite `backup_log` table + file copies under `data/backup/{id}/`. Stores config snapshots and agent `.md` files. Supports cascade backup with parent/child entries.
 - **`runguard/`** — Concurrency guard: prevents overlapping runs of tasks/pipelines when `allow_concurrent: false`. Shared across scheduler, watcher, and API. Also serializes config-modifying operations (delete, restore) via `config:write` key.

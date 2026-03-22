@@ -1090,6 +1090,39 @@ data/backup/
     agents/reviewer.md      ← файл суб-агента
 ```
 
+### 2026-03-22 — Pipeline reliability: output validation + wizard guardrails
+
+**Проблема 1:** пайплайн `rad-control-manufacturers-sync` помечен `completed`, хотя deliver-шаг не отправил файл в Telegram. Claude вернул "Запрашиваю permission для чтения файла xlsx" с exit code 0 — runner проверял только exit code, не содержимое вывода.
+
+**Проблема 2:** wizard создал конфиг, скопировав баги из существующего пайплайна без валидации — `stop_signal: PIPELINE_DONE` в промпте первого шага, deliver-шаг читал бинарный xlsx через filesystem (невозможно), compile-шаг возвращал "только путь к файлу" без контекста для следующего шага.
+
+**Детекция "мягких" сбоев — новый пакет `internal/outputcheck/`**
+- Функция `CheckStepOutput()` сканирует вывод Claude на паттерны, указывающие что задача НЕ выполнена несмотря на exit code 0
+- Паттерны (case-insensitive): permission requests (RU/EN), tool not available, not in allowed_tools, Claude asks for input instead of completing
+- Подключена в трёх местах: `internal/api/pipelines.go`, `internal/pipeline/sequential.go`, `internal/pipeline/parallel.go`
+- Теперь шаг с таким выводом помечается `failed`, а не `completed`
+- Unit-тесты: 14 test cases (RU/EN/case-insensitive/false-positive проверки)
+
+**Wizard validation — новые проверки (`internal/wizard/applier.go`)**
+- Изменена сигнатура `validate()` → возвращает `(warnings []string, err error)`
+- **HARD ERROR**: задача с `agents` без `"Agent"` в `allowed_tools` (если allowed_tools не пуст)
+- **HARD ERROR**: задача с `mcp_servers`/`agents` с `permission_mode` != `"dontAsk"` (если указан)
+- **WARNING**: задача с `mcp_servers` без matching tools (prefix `mcp__{server}__`) в `allowed_tools`
+- **HARD ERROR** (ранее): stop_signal в промпте не-финального шага пайплайна
+
+**Wizard prompt — новые правила (`internal/wizard/prompt.go`)**
+- Rule 13: stop_signal safety — только последний шаг может выводить stop_signal; при `max_iterations: 1` лучше не использовать stop_signal
+- Rule 14: pipeline data flow — каждый шаг ОБЯЗАН выводить все данные для следующего шага; НЕЛЬЗЯ инструктировать "верни только путь к файлу"; delivery-шаги берут данные из `{{.PrevOutput}}`, не из бинарных файлов
+
+**Исправления промптов (`tasks.yaml`)**
+- `research-rad-control-manufacturers`: убрано `PIPELINE_DONE` из промпта
+- `compile-rad-control-manufacturers-excel`: "Верни только путь к файлу" → вывод SESSION_ID, NEW_COUNT, FILE, сводка
+- `compile-vet-manufacturers-excel`: аналогичное дополнение вывода
+- `deliver-rad-control-manufacturers-report`: явный запрет чтения xlsx, данные из PrevOutput
+- `deliver-vet-manufacturers-report`: аналогичное исправление
+- `rad-control-manufacturers-sync`: убран `stop_signal: PIPELINE_DONE` (не нужен при `max_iterations: 1`)
+- `vet-manufacturers-sync`: аналогично убран `stop_signal`
+
 ---
 
 ## Бэклог

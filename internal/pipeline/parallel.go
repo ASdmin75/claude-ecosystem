@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
+	"github.com/asdmin/claude-ecosystem/internal/outputcheck"
 	"github.com/asdmin/claude-ecosystem/internal/task"
 )
 
@@ -55,6 +56,8 @@ func (r *Runner) RunParallel(ctx context.Context, p config.Pipeline) (string, er
 
 			if result.Error != "" {
 				errs = append(errs, fmt.Errorf("task %s: %s", t.Name, result.Error))
+			} else if reason := outputcheck.CheckStepOutput(result.Output); reason != "" {
+				errs = append(errs, fmt.Errorf("task %s: output indicates failure: %s", t.Name, reason))
 			} else {
 				results[t.Name] = result.Output
 			}

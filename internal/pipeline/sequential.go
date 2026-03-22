@@ -9,6 +9,7 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/config"
 	"github.com/asdmin/claude-ecosystem/internal/domain"
 	"github.com/asdmin/claude-ecosystem/internal/mcpmanager"
+	"github.com/asdmin/claude-ecosystem/internal/outputcheck"
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
 	"github.com/asdmin/claude-ecosystem/internal/task"
 )
@@ -91,6 +92,11 @@ func (r *Runner) RunSequential(ctx context.Context, p config.Pipeline) (string, 
 
 			if result.Error != "" {
 				return prevOutput, fmt.Errorf("pipeline %s, step %s (iteration %d): %s", p.Name, step.Task, i, result.Error)
+			}
+
+			// Detect soft failures: exit code 0 but output indicates task was not completed.
+			if reason := outputcheck.CheckStepOutput(result.Output); reason != "" {
+				return prevOutput, fmt.Errorf("pipeline %s, step %s (iteration %d): output indicates failure: %s", p.Name, step.Task, i, reason)
 			}
 
 			// Truncate output preview to avoid flooding logs.
