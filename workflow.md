@@ -979,7 +979,7 @@ server.ServeStdio(s)
 - `AnalyzePipelineDelete(cfg, name)` — определяет каскадные элементы: задачи эксклюзивные для данного пайплайна + их эксклюзивные суб-агенты
 - `AnalyzeSubAgentDelete(cfg, name)` — блокирует удаление если агент используется в задаче
 - `DeleteAnalysis`: `Entity`, `UsedBy`, `CanDelete`, `CascadeItems`, `Blocked`, `BlockReason`
-- Unit-тесты: 7 тестов (блокировка, каскад, эксклюзивность, множественные ссылки)
+- Unit-тесты: 14 тестов (блокировка, каскад, эксклюзивность, множественные ссылки, EntityFields, BlockReason, NoCascadeWhenAllShared, CascadeAgentsFromMultipleExclusiveTasks)
 
 **Новый пакет `internal/backup/` — бэкап и восстановление**
 - SQLite-таблица `backup_log` (миграция в `backup.New()`)
@@ -987,8 +987,10 @@ server.ServeStdio(s)
 - `config_snap` — полный снимок `tasks.yaml` на момент удаления (для безопасного restore)
 - Каскадное удаление: parent backup + child entries связанные через `parent_id`
 - Методы: `CreateBackup`, `ListBackups`, `GetBackup`, `RestoreFiles`, `MarkRestored`, `GetChildren`
+- Unit-тесты: 11 тестов (CRUD, файловый бэкап/восстановление, фильтрация, сортировка, parent/child каскад, MarkRestored, not found)
 - Менеджер доменов: добавлен `RemoveDomain()` — удаление из in-memory map (data dir остаётся на диске)
 - Менеджер суб-агентов: добавлены `CreateFromBytes()` (восстановление из бэкапа) и `GetFilePath()`
+- Unit-тесты суб-агентов: 4 новых теста (CreateFromBytes, CreateFromBytes дубликат, GetFilePath, GetFilePath not found)
 
 **Новые API-эндпоинты**
 - `DELETE /api/v1/tasks/{name}` — удаление задачи с проверкой зависимостей + бэкап
@@ -1065,7 +1067,7 @@ server.ServeStdio(s)
 - [x] Восстановление удалённых элементов из бэкапа (REST API)
 
 ### Инфраструктура
-- [x] Unit-тесты: auth, events, runguard, subagent, task, store/sqlite (45+ новых тестов)
+- [x] Unit-тесты: auth, events, runguard, subagent, task, store/sqlite, depcheck, backup (75+ тестов)
 - [ ] CI/CD pipeline (GitHub Actions)
 - [x] Docker-образ (Dockerfile + docker-compose.yml)
 - [ ] Docker: авторизация Claude Code Max (OAuth) — `claude login` из контейнера не подключается к api.anthropic.com (ERR_BAD_REQUEST). Варианты: host network, DNS-fix, или ANTHROPIC_API_KEY
