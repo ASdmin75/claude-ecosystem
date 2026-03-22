@@ -563,20 +563,15 @@ tasks:
 
         ШАГ 0 — Инициализация сеанса:
         1. Сгенерируй уникальный session_id в формате: rad-YYYYMMDD-HHMMSS (например rad-20260318-143052)
-        2. Выполни SELECT name, updated_at FROM manufacturers ORDER BY name — это список УЖЕ известных производителей
-        3. Вывести: SESSION_ID: <session_id>
+        2. Выполни SELECT name, updated_at FROM manufacturers ORDER BY name — это список УЖЕ известных производителей. Дубликаты добавлять НЕЛЬЗЯ.
+        3. Вставь запись в sync_sessions: INSERT INTO sync_sessions (session_id, status) VALUES ('<session_id>', 'running')
 
-        Используй агента rad-control-manufacturers-researcher для проведения исследования.
+        Используй агента rad-control-manufacturers-researcher для поиска новых производителей.
 
-        Агент должен:
-        - Найти НОВЫХ производителей дозиметров, радиационных мониторов, детекторов и другого оборудования радиационного контроля
-        - Проверить каждую компанию на предмет экспорта и авиаперевозок
-        - Сохранить каждого нового производителя в БД
-        - Завершить сеанс и вывести итоги
-
-        В конце выведи ОБЯЗАТЕЛЬНО:
+        В конце выведи:
         SESSION_ID: <session_id>
-        NEW_COUNT: <количество новых>
+        NEW_MANUFACTURERS: <количество новых>
+        TOTAL_IN_DB: <всего в базе>
       work_dir: .
       schedule: 0 8 * * 1
       tags:
@@ -611,24 +606,23 @@ tasks:
 
         Извлеки SESSION_ID из предыдущего вывода (строка вида SESSION_ID: rad-XXXXXXXX-XXXXXX). Используй его для фильтрации.
 
-        Фильтрация: выгружай только записи WHERE session_id = '<извлечённый session_id>'.
+        Фильтрация: выгружай только записи с session_id = '<извлечённый SESSION_ID>'.
 
         SQL для получения данных:
-        SELECT name, legal_name, city, website, phone, email, product_categories, product_types, certifications, exports_abroad, export_countries, air_export, air_export_notes, regulatory_approvals, source, source_url, created_at FROM manufacturers WHERE session_id = '<session_id>' ORDER BY name;
+        SELECT name, legal_name, city, address, website, phone, email, product_categories, license_no, exports_abroad, air_export, export_countries, source, notes FROM manufacturers WHERE session_id = '<SESSION_ID>' ORDER BY name;
 
-        Если NEW_COUNT = 0 или данных нет — создай файл с одним листом «No new data» и соответствующим сообщением.
+        Создай файл: data/rad-control-manufacturers-belarus/rad-control-manufacturers-{{.Date}}.xlsx
 
-        Структура Excel-файла:
-        1. Лист «Manufacturers» — таблица со всеми найденными производителями (все поля выше)
-        2. Лист «Summary» — итоги: дата, session_id, количество новых, разбивка по городам и категориям продукции
+        Лист 1 — «Производители» — таблица со всеми найденными производителями.
+        Лист 2 — «Сводка» — итоги: всего новых, городов, экспортируют за рубеж, используют авиадоставку.
 
-        Сохрани файл: data/rad-control-manufacturers-belarus/rad-control-manufacturers-{{.Date}}.xlsx
-
-        В конце ОБЯЗАТЕЛЬНО выведи всю эту информацию (deliver-шаг зависит от неё):
+        В конце выведи:
         SESSION_ID: <session_id>
-        NEW_COUNT: <количество>
-        FILE: <путь к файлу>
-        Краткая сводка: топ-3 компании с категориями продукции (если есть).
+        FILE: data/rad-control-manufacturers-belarus/rad-control-manufacturers-{{.Date}}.xlsx
+        NEW_MANUFACTURERS: <количество строк в отчёте>
+        EXPORTS_ABROAD: <количество>
+        AIR_EXPORT: <количество>
+        CITIES: <топ-3 города>
       work_dir: .
       tags:
         - rad-control
@@ -654,25 +648,7 @@ tasks:
       permission_mode: dontAsk
     - name: deliver-rad-control-manufacturers-report
       domain: rad-control-manufacturers-belarus
-      prompt: |
-        Отправь отчёт по НОВЫМ производителям оборудования радиационного контроля Беларуси.
-
-        Данные из предыдущего шага (здесь уже есть вся нужная информация — НЕ пытайся читать xlsx файл):
-        {{.PrevOutput}}
-
-        Извлеки SESSION_ID и количество новых производителей из текста выше.
-
-        Путь к файлу отчёта: data/rad-control-manufacturers-belarus/rad-control-manufacturers-{{.Date}}.xlsx
-
-        Действия:
-        1. Проверь что файл существует через mcp__filesystem__list_directory (папка data/rad-control-manufacturers-belarus/)
-        2. Отправь в Telegram текстовое сообщение с резюме (используй данные из PrevOutput, НЕ читай xlsx):
-           - Дата: {{.Date}}, сеанс: <SESSION_ID>
-           - Найдено новых производителей: <количество>
-           - Топ-3 новых компании (если есть): название и категория продукции
-        3. Отправь файл xlsx как документ в Telegram через mcp__telegram__send_document указав путь к файлу.
-
-        Если новых производителей 0 — отправь только текстовое сообщение «Новых производителей не найдено» без файла.
+      prompt: "Отправь отчёт по НОВЫМ производителям оборудования радиационного контроля Беларуси.\n\nДанные из предыдущего шага (здесь уже есть вся нужная информация — НЕ пытайся читать xlsx файл):\n{{.PrevOutput}}\n\nИзвлеки SESSION_ID, статистику и путь к файлу из текста выше.\n\nПуть к файлу отчёта: data/rad-control-manufacturers-belarus/rad-control-manufacturers-{{.Date}}.xlsx\n\nОтправь сообщение в Telegram:\n\U0001F4E1 Производители оборудования радиационного контроля — {{.Date}}\n\n\U0001F195 Новых производителей: <NEW_MANUFACTURERS>\n\U0001F30D Экспортируют за рубеж: <EXPORTS_ABROAD>\n✈️ Используют авиаперевозки: <AIR_EXPORT>\n\U0001F3D9 Города: <CITIES>\n\nЗатем отправь xlsx-файл как документ в Telegram.\n\nЕсли NEW_MANUFACTURERS = 0, отправь только сообщение: «Новых производителей не найдено. База актуальна.» и не отправляй файл.\n"
       work_dir: .
       tags:
         - rad-control
@@ -912,33 +888,27 @@ domains:
               website TEXT,
               phone TEXT,
               email TEXT,
-              unp TEXT,
-              product_categories TEXT,
-              product_types TEXT,
-              certifications TEXT,
               license_no TEXT,
               license_issuer TEXT,
               exports_abroad INTEGER DEFAULT 0,
               air_export INTEGER DEFAULT 0,
               export_countries TEXT,
               air_export_notes TEXT,
-              regulatory_approvals TEXT,
+              product_categories TEXT,
               source TEXT,
-              source_url TEXT,
-              session_id TEXT,
               notes TEXT,
-              raw_json TEXT,
-              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              session_id TEXT,
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(name)
             );
-            CREATE TABLE IF NOT EXISTS research_sessions (
+            CREATE TABLE IF NOT EXISTS sync_sessions (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
-              session_id TEXT UNIQUE NOT NULL,
-              started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              completed_at DATETIME,
+              session_id TEXT UNIQUE,
+              started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+              finished_at TEXT,
               new_count INTEGER DEFAULT 0,
-              notes TEXT
+              status TEXT DEFAULT 'running'
             );
         domain_doc: DOMAIN.md
         tasks:

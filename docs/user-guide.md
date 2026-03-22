@@ -852,14 +852,15 @@ mcp_servers:
 | `WHISPER_BIN` | **Да** | Путь к бинарнику whisper-cli |
 | `WHISPER_MODEL` | **Да** | Путь к модели по умолчанию (ggml-*.bin) |
 | `WHISPER_MODELS_DIR` | **Да** | Директория с моделями |
-| `WHISPER_THREADS` | Нет | Количество потоков (default: 4) |
+| `WHISPER_THREADS` | Нет | Количество потоков на один файл (default: 4) |
+| `WHISPER_WORKERS` | Нет | Количество параллельных воркеров в `batch_transcribe` (default: 4). Рекомендация: `THREADS × WORKERS ≤ количество CPU ядер` |
 
 #### Инструменты
 
 | Инструмент | Описание |
 |---|---|
 | `transcribe_audio` | Транскрипция одного аудиофайла. Параметры: `path`, `language` (auto/ru/en/...), `translate`, `output_format` (txt/srt/vtt/json). Для srt/vtt/json — файл сохраняется рядом с входным, путь возвращается как `file:<path>` в первой строке |
-| `batch_transcribe` | Транскрипция множества файлов за один вызов. Параметры: `files` (массив путей), `output_format`, `language`. Идемпотентно: пропускает файлы с существующим выходным файлом на диске (status: `skipped`). Возвращает JSON с per-file результатами. Экономит токены: 1 tool-call вместо N |
+| `batch_transcribe` | Транскрипция множества файлов за один вызов с параллельным worker pool (настраивается через `WHISPER_WORKERS`). Параметры: `files` (массив путей), `output_format`, `language`. Идемпотентно: пропускает файлы с существующим выходным файлом на диске (status: `skipped`). Возвращает JSON с per-file результатами. Экономит токены: 1 tool-call вместо N |
 | `list_models` | Список доступных моделей с отметкой скачанных |
 | `download_model` | Скачивание модели с Hugging Face. Модели: tiny, base, small, medium, large-v3, large-v3-turbo |
 

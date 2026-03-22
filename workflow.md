@@ -1123,6 +1123,25 @@ data/backup/
 - `rad-control-manufacturers-sync`: убран `stop_signal: PIPELINE_DONE` (не нужен при `max_iterations: 1`)
 - `vet-manufacturers-sync`: аналогично убран `stop_signal`
 
+### 2026-03-22 — Оптимизация пайплайна rad-control-manufacturers-sync
+
+**Упрощение схемы БД домена `rad-control-manufacturers-belarus`:**
+- Удалены избыточные колонки из таблицы `manufacturers`: `unp`, `product_categories`, `product_types`, `certifications`
+- Оставлены поля, релевантные для отчёта: `license_no`, `license_issuer`, `exports_abroad`, `air_export`, `export_countries`, `air_export_notes`, `source`, `notes`
+- Добавлена таблица `sync_sessions` (session_id, started_at, finished_at, new_count, status) — отслеживание запусков пайплайна
+
+**Выделение суб-агента `rad-control-manufacturers-researcher`:**
+- Инструкции исследователя вынесены из inline-промпта задачи `research-rad-control-manufacturers` в отдельный файл `.claude/agents/rad-control-manufacturers-researcher.md`
+- Агент: поиск по реестрам Госстандарта, ТПП, аккредитации, export.by, профильным выставкам
+- 4-шаговый процесс: инициализация сессии → поиск → квалификация и сохранение → финализация
+- Встроенная дедупликация: SELECT known → check_exists → INSERT только новых
+- Запись в `sync_sessions`: статус `running` → `done`, подсчёт `new_count`
+
+**Оптимизация промптов:**
+- `research-rad-control-manufacturers`: упрощён до делегирования агенту, убраны inline-инструкции
+- `compile-rad-control-manufacturers-excel`: SQL-запрос обновлён под новую схему (убраны несуществующие колонки)
+- `deliver-rad-control-manufacturers-report`: задача удалена — deliver-логика интегрирована в compile-шаг (пайплайн упрощён до 2 шагов: research → compile+deliver)
+
 ---
 
 ## Бэклог
