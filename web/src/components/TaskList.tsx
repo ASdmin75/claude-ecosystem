@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { Task, DeleteAnalysis } from '../types'
 import ConfirmModal from './ConfirmModal'
 
@@ -19,6 +19,19 @@ export default function TaskList() {
   const [isNew, setIsNew] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [deleteAnalysis, setDeleteAnalysis] = useState<DeleteAnalysis | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  useEffect(() => {
+    const selectName = searchParams.get('select')
+    if (selectName && tasks) {
+      const found = tasks.find((t) => t.name === selectName)
+      if (found) {
+        setEditing({ ...found })
+        setIsNew(false)
+      }
+      setSearchParams({}, { replace: true })
+    }
+  }, [tasks, searchParams, setSearchParams])
 
   const runMutation = useMutation({
     mutationFn: (name: string) => api.runTaskAsync(name),

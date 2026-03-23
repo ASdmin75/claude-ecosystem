@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import type { Pipeline, DeleteAnalysis } from '../types'
 import ConfirmModal from './ConfirmModal'
 
@@ -235,6 +236,16 @@ function PipelineEditor({ pipeline, isNew, onChange, onSave, onCancel, saving }:
                   className={`flex-1 px-2 py-1 border border-gray-300 dark:border-gray-600 rounded text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100`}
                   required
                 />
+                {step.task && (
+                  <Link
+                    to={`/tasks?select=${encodeURIComponent(step.task)}`}
+                    title={`Go to task "${step.task}"`}
+                    className="text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 text-sm shrink-0"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    ↗
+                  </Link>
+                )}
                 <button type="button" onClick={() => moveStep(i, -1)} disabled={i === 0} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-sm disabled:opacity-30">↑</button>
                 <button type="button" onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-sm disabled:opacity-30">↓</button>
                 <button type="button" onClick={() => removeStep(i)} className="text-red-400 hover:text-red-600 dark:hover:text-red-300 text-sm">×</button>

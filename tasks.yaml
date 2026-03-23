@@ -667,6 +667,357 @@ tasks:
         - mcp__filesystem__read_file
       max_turns: 10
       permission_mode: dontAsk
+    - name: 4log-fetch-daily-data
+      domain: 4logist
+      prompt: |
+        Сегодня {{.Date}}. Загрузи данные из CRM 4Logist за вчерашний день и сохрани в локальную БД.
+
+        Вычисли вчерашнюю дату от {{.Date}} (формат YYYY-MM-DD). Используй её как фильтр.
+
+        Авторизация в API обрабатывается автоматически — не вызывай эндпоинты токенов вручную.
+
+        ШАГ 1 — Загрузка заказов:
+        Вызови mcp__4log-api__post_api_order_list с фильтром по дате создания за вчера.
+        Для каждого заказа выполни:
+        INSERT OR REPLACE INTO orders (order_id, client_id, status, created_date, delivery_date, amount, cargo_type, origin, destination, notes, raw_json, updated_at)
+        VALUES ('<id>', '<client_id>', '<status>', '<created_date>', '<delivery_date>', <amount>, '<cargo_type>', '<origin>', '<destination>', '<notes>', '<raw_json>', CURRENT_TIMESTAMP);
+
+        ШАГ 2 — Загрузка клиентов:
+        Вызови mcp__4log-api__post_api_client_list.
+        Для каждого клиента выполни:
+        INSERT OR REPLACE INTO clients (client_id, name, contact_person, phone, email, address, raw_json, updated_at)
+        VALUES ('<client_id>', '<name>', '<contact>', '<phone>', '<email>', '<address>', '<raw_json>', CURRENT_TIMESTAMP);
+
+        ШАГ 3 — Загрузка счетов:
+        Вызови mcp__4log-api__post_api_invoices_list с фильтром по дате за вчера.
+        Для каждого счёта выполни:
+        INSERT OR REPLACE INTO invoices (invoice_id, order_id, client_id, amount, status, issue_date, due_date, paid_date, raw_json, updated_at)
+        VALUES ('<invoice_id>', '<order_id>', '<client_id>', <amount>, '<status>', '<issue_date>', '<due_date>', '<paid_date>', '<raw_json>', CURRENT_TIMESTAMP);
+
+        ШАГ 4 — Подсчитай итоги из БД:
+        SELECT COUNT(*) FROM orders WHERE created_date = '<вчера>';
+        SELECT COUNT(*) FROM clients;
+        SELECT COUNT(*), SUM(amount) FROM invoices WHERE issue_date = '<вчера>';
+
+        Выведи сводку ТОЧНО в этом формате:
+        Дата отчёта: <вчера>
+        Загружено заказов: <N>
+        Загружено клиентов: <N>
+        Загружено счетов: <N>
+        Общая сумма по счетам: <сумма>
+      work_dir: .
+      tags:
+        - 4logist
+        - fetch
+        - daily
+      model: sonnet
+      timeout: 15m
+      mcp_servers:
+        - 4log-api
+        - database
+      allowed_tools:
+        - mcp__4log-api__post_api_order_list
+        - mcp__4log-api__post_api_client_list
+        - mcp__4log-api__post_api_invoices_list
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__insert
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+        - mcp__database__check_exists
+      max_turns: 40
+      max_budget_usd: 1.5
+      permission_mode: dontAsk
+    - name: 4log-compile-daily-excel
+      domain: 4logist
+      prompt: |
+        Сформируй Excel-отчёт по данным CRM 4Logist.
+
+        Данные из предыдущего шага:
+        {{.PrevOutput}}
+
+        Извлеки дату отчёта (строка «Дата отчёта: YYYY-MM-DD») и статистику из предыдущего вывода.
+
+        ШАГ 1 — Создай директорию для отчётов (если не существует):
+        mcp__filesystem__create_directory: data/4logist/reports
+
+        ШАГ 2 — Получи данные из БД (используй дату из PrevOutput как <дата_вчера>):
+
+        Заказы:
+        SELECT o.order_id, c.name AS client_name, o.status, o.created_date, o.delivery_date, o.amount, o.cargo_type, o.origin, o.destination
+        FROM orders o LEFT JOIN clients c ON o.client_id = c.client_id
+        WHERE o.created_date = '<дата_вчера>' ORDER BY o.created_date DESC;
+
+        Клиенты:
+        SELECT client_id, name, contact_person, phone, email, address FROM clients ORDER BY name;
+
+        Счета:
+        SELECT i.invoice_id, i.order_id, c.name AS client_name, i.amount, i.status, i.issue_date, i.due_date, i.paid_date
+        FROM invoices i LEFT JOIN clients c ON i.client_id = c.client_id
+        WHERE i.issue_date = '<дата_вчера>' ORDER BY i.issue_date DESC;
+
+        ШАГ 3 — Создай Excel файл:
+        Путь: data/4logist/reports/4logist-daily-{{.Date}}.xlsx
+
+        Лист «Заказы»: таблица с заголовками: Номер заказа | Клиент | Статус | Дата создания | Дата доставки | Сумма | Тип груза | Откуда | Куда
+        Лист «Клиенты»: таблица с заголовками: ID | Название | Контактное лицо | Телефон | Email | Адрес
+        Лист «Финансы»: таблица счетов с заголовками: Номер счёта | Номер заказа | Клиент | Сумма | Статус | Дата выставления | Срок оплаты | Дата оплаты; добавь итоговую строку с суммой всех счетов.
+
+        ШАГ 4 — Выведи ТОЧНО в этом формате:
+        Файл отчёта: data/4logist/reports/4logist-daily-{{.Date}}.xlsx
+        Заказов в отчёте: <N>
+        Клиентов в отчёте: <N>
+        Счетов в отчёте: <N>
+        Общая сумма счетов: <сумма>
+        Дата отчёта: <дата_вчера>
+      work_dir: .
+      tags:
+        - 4logist
+        - excel
+        - report
+        - daily
+      model: sonnet
+      timeout: 10m
+      mcp_servers:
+        - database
+        - excel
+        - filesystem
+      allowed_tools:
+        - mcp__database__query
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+        - mcp__excel__create_spreadsheet
+        - mcp__excel__write_spreadsheet
+        - mcp__excel__add_styled_table
+        - mcp__filesystem__write_file
+        - mcp__filesystem__list_directory
+        - mcp__filesystem__create_directory
+      max_turns: 20
+      permission_mode: dontAsk
+    - name: 4log-deliver-daily-report
+      domain: 4logist
+      prompt: "Отправь ежедневный отчёт CRM 4Logist в Telegram.\n\nДанные из предыдущего шага (НЕ пытайся читать xlsx файл — используй только текст ниже):\n{{.PrevOutput}}\n\nИзвлеки из предыдущего вывода:\n- Путь к файлу xlsx (строка «Файл отчёта: ...»)\n- Кол-во заказов, клиентов, счетов\n- Общую сумму счетов\n- Дату отчёта\n\nШАГ 1 — Составь текстовое сообщение ТОЧНО в этом формате:\n\U0001F4CA Ежедневный отчёт 4Logist — <дата отчёта>\n\n\U0001F4E6 Заказов за день: <N>\n\U0001F465 Клиентов в базе: <N>\n\U0001F4B0 Счетов выставлено: <N>\n\U0001F4B5 Общая сумма: <сумма>\n\nОтчёт во вложении.\n\nШАГ 2 — Отправь текстовое сообщение через mcp__telegram__send_message.\n\nШАГ 3 — Отправь файл через mcp__telegram__send_document, используя путь из предыдущего вывода.\n"
+      work_dir: .
+      tags:
+        - 4logist
+        - telegram
+        - delivery
+        - daily
+      model: haiku
+      timeout: 5m
+      mcp_servers:
+        - telegram
+        - filesystem
+      allowed_tools:
+        - mcp__telegram__send_message
+        - mcp__telegram__send_document
+        - mcp__filesystem__list_directory
+      max_turns: 10
+      permission_mode: dontAsk
+    - name: 4log-fetch-active-orders
+      domain: 4logist
+      prompt: |
+        Сегодня {{.Date}}. Получи актуальные статусы активных заказов из CRM 4Logist и зафиксируй изменения в БД.
+
+        Авторизация обрабатывается автоматически.
+
+        ШАГ 1 — Получи активные заказы:
+        Вызови mcp__4log-api__post_api_order_list (без фильтра по дате или с фильтром «активные»).
+
+        ШАГ 2 — Получи справочник статусов:
+        Вызови mcp__4log-api__post_api_order_statuses_list.
+
+        ШАГ 3 — Для каждого заказа из ответа API:
+        a) Запроси текущий статус из БД: SELECT status FROM orders WHERE order_id = '<id>';
+        b) Если статус изменился ИЛИ запись новая:
+           - INSERT INTO order_status_history (order_id, status, previous_status) VALUES ('<id>', '<новый_статус>', '<старый_статус_или_NULL>');
+           - INSERT OR REPLACE INTO orders (order_id, client_id, status, updated_at, fetched_at) VALUES ('<id>', '<client_id>', '<статус>', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT(order_id) DO UPDATE SET status=excluded.status, updated_at=CURRENT_TIMESTAMP;
+
+        ШАГ 4 — Выведи ТОЧНО в этом формате:
+        Всего активных заказов: <N>
+        Изменений статусов: <N>
+        Список изменений:
+        <order_id>: <старый_статус> → <новый_статус>
+        ... (или «нет изменений» если 0)
+      work_dir: .
+      tags:
+        - 4logist
+        - monitor
+        - orders
+        - statuses
+      model: sonnet
+      timeout: 10m
+      mcp_servers:
+        - 4log-api
+        - database
+      allowed_tools:
+        - mcp__4log-api__post_api_order_list
+        - mcp__4log-api__post_api_order_statuses_list
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__insert
+        - mcp__database__check_exists
+      max_turns: 50
+      max_budget_usd: 0.5
+      permission_mode: dontAsk
+    - name: 4log-notify-order-changes
+      domain: 4logist
+      prompt: "Проверь изменения статусов заказов 4Logist и отправь уведомление в Telegram.\n\nДанные из предыдущего шага:\n{{.PrevOutput}}\n\nЕсли в предыдущем выводе «Изменений статусов: 0» — не отправляй уведомление, выведи «Нет изменений статусов» и завершись.\n\nЕсли изменения есть:\n\nШАГ 1 — Получи необработанные изменения из БД:\nSELECT h.id, h.order_id, h.previous_status, h.status, h.changed_at,\n       c.name AS client_name\nFROM order_status_history h\nLEFT JOIN orders o ON h.order_id = o.order_id\nLEFT JOIN clients c ON o.client_id = c.client_id\nWHERE h.notified = 0\nORDER BY h.changed_at DESC;\n\nШАГ 2 — Составь сообщение:\n\U0001F514 Изменения статусов заказов 4Logist\n\U0001F550 <текущее время>\n\nДля каждого изменения:\n\U0001F4E6 Заказ #<order_id> (<client_name или «Клиент неизвестен»>)\n   <previous_status или «новый»> → <status>\n   Время: <changed_at>\n\nШАГ 3 — Отправь сообщение через mcp__telegram__send_message.\n\nШАГ 4 — Отметь изменения как отправленные:\nUPDATE order_status_history SET notified = 1 WHERE notified = 0;\n"
+      work_dir: .
+      tags:
+        - 4logist
+        - monitor
+        - telegram
+        - notify
+      model: haiku
+      timeout: 5m
+      mcp_servers:
+        - telegram
+        - database
+      allowed_tools:
+        - mcp__telegram__send_message
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__list_tables
+      max_turns: 15
+      permission_mode: dontAsk
+    - name: 4log-fetch-weekly-data
+      domain: 4logist
+      prompt: |
+        Сегодня {{.Date}}. Загрузи данные из CRM 4Logist за последние 5 рабочих дней и сохрани в локальную БД.
+
+        Вычисли 5 последних рабочих дней от {{.Date}} в обратном порядке, пропуская субботу (weekday=6) и воскресенье (weekday=0). Например, если сегодня вторник 2026-03-24, то список рабочих дней: 2026-03-23 (пн), 2026-03-20 (пт), 2026-03-19 (чт), 2026-03-18 (ср), 2026-03-17 (вт).
+
+        Авторизация в API обрабатывается автоматически — не вызывай эндпоинты токенов вручную.
+
+        Для каждого из 5 рабочих дней выполни следующие шаги:
+
+        ШАГ 1 — Загрузка заказов:
+        Вызови mcp__4log-api__post_api_order_list с фильтром по конкретной дате (date_from и date_to = текущий обрабатываемый день).
+        Для каждого заказа проверь через mcp__database__check_exists (таблица orders, поле order_id).
+        Если заказ новый — вставь через mcp__database__insert.
+        Если существует — обнови статус и сумму через mcp__database__execute (UPDATE orders SET status=..., amount=..., updated_at=CURRENT_TIMESTAMP WHERE order_id=...).
+
+        ШАГ 2 — Загрузка клиентов (один раз, не per day):
+        Вызови mcp__4log-api__post_api_client_list.
+        Для каждого клиента проверь через mcp__database__check_exists (таблица clients, поле client_id).
+        Новых клиентов сохрани через mcp__database__insert.
+
+        ШАГ 3 — Загрузка счетов:
+        Вызови mcp__4log-api__post_api_invoices_list с фильтром по каждому рабочему дню.
+        Для каждого счёта проверь через mcp__database__check_exists (таблица invoices, поле invoice_id).
+        Новые счета сохрани через mcp__database__insert.
+
+        В конце выведи итоговую сводку строго в этом формате:
+        Период отчёта: YYYY-MM-DD — YYYY-MM-DD
+        Рабочих дней: 5 ([дата1, дата2, дата3, дата4, дата5])
+        Заказов загружено/обновлено: N
+        Клиентов загружено: N
+        Счетов загружено: N
+        Общая сумма счетов: N
+      work_dir: .
+      tags:
+        - 4logist
+        - fetch
+        - weekly
+      model: sonnet
+      timeout: 20m
+      mcp_servers:
+        - 4log-api
+        - database
+      allowed_tools:
+        - mcp__4log-api__post_api_order_list
+        - mcp__4log-api__post_api_client_list
+        - mcp__4log-api__post_api_invoices_list
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__insert
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+        - mcp__database__check_exists
+      max_turns: 80
+      max_budget_usd: 3
+      permission_mode: dontAsk
+    - name: 4log-compile-weekly-excel
+      domain: 4logist
+      prompt: |
+        Сформируй Excel-отчёт по данным CRM 4Logist за последние 5 рабочих дней.
+
+        Данные из предыдущего шага:
+        {{.PrevOutput}}
+
+        Извлеки из предыдущего вывода:
+        - Период отчёта (строка «Период отчёта: YYYY-MM-DD — YYYY-MM-DD»)
+        - Список рабочих дней
+        - Статистику (заказы, клиенты, счета, сумма)
+
+        ШАГ 1 — Создай директорию для отчётов (если не существует):
+        mcp__filesystem__create_directory: data/4logist/reports
+
+        ШАГ 2 — Получи данные из БД за период:
+        - Заказы: SELECT o.order_id, o.client_id, c.name as client_name, o.status, o.created_date, o.delivery_date, o.amount, o.cargo_type, o.origin, o.destination, o.notes FROM orders o LEFT JOIN clients c ON o.client_id = c.client_id WHERE o.created_date BETWEEN '<date_from>' AND '<date_to>' ORDER BY o.created_date DESC
+        - Клиенты (новые за период): SELECT client_id, name, phone, email, city FROM clients WHERE created_at >= '<date_from>' ORDER BY name
+        - Счета: SELECT i.invoice_id, i.order_id, c.name as client_name, i.amount, i.status, i.invoice_date FROM invoices i LEFT JOIN clients c ON i.client_id = c.client_id WHERE i.invoice_date BETWEEN '<date_from>' AND '<date_to>' ORDER BY i.invoice_date DESC
+        - Итоги по дням: SELECT created_date, COUNT(*) as orders_count, SUM(amount) as total_amount FROM orders WHERE created_date BETWEEN '<date_from>' AND '<date_to>' GROUP BY created_date ORDER BY created_date
+
+        ШАГ 3 — Создай Excel-файл data/4logist/reports/4logist-weekly-<date_from>-<date_to>.xlsx с листами:
+        1. «Сводка» — период, статистика по дням (таблица: дата, кол-во заказов, сумма), итоги
+        2. «Заказы» — полная таблица заказов за период
+        3. «Клиенты» — новые клиенты за период
+        4. «Счета» — таблица счетов за период
+
+        В конце выведи:
+        Файл отчёта: data/4logist/reports/4logist-weekly-<date_from>-<date_to>.xlsx
+        Период: <date_from> — <date_to>
+        Заказов: N
+        Общая сумма: N
+        Клиентов: N
+        Счетов: N
+      work_dir: .
+      tags:
+        - 4logist
+        - excel
+        - report
+        - weekly
+      model: sonnet
+      timeout: 15m
+      mcp_servers:
+        - database
+        - excel
+        - filesystem
+      allowed_tools:
+        - mcp__database__query
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+        - mcp__excel__create_spreadsheet
+        - mcp__excel__write_spreadsheet
+        - mcp__excel__add_styled_table
+        - mcp__filesystem__write_file
+        - mcp__filesystem__list_directory
+        - mcp__filesystem__create_directory
+        - mcp__excel__read_spreadsheet
+      max_turns: 25
+      permission_mode: dontAsk
+    - name: 4log-deliver-weekly-report
+      domain: 4logist
+      prompt: "Отправь еженедельный отчёт CRM 4Logist в Telegram.\n\nДанные из предыдущего шага (НЕ пытайся читать xlsx файл — используй только текст ниже):\n{{.PrevOutput}}\n\nИзвлеки из предыдущего вывода:\n- Путь к файлу xlsx (строка «Файл отчёта: ...»)\n- Период отчёта\n- Кол-во заказов\n- Общую сумму\n- Кол-во клиентов\n- Кол-во счетов\n\nШАГ 1 — Отправь текстовое сообщение в Telegram:\n\U0001F4CA Еженедельный отчёт 4Logist\n\U0001F4C5 Период: <период>\n\n\U0001F4E6 Заказы: <кол-во>\n\U0001F4B0 Сумма счетов: <сумма>\n\U0001F465 Клиенты: <кол-во>\n\U0001F9FE Счета: <кол-во>\n\nШАГ 2 — Отправь xlsx файл через mcp__telegram__send_document.\n\nЕсли файл не найден — выведи ошибку и завершись.\n"
+      work_dir: .
+      tags:
+        - 4logist
+        - telegram
+        - delivery
+        - weekly
+      model: haiku
+      timeout: 5m
+      mcp_servers:
+        - telegram
+        - filesystem
+      allowed_tools:
+        - mcp__telegram__send_message
+        - mcp__telegram__send_document
+        - mcp__filesystem__list_directory
+      max_turns: 10
+      permission_mode: dontAsk
 pipelines:
     - name: review-fix
       mode: sequential
@@ -723,6 +1074,26 @@ pipelines:
         - task: compile-rad-control-manufacturers-excel
         - task: deliver-rad-control-manufacturers-report
       max_iterations: 1
+    - name: 4log-daily-report
+      mode: sequential
+      steps:
+        - task: 4log-fetch-daily-data
+        - task: 4log-compile-daily-excel
+        - task: 4log-deliver-daily-report
+      max_iterations: 1
+    - name: 4log-order-monitor
+      mode: sequential
+      steps:
+        - task: 4log-fetch-active-orders
+        - task: 4log-notify-order-changes
+      max_iterations: 1
+    - name: 4log-weekly-report
+      mode: sequential
+      steps:
+        - task: 4log-fetch-weekly-data
+        - task: 4log-compile-weekly-excel
+        - task: 4log-deliver-weekly-report
+      max_iterations: 1
 mcp_servers:
     - name: database
       command: ./bin/mcp-database
@@ -762,7 +1133,37 @@ mcp_servers:
         OPENAPI_OAUTH2_TOKEN_URL: https://ooolkp.ddnsfree.com:8088/openapi/v1.0/get_token
         OPENAPI_SPEC_PATH: specs/yeastar-pseries.yaml
         OPENAPI_TLS_INSECURE: "true"
+    - name: 4log-api
+      command: ./bin/mcp-openapi
+      env:
+        OPENAPI_AUTH_TYPE: oauth2_client_credentials
+        OPENAPI_BASE_URL: ${4LOG_API_URL}
+        OPENAPI_OAUTH2_CLIENT_ID: ${4LOG_CLIENT_ID}
+        OPENAPI_OAUTH2_CLIENT_SECRET: ${4LOG_CLIENT_SECRET}
+        OPENAPI_OAUTH2_TOKEN_URL: ${4LOG_API_URL}/oauth/v2/token
+        OPENAPI_SPEC_PATH: specs/4log.json
 domains:
+    4logist:
+        description: '4Logist CRM data: orders, clients, invoices, and order status change history for daily reporting and real-time monitoring'
+        data_dir: data/4logist
+        db: 4logist.db
+        schema: CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT UNIQUE, client_id TEXT, status TEXT, created_date TEXT, delivery_date TEXT, amount REAL, cargo_type TEXT, origin TEXT, destination TEXT, notes TEXT, raw_json TEXT, fetched_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS clients (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id TEXT UNIQUE, name TEXT, contact_person TEXT, phone TEXT, email TEXT, address TEXT, raw_json TEXT, fetched_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT UNIQUE, order_id TEXT, client_id TEXT, amount REAL, status TEXT, issue_date TEXT, due_date TEXT, paid_date TEXT, raw_json TEXT, fetched_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS order_status_history (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT NOT NULL, status TEXT NOT NULL, previous_status TEXT, changed_at TEXT DEFAULT CURRENT_TIMESTAMP, notified INTEGER DEFAULT 0);
+        domain_doc: DOMAIN.md
+        tasks:
+            - 4log-fetch-daily-data
+            - 4log-compile-daily-excel
+            - 4log-deliver-daily-report
+            - 4log-fetch-active-orders
+            - 4log-notify-order-changes
+        pipelines:
+            - 4log-daily-report
+            - 4log-order-monitor
+        mcp_servers:
+            - 4log-api
+            - database
+            - excel
+            - telegram
+            - filesystem
     export-by-aviation:
         description: Лиды с export.by — белорусские экспортёры, нуждающиеся в авиаперевозке грузов. MCP-сервер exportby выполняет скрейпинг сайта и хранит сырые данные в raw_companies. Задача analyze оценивает aviation_priority на основе данных в БД без обращения к сайту.
         data_dir: data/export-by-aviation

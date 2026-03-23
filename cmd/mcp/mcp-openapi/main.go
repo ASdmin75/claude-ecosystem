@@ -45,6 +45,7 @@ type apiOperation struct {
 	Parameters  []apiParameter
 	HasBody     bool
 	BodySchema  map[string]any
+	BodyKeyMap map[string]string // sanitized key → original key (for bracket notation)
 }
 
 type generatedTool struct {
@@ -515,7 +516,8 @@ func extractOperations(model *libopenapi.DocumentModel[v3.Document]) []apiOperat
 				jsonContent := findJSONContent(op.RequestBody.Content)
 				if jsonContent != nil && jsonContent.Schema != nil {
 					apiOp.HasBody = true
-					apiOp.BodySchema = schemaToMap(jsonContent.Schema.Schema(), 0)
+					apiOp.BodyKeyMap = make(map[string]string)
+					apiOp.BodySchema = schemaToMapWithKeyMap(jsonContent.Schema.Schema(), 0, apiOp.BodyKeyMap)
 				}
 			}
 
@@ -550,7 +552,46 @@ func findJSONContent(content *orderedmap.Map[string, *v3.MediaType]) *v3.MediaTy
 
 const maxSchemaDepth = 3
 
+// sanitizePropertyKey replaces characters invalid for Claude tool property keys.
+// Pattern: ^[a-zA-Z0-9_.-]{1,64}$
+var invalidPropKeyRe = regexp.MustCompile(`[^a-zA-Z0-9_.\-]`)
+
+func sanitizePropertyKey(key string) string {
+	sanitized := invalidPropKeyRe.ReplaceAllString(key, "_")
+	if len(sanitized) > 64 {
+		sanitized = sanitized[:64]
+	}
+	return sanitized
+}
+
+// restoreBodyKeys recursively replaces sanitized keys back to originals in a body map.
+func restoreBodyKeys(data any, keyMap map[string]string) any {
+	switch v := data.(type) {
+	case map[string]any:
+		restored := make(map[string]any, len(v))
+		for k, val := range v {
+			origKey := k
+			if orig, ok := keyMap[k]; ok {
+				origKey = orig
+			}
+			restored[origKey] = restoreBodyKeys(val, keyMap)
+		}
+		return restored
+	case []any:
+		for i, item := range v {
+			v[i] = restoreBodyKeys(item, keyMap)
+		}
+		return v
+	default:
+		return data
+	}
+}
+
 func schemaToMap(schema *base.Schema, depth int) map[string]any {
+	return schemaToMapWithKeyMap(schema, depth, nil)
+}
+
+func schemaToMapWithKeyMap(schema *base.Schema, depth int, keyMap map[string]string) map[string]any {
 	if schema == nil || depth > maxSchemaDepth {
 		return map[string]any{"type": "object"}
 	}
@@ -574,15 +615,26 @@ func schemaToMap(schema *base.Schema, depth int) map[string]any {
 	// Object properties
 	if schema.Properties != nil && orderedmap.Len(schema.Properties) > 0 {
 		props := make(map[string]any)
+		var reqList []string
 		for pair := orderedmap.First(schema.Properties); pair != nil; pair = pair.Next() {
 			if pair.Value() != nil {
-				props[pair.Key()] = schemaToMap(pair.Value().Schema(), depth+1)
+				origKey := pair.Key()
+				safeKey := sanitizePropertyKey(origKey)
+				if keyMap != nil && safeKey != origKey {
+					keyMap[safeKey] = origKey
+				}
+				props[safeKey] = schemaToMapWithKeyMap(pair.Value().Schema(), depth+1, keyMap)
 			}
 		}
 		result["properties"] = props
-	}
-
-	if len(schema.Required) > 0 {
+		// Sanitize required list to match sanitized property keys
+		for _, r := range schema.Required {
+			reqList = append(reqList, sanitizePropertyKey(r))
+		}
+		if len(reqList) > 0 {
+			result["required"] = reqList
+		}
+	} else if len(schema.Required) > 0 {
 		result["required"] = schema.Required
 	}
 
@@ -724,9 +776,10 @@ func buildTool(name string, op apiOperation) mcp.Tool {
 			propName = "header_" + p.Name
 		}
 
-		properties[propName] = propSchema
+		safeName := sanitizePropertyKey(propName)
+		properties[safeName] = propSchema
 		if p.Required {
-			required = append(required, propName)
+			required = append(required, safeName)
 		}
 	}
 
@@ -788,7 +841,9 @@ func doExecute(op apiOperation, args map[string]any) (mcp.CallToolResult, int) {
 			argName = "header_" + p.Name
 		}
 
-		val, exists := args[argName]
+		// Claude sends args with sanitized keys; look up by sanitized name
+		lookupName := sanitizePropertyKey(argName)
+		val, exists := args[lookupName]
 		if !exists {
 			continue
 		}
@@ -811,6 +866,10 @@ func doExecute(op apiOperation, args map[string]any) (mcp.CallToolResult, int) {
 	var bodyBytes []byte
 	if op.HasBody {
 		if bodyData, ok := args["body"]; ok {
+			// Restore original property keys (e.g., bracket notation) before sending
+			if len(op.BodyKeyMap) > 0 {
+				bodyData = restoreBodyKeys(bodyData, op.BodyKeyMap)
+			}
 			var err error
 			bodyBytes, err = json.Marshal(bodyData)
 			if err != nil {
@@ -842,7 +901,8 @@ func doExecute(op apiOperation, args map[string]any) (mcp.CallToolResult, int) {
 	// Apply header params from args
 	for _, p := range op.Parameters {
 		if p.In == "header" {
-			if val, ok := args["header_"+p.Name]; ok {
+			lookupKey := sanitizePropertyKey("header_" + p.Name)
+			if val, ok := args[lookupKey]; ok {
 				req.Header.Set(p.Name, fmt.Sprintf("%v", val))
 			}
 		}

@@ -1142,6 +1142,18 @@ data/backup/
 - `compile-rad-control-manufacturers-excel`: SQL-запрос обновлён под новую схему (убраны несуществующие колонки)
 - `deliver-rad-control-manufacturers-report`: задача удалена — deliver-логика интегрирована в compile-шаг (пайплайн упрощён до 2 шагов: research → compile+deliver)
 
+### 2026-03-23 — Навигация из Pipeline в Tasks
+
+**Быстрый переход к задаче из редактора пайплайна:**
+- В `PipelineEditor` рядом с каждым шагом (task name) добавлена иконка-ссылка `↗`, которая ведёт на страницу Tasks с автоматическим выбором соответствующей задачи
+- Ссылка использует `react-router-dom` `<Link>` с query-параметром `?select=<taskName>`
+- `TaskList` читает `useSearchParams` при загрузке — если есть `?select=`, автоматически открывает задачу в панели редактирования
+- После выбора задачи query-параметр очищается (`replace: true`) для чистого URL
+
+**Изменённые файлы:**
+- `web/src/components/PipelineList.tsx` — импорт `Link`, иконка `↗` с навигацией
+- `web/src/components/TaskList.tsx` — импорт `useSearchParams`/`useEffect`, автоселект задачи по query param
+
 ---
 
 ## Бэклог
@@ -1177,6 +1189,7 @@ data/backup/
 - [x] Тёмная тема
 - [x] Безопасное удаление задач/пайплайнов/суб-агентов (зависимости, каскад, бэкап, ConfirmModal)
 - [x] Восстановление удалённых элементов из бэкапа (REST API)
+- [x] Навигация из PipelineEditor в TaskList (ссылка `↗` на шагах пайплайна)
 
 ### Инфраструктура
 - [x] Unit-тесты: auth, events, runguard, subagent, task, store/sqlite, depcheck, backup (75+ тестов)

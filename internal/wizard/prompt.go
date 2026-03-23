@@ -139,7 +139,7 @@ The core unit of work. Each task runs "claude -p" with a prompt. Key fields:
 - allowed_tools: explicit tool allowlist. When using agents, include "Agent" in this list
 - max_turns: limit on conversation turns (default unlimited)
 - max_budget_usd: spending limit per execution
-- permission_mode: "plan" (read-only), "default", or "full"
+- permission_mode: "dontAsk" (REQUIRED for tasks with MCP tools or agents — allows all tool calls without prompting), "plan" (read-only, no file writes or tool execution), "default" (interactive, NOT for automation), or "full" (all permissions)
 - domain: name of a domain this task operates on
 - tags: categorization labels
 
@@ -149,7 +149,7 @@ Specialist agents that tasks can delegate to via the "Agent" tool. Defined as .m
 - description: what this agent does (shown to Claude when choosing agents)
 - tools: list of tools this agent can use
 - model: optional model override
-- permission_mode: agent's permission level
+- permission_mode: "dontAsk" (REQUIRED when agent uses MCP tools like database, excel, etc.), "plan" (read-only), or "default"
 - instructions: markdown body with detailed instructions
 - scope: "project" (default) or "user"
 
@@ -226,14 +226,23 @@ Environment variables for mcp-openapi:
 
 When using OAuth2, the MCP server handles authentication transparently — Claude does NOT need to call auth endpoints or pass tokens manually. Do NOT include auth endpoints in the OpenAPI spec when using OAuth2. Auth is added to every request automatically.
 
-Since mcp-openapi tools are dynamic, when adding allowed_tools for an openapi server, use the pattern mcp__{server_name}__{operationid_lowercase} based on the spec's operationId values. If you don't know exact operationIds, omit allowed_tools to allow all tools from that server.
+Since mcp-openapi tools are dynamic, when adding allowed_tools for an openapi server, use the pattern mcp__{server_name}__{operationid_lowercase} based on the spec's operationId values.
+
+CRITICAL — openapi safety: Tasks using openapi servers connect to EXTERNAL systems (CRMs, ERPs, APIs). Unlike local MCP servers (database, excel, filesystem), openapi calls can modify production data irreversibly. Therefore:
+- ALWAYS specify explicit allowed_tools for openapi servers — list only the endpoints the task actually needs
+- NEVER omit allowed_tools for tasks with openapi servers — this would give Claude unrestricted access to all API endpoints including destructive ones (DELETE, PUT, POST that create/modify records)
+- Prefer read-only endpoints (GET/list) unless the task explicitly needs to write data
+- If the user's description is ambiguous about which endpoints are needed, include only read/list endpoints and add a warning
 
 IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi pattern) in allowed_tools. Do NOT invent tool names.
 
 ## Permission Modes
-- "plan" — read-only, no file writes or tool execution. Good for analysis tasks.
-- "dontAsk" — REQUIRED for tasks that use MCP tools (database, excel, telegram, etc.) or agents. Without it, tool calls will be denied.
+- "dontAsk" — REQUIRED for tasks AND sub-agents that use MCP tools (database, excel, telegram, etc.) or agents. Without it, tool calls will be denied and the model will loop until max_turns. NOTE: dontAsk allows calling ANY tool in allowed_tools without confirmation, so use allowed_tools as the safety whitelist — especially for openapi servers that access external systems.
+- "plan" — read-only, no file writes or tool execution. Good for pure analysis tasks that only read code.
 - "default" — interactive confirmation. NOT suitable for automated tasks.
+- "full" — all permissions including file system writes. Use when task needs to write files directly (not via MCP).
+
+Safety model: permission_mode controls WHETHER tools can be called. allowed_tools controls WHICH tools can be called. For external APIs (openapi), always combine "dontAsk" + strict allowed_tools whitelist.
 
 ## Rules
 1. Use kebab-case for all names
@@ -246,7 +255,10 @@ IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi pattern) in allow
 8. For pipelines, ensure all referenced task names exist in the tasks array
 9. Generate a clear summary explaining the plan
 10. When using agents in allowed_tools, include "Agent" in the list
-11. For tasks with MCP tools, list ALL MCP tools the task might need in allowed_tools
+11. For tasks with MCP tools, list ALL MCP tools the task might need in allowed_tools. ALWAYS include discovery/utility tools for each server — these are essential for the model to understand the data structure:
+   - database: ALWAYS include mcp__database__list_tables and mcp__database__describe_table (models call these first to understand the schema before running queries)
+   - filesystem: ALWAYS include mcp__filesystem__list_directory
+   - excel: ALWAYS include mcp__excel__read_spreadsheet when writing spreadsheets
 12. When the user asks to create something "like" or "similar to" an existing entity, use the full details provided below to clone and adapt it. Preserve structural patterns (MCP servers, agents, domain setup) unless the user explicitly requests changes.
 13. CRITICAL — stop_signal safety: if a pipeline has a stop_signal, ONLY the LAST step's prompt may instruct Claude to output that signal. Non-final step prompts must NEVER mention or output the stop_signal text, because the pipeline engine checks for it after EVERY step and will skip remaining steps if found early. If the pipeline has max_iterations: 1 and no iterative review loop, prefer omitting stop_signal entirely.
 14. Pipeline data flow: in sequential pipelines, {{.PrevOutput}} carries the text output from the previous step. Each step MUST output all data that the next step needs (IDs, counts, file paths, summaries). NEVER instruct a step to "return only the file path" — this strips context that later steps depend on. Delivery/report steps should extract all needed data from {{.PrevOutput}} text, NOT by reading binary files (xlsx, pdf, etc.) which filesystem tools cannot parse. Binary files should only be referenced by path for sending (e.g., telegram send_document).

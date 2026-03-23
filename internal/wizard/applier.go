@@ -12,6 +12,33 @@ import (
 	"github.com/asdmin/claude-ecosystem/internal/subagent"
 )
 
+// mcpBaseTools defines tools that are always needed when a task uses a given
+// MCP server. Models (especially smaller ones like Haiku) often call these
+// "discovery" tools first to understand the available schema/structure.
+// Without them in allowed_tools the call is denied and the model loops
+// until max_turns.
+var mcpBaseTools = map[string][]string{
+	"database":   {"mcp__database__list_tables", "mcp__database__describe_table"},
+	"filesystem": {"mcp__filesystem__list_directory"},
+	"excel":      {"mcp__excel__read_spreadsheet"},
+}
+
+// isOpenAPIServer checks whether a named MCP server is openapi-based by
+// inspecting existing config and planned servers for "mcp-openapi" in the command.
+func isOpenAPIServer(name string, cfg *config.Config, plan *Plan) bool {
+	for _, m := range cfg.MCPServers {
+		if m.Name == name && strings.Contains(m.Command, "mcp-openapi") {
+			return true
+		}
+	}
+	for _, m := range plan.MCPServers {
+		if m.Name == name && strings.Contains(m.Command, "mcp-openapi") {
+			return true
+		}
+	}
+	return false
+}
+
 // Applier creates all entities from a plan in dependency order.
 type Applier struct {
 	cfg         *config.Config
@@ -115,6 +142,7 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 
 	// 4. Tasks
 	for _, tp := range plan.Tasks {
+		allowedTools := ensureBaseTools(tp.MCPServers, tp.AllowedTools)
 		t := config.Task{
 			Name:           tp.Name,
 			Prompt:         tp.Prompt,
@@ -125,7 +153,7 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 			Timeout:        tp.Timeout,
 			Agents:         tp.Agents,
 			MCPServers:     tp.MCPServers,
-			AllowedTools:   tp.AllowedTools,
+			AllowedTools:   allowedTools,
 			MaxTurns:       tp.MaxTurns,
 			MaxBudgetUSD:   tp.MaxBudgetUSD,
 			PermissionMode: tp.PermissionMode,
@@ -296,14 +324,25 @@ func (a *Applier) validate(plan *Plan) ([]string, error) {
 		}
 	}
 
-	// Validate tool/permission consistency for tasks
-	for _, t := range plan.Tasks {
+	// Validate and auto-fix tool/permission consistency for tasks
+	for i := range plan.Tasks {
+		t := &plan.Tasks[i]
 		needsDontAsk := len(t.MCPServers) > 0 || len(t.Agents) > 0
+
 		if needsDontAsk && t.PermissionMode != "" && t.PermissionMode != "dontAsk" {
 			return nil, fmt.Errorf(
 				"task %q uses MCP servers or agents but permission_mode is %q (must be \"dontAsk\" for automated tool use)",
 				t.Name, t.PermissionMode,
 			)
+		}
+
+		// Auto-set permission_mode to "dontAsk" when task uses MCP tools or agents
+		if needsDontAsk && t.PermissionMode == "" {
+			t.PermissionMode = "dontAsk"
+			warnings = append(warnings, fmt.Sprintf(
+				"task %q: auto-set permission_mode to \"dontAsk\" (required for MCP tools/agents)",
+				t.Name,
+			))
 		}
 
 		if len(t.Agents) > 0 && len(t.AllowedTools) > 0 {
@@ -322,23 +361,64 @@ func (a *Applier) validate(plan *Plan) ([]string, error) {
 			}
 		}
 
-		if len(t.MCPServers) > 0 && len(t.AllowedTools) > 0 {
+		if len(t.MCPServers) > 0 {
 			for _, server := range t.MCPServers {
 				prefix := "mcp__" + server + "__"
-				found := false
-				for _, tool := range t.AllowedTools {
-					if strings.HasPrefix(tool, prefix) {
-						found = true
-						break
+
+				if len(t.AllowedTools) > 0 {
+					found := false
+					for _, tool := range t.AllowedTools {
+						if strings.HasPrefix(tool, prefix) {
+							found = true
+							break
+						}
+					}
+					if !found {
+						warnings = append(warnings, fmt.Sprintf(
+							"task %q references MCP server %q but allowed_tools has no tools with prefix %q",
+							t.Name, server, prefix,
+						))
 					}
 				}
-				if !found {
+
+				// Require explicit allowed_tools for openapi servers (external API safety)
+				if isOpenAPIServer(server, a.cfg, plan) && len(t.AllowedTools) == 0 {
 					warnings = append(warnings, fmt.Sprintf(
-						"task %q references MCP server %q but allowed_tools has no tools with prefix %q",
-						t.Name, server, prefix,
+						"task %q uses openapi server %q without allowed_tools — "+
+							"Claude will have unrestricted access to ALL API endpoints including destructive ones; "+
+							"specify explicit allowed_tools to whitelist only needed endpoints",
+						t.Name, server,
 					))
 				}
 			}
+		}
+	}
+
+	// Validate and auto-fix permission consistency for sub-agents
+	for i := range plan.Agents {
+		ag := &plan.Agents[i]
+		hasMCPTools := false
+		for _, tool := range ag.Tools {
+			if strings.HasPrefix(tool, "mcp__") {
+				hasMCPTools = true
+				break
+			}
+		}
+
+		if hasMCPTools && ag.PermissionMode != "" && ag.PermissionMode != "dontAsk" {
+			return nil, fmt.Errorf(
+				"agent %q uses MCP tools but permission_mode is %q (must be \"dontAsk\" for automated tool use)",
+				ag.Name, ag.PermissionMode,
+			)
+		}
+
+		// Auto-set permission_mode to "dontAsk" when agent uses MCP tools
+		if hasMCPTools && ag.PermissionMode == "" {
+			ag.PermissionMode = "dontAsk"
+			warnings = append(warnings, fmt.Sprintf(
+				"agent %q: auto-set permission_mode to \"dontAsk\" (required for MCP tools)",
+				ag.Name,
+			))
 		}
 	}
 
@@ -365,6 +445,44 @@ func (a *Applier) generateSetupDoc(plan *Plan, result *ApplyResult) {
 			result.SetupDocPath = p
 		}
 	}
+}
+
+// ensureBaseTools injects mandatory "discovery" tools for each MCP server
+// that the task uses. If allowed_tools is empty (allow-all), nothing is added.
+func ensureBaseTools(mcpServers, allowedTools []string) []string {
+	if len(mcpServers) == 0 || len(allowedTools) == 0 {
+		return allowedTools
+	}
+	existing := make(map[string]bool, len(allowedTools))
+	for _, t := range allowedTools {
+		existing[t] = true
+	}
+	result := append([]string(nil), allowedTools...)
+	for _, server := range mcpServers {
+		base, ok := mcpBaseTools[server]
+		if !ok {
+			continue
+		}
+		// Only inject if the task already has at least one tool from this server
+		prefix := "mcp__" + server + "__"
+		hasServerTool := false
+		for _, t := range allowedTools {
+			if strings.HasPrefix(t, prefix) {
+				hasServerTool = true
+				break
+			}
+		}
+		if !hasServerTool {
+			continue
+		}
+		for _, bt := range base {
+			if !existing[bt] {
+				result = append(result, bt)
+				existing[bt] = true
+			}
+		}
+	}
+	return result
 }
 
 // rollback executes rollback functions in reverse order.
