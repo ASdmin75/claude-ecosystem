@@ -1,0 +1,852 @@
+ ▐▛███▜▌   Claude Code v2.1.72
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ Wizard: Auto-Generation of Tasks, Agents, Pipelines, Domains                 │
+│                                                                              │
+│ Context                                                                      │
+│                                                                              │
+│ Currently, creating a new automation in Claude Ecosystem requires manually   │
+│ configuring multiple entities: tasks in tasks.yaml, sub-agent .md files,     │
+│ domain schemas, pipelines — and understanding how they all wire together.    │
+│ The wizard automates this: user describes what they want in natural          │
+│ language, Claude analyzes it, and generates all necessary configuration      │
+│ entities for optimal execution.                                              │
+│                                                                              │
+│ Architecture                                                                 │
+│                                                                              │
+│ Two-phase flow: Generate (Claude produces a structured plan via json_schema) │
+│  → Preview/Edit → Apply (create all entities in dependency order).           │
+│                                                                              │
+│ The wizard doesn't need its own data model — it reuses existing config       │
+│ structs. Plans are held in memory with TTL (no persistence needed for a      │
+│ generate→preview→apply cycle).                                               │
+│                                                                              │
+│ Backend                                                                      │
+│                                                                              │
+│ New package: internal/wizard/                                                │
+│                                                                              │
+│ types.go — Plan and sub-plan structs:                                        │
+│ - GenerateRequest{Description, WorkDir}                                      │
+│ - Plan{ID, Description, Summary, Domains[], Agents[], Tasks[], Pipelines[],  │
+│ Status}                                                                      │
+│ - DomainPlan{Name, Description, DataDir, DB, Schema, DomainDoc, Tasks[],     │
+│ Pipelines[], Agents[], MCPServers[]}                                         │
+│ - AgentPlan{Name, Description, Tools[], Model, PermissionMode, Instructions, │
+│  Scope}                                                                      │
+│ - TaskPlan{Name, Prompt, WorkDir, Schedule, Tags[], Model, Timeout,          │
+│ Agents[], MCPServers[], AllowedTools[], MaxTurns, MaxBudgetUSD,              │
+│ PermissionMode, Domain}                                                      │
+│ - PipelinePlan{Name, Mode, Steps[], MaxIterations, StopSignal}               │
+│ - ApplyResult{DomainsCreated[], AgentsCreated[], TasksCreated[],             │
+│ PipelinesCreated[], Errors[]}                                                │
+│                                                                              │
+│ prompt.go — Wizard prompt template + JSON schema constant:                   │
+│ - buildWizardPrompt(req GenerateRequest, cfg *config.Config) — builds the    │
+│ system prompt with available MCP servers, existing entity names, and rules   │
+│ - wizardJSONSchema — JSON Schema string constraining Claude's output to Plan │
+│  structure                                                                   │
+│ - The prompt teaches Claude about all entity types, MCP server tool names,   │
+│ naming conventions (kebab-case), and configuration rules                     │
+│                                                                              │
+│ generator.go — Generator struct:                                             │
+│ - NewGenerator(runner *task.Runner) *Generator                               │
+│ - Generate(ctx, req, cfg) (*Plan, error) — creates a synthetic config.Task   │
+│ with the wizard prompt and json_schema, runs it via task.Runner, parses JSON │
+│  output into Plan, assigns UUID + status "draft"                             │
+│ - Uses model sonnet for speed, permission_mode: plan (read-only), timeout    │
+│ 5m, max_turns 3                                                              │
+│                                                                              │
+│ applier.go — Applier struct:                                                 │
+│ - NewApplier(cfg, subagentMgr, domainMgr) *Applier                           │
+│ - Apply(plan *Plan) (*ApplyResult, error) — creates entities in strict       │
+│ order:                                                                       │
+│   a. Domains → add to cfg.Domains, call domainMgr.AddDomain() (new method)   │
+│   b. Agents → subagentMgr.Create() for each                                  │
+│   c. Tasks → append to cfg.Tasks                                             │
+│   d. Pipelines → append to cfg.Pipelines                                     │
+│   e. Save → cfg.Save()                                                       │
+│ - Accumulates rollback functions; on any failure, executes rollbacks in      │
+│ reverse order                                                                │
+│ - Validates before mutating: no duplicate names, MCP servers exist,          │
+│ agent/task references valid                                                  │
+│                                                                              │
+│ store.go — PlanStore (in-memory with 30-min TTL):                            │
+│ - NewPlanStore() *PlanStore                                                  │
+│ - Put(plan), Get(id) (*Plan, bool), Delete(id)                               │
+│                                                                              │
+│ Modify: internal/domain/manager.go                                           │
+│                                                                              │
+│ Add AddDomain(name string, d config.Domain) error method:                    │
+│ - Registers domain in internal map                                           │
+│ - Runs init for just this domain (mkdir, apply schema, generate DOMAIN.md)   │
+│ - Extract per-domain init logic from existing Init() into initSingle(name,   │
+│ d) error                                                                     │
+│                                                                              │
+│ New file: internal/api/wizard.go                                             │
+│                                                                              │
+│ Handlers on Server struct (no new fields on Server — wizard components       │
+│ instantiated from existing deps):                                            │
+│                                                                              │
+│ Endpoint: POST /api/v1/wizard/generate                                       │
+│ Handler: handleWizardGenerate                                                │
+│ Description: Accepts {description, work_dir}, runs Claude, returns Plan      │
+│ ────────────────────────────────────────                                     │
+│ Endpoint: GET /api/v1/wizard/plans/{id}                                      │
+│ Handler: handleWizardGetPlan                                                 │
+│ Description: Returns stored plan by ID                                       │
+│ ────────────────────────────────────────                                     │
+│ Endpoint: PUT /api/v1/wizard/plans/{id}                                      │
+│ Handler: handleWizardUpdatePlan                                              │
+│ Description: User edits plan before applying                                 │
+│ ────────────────────────────────────────                                     │
+│ Endpoint: POST /api/v1/wizard/plans/{id}/apply                               │
+│ Handler: handleWizardApply                                                   │
+│ Description: Creates all entities, returns ApplyResult                       │
+│ ────────────────────────────────────────                                     │
+│ Endpoint: DELETE /api/v1/wizard/plans/{id}                                   │
+│ Handler: handleWizardDiscard                                                 │
+│ Description: Discards plan                                                   │
+│                                                                              │
+│ The PlanStore and Generator are stored as fields on Server struct,           │
+│ initialized in NewServer. Since NewServer already takes all the needed deps  │
+│ (taskRunner, cfg, subagentMgr, domainMgr), the wizard components are created │
+│  internally — no signature change to NewServer.                              │
+│                                                                              │
+│ Modify: internal/api/router.go                                               │
+│                                                                              │
+│ - Add wizardGen *wizard.Generator and wizardStore *wizard.PlanStore fields   │
+│ to Server                                                                    │
+│ - Initialize them in NewServer() body                                        │
+│ - Register 5 wizard routes in Handler()                                      │
+│                                                                              │
+│ No changes to: cmd/server/main.go                                            │
+│                                                                              │
+│ Everything is self-contained inside api.NewServer.                           │
+│                                                                              │
+│ Frontend                                                                     │
+│                                                                              │
+│ New types in web/src/types/index.ts                                          │
+│                                                                              │
+│ WizardPlan, DomainPlan, AgentPlan, TaskPlan, PipelinePlan, ApplyResult —     │
+│ mirror backend structs.                                                      │
+│                                                                              │
+│ New API methods in web/src/api/client.ts                                     │
+│                                                                              │
+│ wizardGenerate(description, workDir?) → WizardPlan                           │
+│ wizardGetPlan(id) → WizardPlan                                               │
+│ wizardUpdatePlan(id, plan) → WizardPlan                                      │
+│ wizardApply(id) → ApplyResult                                                │
+│ wizardDiscard(id) → void                                                     │
+│                                                                              │
+│ New component: web/src/components/Wizard.tsx                                 │
+│                                                                              │
+│ Three-state UI:                                                              │
+│                                                                              │
+│ State 1 — Input: Large textarea for task description (placeholder: "Describe │
+│  what you want to automate..."), optional work_dir field, "Generate" button. │
+│  Loading spinner during generation (~30-60s).                                │
+│                                                                              │
+│ State 2 — Preview: Collapsible sections showing generated entities:          │
+│ - Summary card (Claude's explanation)                                        │
+│ - Domains section (name, schema SQL in <pre>)                                │
+│ - Agents section (name, description, tools list, instructions in markdown)   │
+│ - Tasks section (name, prompt preview, agents/MCP/tools badges)              │
+│ - Pipelines section (name, mode, steps as flow)                              │
+│ - Each field editable inline                                                 │
+│ - "Apply" and "Discard" buttons                                              │
+│                                                                              │
+│ State 3 — Result: Success/failure display with lists of created entities.    │
+│ Navigation links to tasks/pipelines pages.                                   │
+│                                                                              │
+│ Modify: web/src/App.tsx                                                      │
+│                                                                              │
+│ - Add { path: '/wizard', label: 'Wizard' } to navItems (position 2, after    │
+│ Dashboard)                                                                   │
+│ - Add <Route path="/wizard" element={<Wizard />} />                          │
+│ - Import Wizard component                                                    │
+│                                                                              │
+│ Files Summary                                                                │
+│                                                                              │
+│ ┌────────┬─────────────────────────────────────────────────────────┐         │
+│ │ Action │                          File                           │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/wizard/types.go                                │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/wizard/prompt.go                               │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/wizard/generator.go                            │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/wizard/applier.go                              │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/wizard/store.go                                │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/api/wizard.go                                  │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ web/src/components/Wizard.tsx                           │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Modify │ internal/api/router.go — add fields + routes            │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Modify │ internal/domain/manager.go — add AddDomain + initSingle │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Modify │ web/src/types/index.ts — add wizard types               │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Modify │ web/src/api/client.ts — add wizard API methods          │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Modify │ web/src/App.tsx — add nav item + route                  │         │
+│ └────────┴─────────────────────────────────────────────────────────┘         │
+│                                                                              │
+│ Verification                                                                 │
+│                                                                              │
+│ 1. make build — compiles successfully                                        │
+│ 2. make build-ui — frontend builds                                           │
+│ 3. make run — server starts, wizard routes respond                           │
+│ 4. Manual test: POST /api/v1/wizard/generate with description → get Plan     │
+│ JSON → POST /apply → entities appear in tasks.yaml and .claude/agents/       │
+│ 5. UI test: navigate to /wizard, enter description, preview generated plan,  │
+│ apply, verify entities on tasks/pipelines pages                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ /export                                                                       
+  ⎿  Conversation exported to:
+     2026-03-10-124826-implement-the-following-plan.txt
+
+❯ продолжай                                                                     
+
+● Let me read the existing files I need to modify first.
+
+● Read 6 files (ctrl+o to expand)
+
+● Let me find the config types and check existing patterns.
+
+● Searched for 2 patterns, read 11 files (ctrl+o to expand)
+
+● Now I have a good understanding of the codebase. Let me also quickly check an
+  existing API handler for the pattern used.
+
+● Read 2 files (ctrl+o to expand)
+
+● Now I have all the context. Let me create all the files. I'll start with the
+  backend wizard package, then the API handler, then the frontend changes.
+
+● Write(internal/wizard/types.go)
+  ⎿  Wrote 80 lines to internal/wizard/types.go
+       1 package wizard
+       2 
+       3 // GenerateRequest is the input for wizard plan generation.
+       4 type GenerateRequest struct {
+       5        Description string `json:"description"`
+       6        WorkDir     string `json:"work_dir,omitempty"`
+       7 }
+       8 
+       9 // Plan holds the full wizard-generated configuration plan.
+      10 type Plan struct {
+     … +70 lines (ctrl+o to expand)
+
+● Write(internal/wizard/store.go)
+  ⎿  Wrote 59 lines to internal/wizard/store.go
+       1 package wizard
+       2 
+       3 import (
+       4        "sync"
+       5        "time"
+       6 )
+       7 
+       8 const planTTL = 30 * time.Minute
+       9 
+      10 type planEntry struct {
+     … +49 lines (ctrl+o to expand)
+
+● Write(internal/wizard/prompt.go)
+  ⎿  Wrote 205 lines to internal/wizard/prompt.go
+       1 package wizard
+       2 
+       3 import (
+       4        "fmt"
+       5        "strings"
+       6 
+       7        "github.com/asdmin/claude-ecosystem/internal/config"
+       8 )
+       9 
+      10 // wizardJSONSchema constrains Claude's output to the Plan struc
+         ture.
+     … +195 lines (ctrl+o to expand)
+
+● Write(internal/wizard/generator.go)
+  ⎿  Wrote 61 lines to internal/wizard/generator.go
+       1 package wizard
+       2 
+       3 import (
+       4        "context"
+       5        "encoding/json"
+       6        "fmt"
+       7 
+       8        "github.com/asdmin/claude-ecosystem/internal/config"
+       9        "github.com/asdmin/claude-ecosystem/internal/task"
+      10        "github.com/google/uuid"
+     … +51 lines (ctrl+o to expand)
+  ⎿  Found 7 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Write(internal/wizard/applier.go)
+  ⎿  Wrote 238 lines to internal/wizard/applier.go
+      1 package wizard
+      2 
+      3 import (
+      4         "fmt"
+      5 
+      6         "github.com/asdmin/claude-ecosystem/internal/config"
+      7         "github.com/asdmin/claude-ecosystem/internal/domain"
+      8         "github.com/asdmin/claude-ecosystem/internal/subagent"
+      9 )
+     … +228 lines (ctrl+o to expand)
+
+● Now add the AddDomain method to the domain manager.
+
+● Update(internal/domain/manager.go)
+  ⎿  Added 43 lines
+       64    return nil
+       65  }
+       66  
+       67 +// AddDomain registers a new domain, creates its data director
+          +y, applies the                                                
+       68 +// schema, and generates the DOMAIN.md template — the same ini
+          +t logic as Init                                               
+       69 +// but for a single domain added at runtime.                  
+       70 +func (m *Manager) AddDomain(name string, d config.Domain) erro
+          +r {                                                           
+       71 +  if _, exists := m.domains[name]; exists {                   
+       72 +    return fmt.Errorf("domain %q already exists", name)       
+       73 +  }                                                           
+       74 +  d.Name = name                                               
+       75 +  if err := m.initSingle(name, d); err != nil {               
+       76 +    return err                                                
+       77 +  }                                                           
+       78 +  m.domains[name] = d                                         
+       79 +  return nil                                                  
+       80 +}                                                             
+       81 +                                                              
+       82 +// initSingle initializes a single domain: mkdir, apply schema
+          +, generate doc.                                               
+       83 +func (m *Manager) initSingle(name string, d config.Domain) err
+          +or {                                                          
+       84 +  if err := os.MkdirAll(d.DataDir, 0o755); err != nil {       
+       85 +    return fmt.Errorf("domain %s: create data dir %s: %w", nam
+          +e, d.DataDir, err)                                            
+       86 +  }                                                           
+       87 +  m.logger.Info("domain data dir ready", "domain", name, "path
+          +", d.DataDir)                                                 
+       88 +                                                              
+       89 +  if d.DB != "" && d.Schema != "" {                           
+       90 +    dbPath := d.DBPath()                                      
+       91 +    if err := m.applySchema(dbPath, d.Schema); err != nil {   
+       92 +      return fmt.Errorf("domain %s: apply schema: %w", name, e
+          +rr)                                                           
+       93 +    }                                                         
+       94 +    m.logger.Info("domain database ready", "domain", name, "db
+          +", dbPath)                                                    
+       95 +  }                                                           
+       96 +                                                              
+       97 +  if d.DomainDoc != "" {                                      
+       98 +    docPath := d.DomainDocPath()                              
+       99 +    if _, err := os.Stat(docPath); os.IsNotExist(err) {       
+      100 +      content := m.generateDomainDocTemplate(d)               
+      101 +      if err := os.WriteFile(docPath, []byte(content), 0o644);
+          + err != nil {                                                 
+      102 +        return fmt.Errorf("domain %s: create domain doc: %w", 
+          +name, err)                                                    
+      103 +      }                                                       
+      104 +      m.logger.Info("domain doc template created", "domain", n
+          +ame, "path", docPath)                                         
+      105 +    }                                                         
+      106 +  }                                                           
+      107 +  return nil                                                  
+      108 +}                                                             
+      109 +                                                              
+      110  // GetDomain returns a domain by name.
+      111  func (m *Manager) GetDomain(name string) (config.Domain, bool)
+            {
+      112    d, ok := m.domains[name]
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Good, the diagnostic should clear once we save. Now refactor Init to use
+  initSingle.
+
+● Update(internal/domain/manager.go)
+  ⎿  Added 2 lines, removed 25 lines
+      34  // template DOMAIN.md files for all configured domains.
+      35  func (m *Manager) Init() error {
+      36    for name, d := range m.domains {
+      37 -    // Create data directory                                   
+      38 -    if err := os.MkdirAll(d.DataDir, 0o755); err != nil {      
+      39 -      return fmt.Errorf("domain %s: create data dir %s: %w", na
+         -me, d.DataDir, err)                                            
+      37 +    if err := m.initSingle(name, d); err != nil {              
+      38 +      return err                                               
+      39      }
+      41 -    m.logger.Info("domain data dir ready", "domain", name, "pat
+         -h", d.DataDir)                                                 
+      42 -                                                               
+      43 -    // Apply database schema                                   
+      44 -    if d.DB != "" && d.Schema != "" {                          
+      45 -      dbPath := d.DBPath()                                     
+      46 -      if err := m.applySchema(dbPath, d.Schema); err != nil {  
+      47 -        return fmt.Errorf("domain %s: apply schema: %w", name, 
+         -err)                                                           
+      48 -      }                                                        
+      49 -      m.logger.Info("domain database ready", "domain", name, "d
+         -b", dbPath)                                                    
+      50 -    }                                                          
+      51 -                                                               
+      52 -    // Create template DOMAIN.md if specified but missing      
+      53 -    if d.DomainDoc != "" {                                     
+      54 -      docPath := d.DomainDocPath()                             
+      55 -      if _, err := os.Stat(docPath); os.IsNotExist(err) {      
+      56 -        content := m.generateDomainDocTemplate(d)              
+      57 -        if err := os.WriteFile(docPath, []byte(content), 0o644)
+         -; err != nil {                                                 
+      58 -          return fmt.Errorf("domain %s: create domain doc: %w",
+         - name, err)                                                    
+      59 -        }                                                      
+      60 -        m.logger.Info("domain doc template created", "domain", 
+         -name, "path", docPath)                                         
+      61 -      }                                                        
+      62 -    }                                                          
+      40    }
+      41    return nil
+      42  }
+  ⎿  Found 5 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now create the API wizard handler.
+
+● Write(internal/api/wizard.go)
+  ⎿  Wrote 110 lines to internal/api/wizard.go
+       1 package api
+       2 
+       3 import (
+       4        "net/http"
+       5 
+       6        "github.com/asdmin/claude-ecosystem/internal/wizard"
+       7 )
+       8 
+       9 // handleWizardGenerate accepts a description and runs Claude to
+          generate a plan.
+      10 // POST /api/v1/wizard/generate
+     … +100 lines (ctrl+o to expand)
+  ⎿  Found 5 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now modify the router to add wizard fields and routes.
+
+● Update(internal/api/router.go)
+  ⎿  Added 1 line
+      18    "github.com/asdmin/claude-ecosystem/internal/subagent"
+      19    "github.com/asdmin/claude-ecosystem/internal/task"
+      20    "github.com/asdmin/claude-ecosystem/internal/ui"
+      21 +  "github.com/asdmin/claude-ecosystem/internal/wizard"         
+      22  )
+      23  
+      24  // Server holds all dependencies required by the REST API handl
+          ers.
+  ⎿  Found 9 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Update(internal/api/router.go)
+  ⎿  Added 2 lines
+      35    bus         *events.Bus
+      36    logger      *slog.Logger
+      37    cancels     sync.Map // map[executionID]context.CancelFunc
+      38 +  wizardGen   *wizard.Generator                                
+      39 +  wizardStore *wizard.PlanStore                                
+      40  }
+      41  
+      42  // NewServer creates a new Server with all required dependencie
+          s.
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Update(internal/api/router.go)
+  ⎿  Added 2 lines
+      66      bus:         bus,
+      67      logger:      logger,
+      68    }
+      69 +  s.wizardGen = wizard.NewGenerator(taskRunner)                
+      70 +  s.wizardStore = wizard.NewPlanStore()                        
+      71    s.cleanupStaleExecutions()
+      72    return s
+      73  }
+  ⎿  Found 5 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now register the wizard routes in Handler().
+
+● Update(internal/api/router.go)
+  ⎿  Added 7 lines
+      148    // Global SSE event stream
+      149    mux.HandleFunc("GET /api/v1/events", s.withAuth(s.handleEven
+           ts))
+      150  
+      151 +  // Wizard                                                   
+      152 +  mux.HandleFunc("POST /api/v1/wizard/generate", s.withAuth(s.
+          +handleWizardGenerate))                                        
+      153 +  mux.HandleFunc("GET /api/v1/wizard/plans/{id}", s.withAuth(s
+          +.handleWizardGetPlan))                                        
+      154 +  mux.HandleFunc("PUT /api/v1/wizard/plans/{id}", s.withAuth(s
+          +.handleWizardUpdatePlan))                                     
+      155 +  mux.HandleFunc("POST /api/v1/wizard/plans/{id}/apply", s.wit
+          +hAuth(s.handleWizardApply))                                   
+      156 +  mux.HandleFunc("DELETE /api/v1/wizard/plans/{id}", s.withAut
+          +h(s.handleWizardDiscard))                                     
+      157 +                                                              
+      158    // Dashboard
+      159    mux.HandleFunc("GET /api/v1/dashboard", s.withAuth(s.handleD
+           ashboard))
+      160  
+
+● Now the frontend. Add types, API methods, component, and route.
+
+● Update(web/src/types/index.ts)
+  ⎿  Added 68 lines
+       89    running: boolean
+       90    pid?: number
+       91  }
+       92 +                                                              
+       93 +// Wizard types                                               
+       94 +export interface WizardPlan {                                 
+       95 +  id: string                                                  
+       96 +  description: string                                         
+       97 +  summary: string                                             
+       98 +  domains?: DomainPlan[]                                      
+       99 +  agents?: AgentPlan[]                                        
+      100 +  tasks?: TaskPlan[]                                          
+      101 +  pipelines?: PipelinePlan[]                                  
+      102 +  status: 'draft' | 'applied' | 'discarded'                   
+      103 +}                                                             
+      104 +                                                              
+      105 +export interface DomainPlan {                                 
+      106 +  name: string                                                
+      107 +  description?: string                                        
+      108 +  data_dir: string                                            
+      109 +  db?: string                                                 
+      110 +  schema?: string                                             
+      111 +  domain_doc?: string                                         
+      112 +  tasks?: string[]                                            
+      113 +  pipelines?: string[]                                        
+      114 +  agents?: string[]                                           
+      115 +  mcp_servers?: string[]                                      
+      116 +}                                                             
+      117 +                                                              
+      118 +export interface AgentPlan {                                  
+      119 +  name: string                                                
+      120 +  description: string                                         
+      121 +  tools?: string[]                                            
+      122 +  model?: string                                              
+      123 +  permission_mode?: string                                    
+      124 +  instructions: string                                        
+      125 +  scope?: 'user' | 'project'                                  
+      126 +}                                                             
+      127 +                                                              
+      128 +export interface TaskPlan {                                   
+      129 +  name: string                                                
+      130 +  prompt: string                                              
+      131 +  work_dir?: string                                           
+      132 +  schedule?: string                                           
+      133 +  tags?: string[]                                             
+      134 +  model?: string                                              
+      135 +  timeout?: string                                            
+      136 +  agents?: string[]                                           
+      137 +  mcp_servers?: string[]                                      
+      138 +  allowed_tools?: string[]                                    
+      139 +  max_turns?: number                                          
+      140 +  max_budget_usd?: number                                     
+      141 +  permission_mode?: string                                    
+      142 +  domain?: string                                             
+      143 +}                                                             
+      144 +                                                              
+      145 +export interface PipelinePlan {                               
+      146 +  name: string                                                
+      147 +  mode?: 'sequential' | 'parallel'                            
+      148 +  steps: string[]                                             
+      149 +  max_iterations?: number                                     
+      150 +  stop_signal?: string                                        
+      151 +}                                                             
+      152 +                                                              
+      153 +export interface ApplyResult {                                
+      154 +  domains_created?: string[]                                  
+      155 +  agents_created?: string[]                                   
+      156 +  tasks_created?: string[]                                    
+      157 +  pipelines_created?: string[]                                
+      158 +  errors?: string[]                                           
+      159 +}                                                             
+
+● Update(web/src/api/client.ts)
+  ⎿  Added 1 line, removed 1 line
+      1 -import type { DashboardData, Task, SubAgent, Pipeline, Execution
+        -, ExecutionResult, MCPServer } from '../types'                  
+      1 +import type { DashboardData, Task, SubAgent, Pipeline, Execution
+        +, ExecutionResult, MCPServer, WizardPlan, ApplyResult } from '..
+        +/types'                                                         
+      2  
+      3  const BASE = '/api/v1'
+      4  
+
+● Update(web/src/api/client.ts)
+  ⎿  Added 17 lines
+       93      request<void>(`/mcp-servers/${name}/start`, { method: 'POS
+           T' }),
+       94    stopMCPServer: (name: string) =>
+       95      request<void>(`/mcp-servers/${name}/stop`, { method: 'POST
+           ' }),
+       96 +                                                              
+       97 +  // Wizard                                                   
+       98 +  wizardGenerate: (description: string, workDir?: string) =>  
+       99 +    request<WizardPlan>('/wizard/generate', {                 
+      100 +      method: 'POST',                                         
+      101 +      body: JSON.stringify({ description, work_dir: workDir })
+          +,                                                             
+      102 +    }),                                                       
+      103 +  wizardGetPlan: (id: string) => request<WizardPlan>(`/wizard/
+          +plans/${id}`),                                                
+      104 +  wizardUpdatePlan: (id: string, plan: WizardPlan) =>         
+      105 +    request<WizardPlan>(`/wizard/plans/${id}`, {              
+      106 +      method: 'PUT',                                          
+      107 +      body: JSON.stringify(plan),                             
+      108 +    }),                                                       
+      109 +  wizardApply: (id: string) =>                                
+      110 +    request<ApplyResult>(`/wizard/plans/${id}/apply`, { method
+          +: 'POST' }),                                                  
+      111 +  wizardDiscard: (id: string) =>                              
+      112 +    request<void>(`/wizard/plans/${id}`, { method: 'DELETE' })
+          +,                                                             
+      113  }
+      114  
+      115  // SSE helper
+
+● Now create the Wizard component.
+
+● Write(web/src/components/Wizard.tsx)
+  ⎿  Wrote 329 lines to web/src/components/Wizard.tsx
+       1 import { useState } from 'react'
+       2 import { api } from '../api/client'
+       3 import type { WizardPlan, ApplyResult } from '../types'
+       4 
+       5 type WizardState = 'input' | 'preview' | 'result'
+       6 
+       7 export default function Wizard() {
+       8   const [state, setState] = useState<WizardState>('input')
+       9   const [description, setDescription] = useState('')
+      10   const [workDir, setWorkDir] = useState('')
+     … +319 lines (ctrl+o to expand)
+
+● Now update App.tsx to add the Wizard route.
+
+● Update(web/src/App.tsx)
+  ⎿  Added 1 line
+       5  import SubAgentList from './components/SubAgentList'
+       6  import PipelineList from './components/PipelineList'
+       7  import ExecutionHistory from './components/ExecutionHistory'
+       8 +import Wizard from './components/Wizard'                       
+       9  import Login from './components/Login'
+      10  import { ToastContainer, useToast } from './components/Toast'
+      11  import { useSSE, type SSEEvent } from './hooks/useSSE'
+
+● Update(web/src/App.tsx)
+  ⎿  Added 1 line
+      12  
+      13  const navItems = [
+      14    { path: '/', label: 'Dashboard' },
+      15 +  { path: '/wizard', label: 'Wizard' },                        
+      16    { path: '/tasks', label: 'Tasks' },
+      17    { path: '/subagents', label: 'Sub-Agents' },
+      18    { path: '/pipelines', label: 'Pipelines' },
+
+● Update(web/src/App.tsx)
+  ⎿  Added 1 line
+      106        <main className="flex-1 p-6 bg-gray-50 dark:bg-gray-900"
+           >
+      107          <Routes>
+      108            <Route path="/" element={<Dashboard />} />
+      109 +          <Route path="/wizard" element={<Wizard />} />       
+      110            <Route path="/tasks" element={<TaskList />} />
+      111            <Route path="/subagents" element={<SubAgentList />} 
+           />
+      112            <Route path="/pipelines" element={<PipelineList />} 
+           />
+
+● Now let's verify the build.
+
+● Bash(make build 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+  ⎿  (timeout 1m)
+
+● Bash(make build-ui 2>&1)
+  ⎿  cd web && npm install && npm run build
+
+     up to date, audited 196 packages in 1s
+     … +20 lines (ctrl+o to expand)
+  ⎿  (timeout 1m)
+
+● Both builds pass. Let me also run the tests.
+
+● Bash(make test 2>&1)
+  ⎿  go test ./internal/...
+     ?          github.com/asdmin/claude-ecosystem/internal/api [no test files]
+     ?          github.com/asdmin/claude-ecosystem/internal/auth        [no test
+     … +14 lines (ctrl+o to expand)
+
+
+  ⎿  (timeout 2m)
+
+● Everything passes. Here's a summary of what was implemented:
+
+  Created files
+
+  1. internal/wizard/types.go — Plan, sub-plan structs (GenerateRequest, Plan,
+  DomainPlan, AgentPlan, TaskPlan, PipelinePlan, ApplyResult)
+  2. internal/wizard/prompt.go — Wizard prompt builder + JSON schema constant
+  3. internal/wizard/generator.go — Generator that creates a synthetic task with
+   json_schema, runs Claude via task.Runner, parses output into Plan
+  4. internal/wizard/applier.go — Applier that creates entities in dependency
+  order (domains → agents → tasks → pipelines → save) with validation and
+  rollback
+  5. internal/wizard/store.go — In-memory PlanStore with 30-min TTL
+  6. internal/api/wizard.go — 5 HTTP handlers (generate, get, update, apply,
+  discard)
+  7. web/src/components/Wizard.tsx — Three-state UI (input → preview → result)
+  with collapsible sections
+
+  Modified files
+
+  8. internal/domain/manager.go — Added AddDomain() and extracted initSingle()
+  from Init()
+  9. internal/api/router.go — Added wizardGen/wizardStore fields, initialized in
+   NewServer, registered 5 routes
+  10. web/src/types/index.ts — Added wizard types
+  11. web/src/api/client.ts — Added 5 wizard API methods
+  12. web/src/App.tsx — Added Wizard nav item (position 2) and route
+
+✻ Worked for 5m 18s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to:
+     2026-03-10-132542-implement-the-following-plan.txt
+
+❯ Почему пустой результат?                                                      
+  ⎿  [Image #1]
+  ⎿  [Image #2]
+  ⎿  [Image #3]
+
+● The plan is generated but shows empty because Claude's JSON output isn't being
+   parsed correctly. Let me check the server logs and the parsing logic.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● The problem is in how Claude CLI returns JSON when --json-schema is used. The
+  result field in the CLI output is likely a JSON object (not a string), so
+  parseJSONOutput falls back to returning the full envelope, and unmarshaling
+  that into Plan gives empty fields since Plan doesn't have
+  type/result/session_id keys.
+
+  Let me fix the generator to properly extract the nested result.
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(internal/wizard/generator.go)
+  ⎿  Added 6 lines, removed 1 line
+      48      return nil, fmt.Errorf("claude returned empty output")
+      49    }
+      50  
+      51 +  // The CLI output may be the plan JSON directly, or wrapped i
+         +n a                                                            
+      52 +  // {"type":"result","result":<object|string>,...} envelope.  
+      53 +  // Try to extract the inner "result" field first.            
+      54 +  planJSON := extractPlanJSON(result.Output)                   
+      55 +                                                               
+      56    var plan Plan
+      52 -  if err := json.Unmarshal([]byte(result.Output), &plan); err !
+         -= nil {                                                        
+      57 +  if err := json.Unmarshal([]byte(planJSON), &plan); err != nil
+         + {                                                             
+      58      return nil, fmt.Errorf("parsing plan JSON: %w\nraw output: 
+          %s", err, result.Output)
+      59    }
+      60  
+
+● Update(internal/wizard/generator.go)
+  ⎿  Added 24 lines
+      64  
+      65    return &plan, nil
+      66  }
+      67 +                                                               
+      68 +// extractPlanJSON unwraps the Claude CLI JSON envelope if pres
+         +ent.                                                           
+      69 +// The CLI returns {"type":"result","result":...} where result 
+         +can be                                                         
+      70 +// a JSON string or a JSON object (when --json-schema is used).
+      71 +func extractPlanJSON(output string) string {                   
+      72 +  var envelope map[string]json.RawMessage                      
+      73 +  if err := json.Unmarshal([]byte(output), &envelope); err != n
+         +il {                                                           
+      74 +    return output                                              
+      75 +  }                                                            
+      76 +                                                               
+      77 +  raw, ok := envelope["result"]                                
+      78 +  if !ok {                                                     
+      79 +    return output                                              
+      80 +  }                                                            
+      81 +                                                               
+      82 +  // Case 1: result is a JSON string containing the plan       
+      83 +  var str string                                               
+      84 +  if err := json.Unmarshal(raw, &str); err == nil {            
+      85 +    return str                                                 
+      86 +  }                                                            
+      87 +                                                               
+      88 +  // Case 2: result is a JSON object (the plan directly)       
+      89 +  return string(raw)                                           
+      90 +}                                                              
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● The diagnostic is just a delay — the function is defined in the same file. Let
+   me build to confirm.
+
+● Bash(make build 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Build passes. But there's actually a second issue — parseJSONOutput in
+  runner.go already tries to extract result as a string. When --json-schema is
+  used, the CLI might return result as an object, which means
+  raw["result"].(string) fails and the output becomes the whole envelope. My
+  extractPlanJSON handles both cases now.
+
+  However, there's still another possibility: parseJSONOutput might fail
+  entirely on the type assertion and return string(data) as the full envelope.
+  Let me also check if there's a deeper issue with parseJSONOutput returning
+  incorrect data when result is an object.
+
+● Read 1 file (ctrl+o to expand)
+
+● Confirmed: when result is an object (not a string), line 218 sets
+  result.Output = string(data) — the full envelope. My extractPlanJSON in the
+  generator now handles this by re-parsing and extracting the result field as
+  raw JSON.
+
+  Build and rebuild UI:
+
+● Bash(make build && make build-ui 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+     cd web && npm install && npm run build
+     … +22 lines (ctrl+o to expand)
+  ⎿  (timeout 1m)
+
+● The fix is ready. The issue was that parseJSONOutput returns the full CLI
+  envelope when result is a JSON object (not a string), which happens with
+  --json-schema. The new extractPlanJSON function handles both cases:
+
+  1. result is a string → unwrap the string
+  2. result is a JSON object → use the raw JSON directly
+
+  Restart the server and try the wizard again.
+
+✻ Brewed for 1m 52s

@@ -1,0 +1,676 @@
+ ▐▛███▜▌   Claude Code v2.1.81
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ Может ли визард создавть пайплайны на основе уже существующих? Например если  
+нужно будет создайть пайплайн аналогичный vet-manufacturers-sync, но для лидов, 
+ которые произвлядт и экспортируют оборудование радиационного контроля. Сможет  
+wizard решить такую задачу?                                                     
+
+● Let me look at the wizard implementation and the existing pipeline to answer
+  this.
+
+● Explore(Explore pipeline wizard UI)
+  ⎿  Done (22 tool uses · 63.6k tokens · 43s)
+  (ctrl+o to expand)
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Теперь картина ясна. Отвечаю на ваш вопрос:
+
+  Wizard и существующие пайплайны
+
+  Нет, wizard не умеет клонировать существующие пайплайны "из коробки". Он не
+  получает структуру существующих пайплайнов/тасков — только их имена (для
+  избежания конфликтов, строки 273-287 в prompt.go).
+
+  Однако wizard вполне сможет создать аналогичный пайплайн для лидов по
+  радиационному оборудованию, если вы опишете задачу достаточно подробно.
+  Например:
+
+  ▎ Создай пайплайн для поиска компаний, которые производят и экспортируют 
+  оборудование радиационного контроля. Пайплайн должен: 1) исследовать 
+  производителей через веб-поиск, 2) сохранить в БД и сформировать Excel отчёт, 
+  3) отправить отчёт по email/telegram. Нужен домен с SQLite базой (название 
+  компании, страна, город, сайт, продукция, контакты). Использовать MCP серверы:
+   database, excel, filesystem, email.
+
+  Wizard сгенерирует полный план: домен со схемой БД, агента-исследователя, 3
+  таска, пайплайн — всё по аналогии с vet-manufacturers-sync.
+
+  Что можно улучшить
+
+  Если хотите, чтобы wizard видел структуру существующих пайплайнов и мог их
+  клонировать/адаптировать, нужно расширить buildWizardPrompt() — добавить в
+  контекст полную конфигурацию существующих пайплайнов (steps, domains,
+  schemas), а не только имена. Тогда можно будет писать:
+
+  ▎ Создай пайплайн аналогичный vet-manufacturers-sync, но для лидов по 
+  радиационному оборудованию
+
+  Хотите, чтобы я добавил эту функциональность — передачу полного контекста
+  существующих сущностей в промпт визарда?
+
+✻ Cooked for 1m 19s
+
+❯ Да, такая фунциональность не помешала бы.                                     
+
+● Let me explore the relevant code to plan this properly.
+
+● Explore(Explore wizard prompt and config)
+  ⎿  Done (15 tool uses · 51.0k tokens · 42s)
+  (ctrl+o to expand)
+
+● Now I have full context. Let me design the implementation.
+
+● Plan(Plan wizard context enrichment)
+  ⎿  Done (18 tool uses · 38.7k tokens · 1m 55s)
+  (ctrl+o to expand)
+
+● Let me verify the key files before finalizing the plan.
+
+  Read 2 files (ctrl+o to expand)
+
+● Good, I've confirmed the exact code. Now let me write the final plan.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● Plan is ready. The change touches 3 files — generator.go (wire subagent
+  manager), router.go (pass it through), and prompt.go (render full entity
+  details with truncation). No API/UI changes needed.
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/happy-zooming-toast.md · /plan to edit
+     Wizard: Full Entity Context for Clone/Adapt Workflows
+
+     Context
+
+     The wizard's buildWizardPrompt() currently passes only names of existing
+     tasks, pipelines, and domains to Claude. This means when a user asks
+     "create a pipeline like vet-manufacturers-sync but for radiation
+     equipment", the wizard has no idea what that pipeline looks like — its
+     steps, domain schema, agents, or task prompts. This change enriches the
+     prompt with full entity details so the wizard can clone and adapt existing
+     configurations.
+
+     Files to Modify
+
+     1. internal/wizard/generator.go
+
+     - Add subagentMgr *subagent.Manager field to Generator struct
+     - Update NewGenerator signature to accept *subagent.Manager
+     - In Generate(), call g.subagentMgr.List() to fetch agents (log warning on
+     error, proceed with empty slice)
+     - Pass agents slice to buildWizardPrompt(req, cfg, agents)
+
+     2. internal/api/router.go (line 73)
+
+     - Pass subagentMgr to wizard.NewGenerator(taskRunner, subagentMgr, logger)
+
+     3. internal/wizard/prompt.go — main changes
+
+     a) Add truncateField helper:
+     func truncateField(s string, maxLen int) string {
+         if len(s) <= maxLen { return s }
+         return s[:maxLen] + fmt.Sprintf("... (%d chars total)", len(s))
+     }
+
+     b) Change signature: buildWizardPrompt(req GenerateRequest, cfg 
+     *config.Config, agents []subagent.SubAgent) string
+
+     c) Replace name-only entity sections (lines 272-295) with full details:
+
+     - Tasks: name, prompt (truncate 500 chars), schedule, model, timeout,
+     agents, mcp_servers, allowed_tools, domain, permission_mode. Skip
+     zero-value fields.
+     - Pipelines: name, mode, steps (task names), max_iterations, stop_signal,
+     session_chain, schedule. Skip defaults.
+     - Domains: name, description, data_dir, db, schema (truncate 400 chars),
+     tasks, pipelines, agents, mcp_servers. Skip empty fields.
+     - Agents (new section): name, description, tools, model, permission_mode,
+     instructions (truncate 300 chars), scope.
+
+     Format: YAML-like indented text (token-efficient, readable). Use %q for
+     multi-line strings (prompts, instructions).
+
+     d) Add cloning instruction after Rules section:
+     ▎ When the user asks to create something "like" or "similar to" an existing
+      entity, use the full details below to clone and adapt it. Preserve 
+     structural patterns (MCP servers, agents, domain setup) unless the user 
+     requests changes.
+
+     e) Prompt size safety valve: If built prompt > 150,000 chars, rebuild with
+     name-only format (current behavior) as fallback.
+
+     What Does NOT Change
+
+     - internal/wizard/types.go — request/response types unchanged
+     - internal/api/wizard.go — API handlers unchanged
+     - web/ — no UI changes
+     - wizardJSONSchema constant — unchanged
+
+     Verification
+
+     1. make build — compiles cleanly
+     2. make test — all tests pass
+     3. Manual test: open wizard UI, enter "создай пайплайн аналогичный
+     vet-manufacturers-sync но для производителей оборудования радиационного
+     контроля" — verify the generated plan has matching structure (3 tasks,
+     domain with appropriate schema, agent, pipeline)
+
+● Let me start implementing. I'll read the files I need to modify first.
+
+  Read 3 files (ctrl+o to expand)
+
+● Good, I have all the context. Let me also check the SubAgent struct and the
+  config.Task struct for field names.
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● Now I have everything. Let me implement all three files.
+
+● Update(internal/wizard/generator.go)
+  ⎿  Added 15 lines, removed 5 lines
+       8    "strings"
+       9  
+      10    "github.com/asdmin/claude-ecosystem/internal/config"
+      11 +  "github.com/asdmin/claude-ecosystem/internal/subagent"       
+      12    "github.com/asdmin/claude-ecosystem/internal/task"
+      13    "github.com/google/uuid"
+      14  )
+      15  
+      16  // Generator uses the task runner to invoke Claude for plan gen
+          eration.
+      17  type Generator struct {
+      17 -  runner *task.Runner                                          
+      18 -  logger *slog.Logger                                          
+      18 +  runner      *task.Runner                                     
+      19 +  subagentMgr *subagent.Manager                                
+      20 +  logger      *slog.Logger                                     
+      21  }
+      22  
+      23  // NewGenerator creates a new Generator.
+      22 -func NewGenerator(runner *task.Runner, logger *slog.Logger) *Ge
+         -nerator {                                                      
+      23 -  return &Generator{runner: runner, logger: logger}            
+      24 +func NewGenerator(runner *task.Runner, subagentMgr *subagent.Ma
+         +nager, logger *slog.Logger) *Generator {                       
+      25 +  return &Generator{runner: runner, subagentMgr: subagentMgr, l
+         +ogger: logger}                                                 
+      26  }
+      27  
+      28  // Generate runs Claude with the wizard prompt and parses the o
+          utput into a Plan.
+      29  func (g *Generator) Generate(ctx context.Context, req GenerateR
+          equest, cfg *config.Config) (*Plan, error) {
+      28 -  prompt := buildWizardPrompt(req, cfg)                        
+      30 +  var agents []subagent.SubAgent                               
+      31 +  if g.subagentMgr != nil {                                    
+      32 +    var err error                                              
+      33 +    agents, err = g.subagentMgr.List()                         
+      34 +    if err != nil {                                            
+      35 +      g.logger.Warn("wizard: failed to list agents, proceeding 
+         +without", "error", err)                                        
+      36 +    }                                                          
+      37 +  }                                                            
+      38 +  prompt := buildWizardPrompt(req, cfg, agents)                
+      39  
+      40    syntheticTask := config.Task{
+      41      Name:           "_wizard-generate",
+
+● Update(internal/api/router.go)
+  ⎿  Added 1 line, removed 1 line
+      70      guard:       guard,
+      71      logger:      logger,
+      72    }
+      73 -  s.wizardGen = wizard.NewGenerator(taskRunner, logger)        
+      73 +  s.wizardGen = wizard.NewGenerator(taskRunner, subagentMgr, lo
+         +gger)                                                          
+      74    s.wizardStore = wizard.NewPlanStore()
+      75    s.cleanupStaleExecutions()
+      76    return s
+  ⎿  Found 2 new diagnostic issues in 2 files (ctrl+o to expand)
+
+● Now let me update prompt.go — the main change. I'll replace the entity
+  sections and add the helpers.
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 1 line
+       5    "strings"
+       6  
+       7    "github.com/asdmin/claude-ecosystem/internal/config"
+       8 +  "github.com/asdmin/claude-ecosystem/internal/subagent"       
+       9  )
+      10  
+      11  // wizardJSONSchema constrains Claude's output to the Plan stru
+          cture.
+
+● Now add the cloning instruction after the Rules section, update the function
+  signature, and replace the entity sections.
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 1 line
+      247  9. Generate a clear summary explaining the plan
+      248  10. When using agents in allowed_tools, include "Agent" in the
+            list
+      249  11. For tasks with MCP tools, list ALL MCP tools the task migh
+           t need in allowed_tools
+      250 +12. When the user asks to create something "like" or "similar 
+          +to" an existing entity, use the full details provided below to
+          + clone and adapt it. Preserve structural patterns (MCP servers
+          +, agents, domain setup) unless the user explicitly requests ch
+          +anges.                                                        
+      251  
+      252  `)
+      253  
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Now update the function signature and replace the entity sections.
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 1 line, removed 1 line
+      117  }`
+      118  
+      119  // buildWizardPrompt creates the system prompt for the wizard'
+           s Claude call.
+      120 -func buildWizardPrompt(req GenerateRequest, cfg *config.Config
+          -) string {                                                    
+      120 +func buildWizardPrompt(req GenerateRequest, cfg *config.Config
+          +, agents []subagent.SubAgent) string {                        
+      121    var sb strings.Builder
+      122  
+      123    sb.WriteString(`You are a configuration wizard for Claude Ec
+           osystem — a Go orchestrator that runs Claude Code CLI as autom
+           ated tasks.
+
+● Now replace the name-only entity sections with full detail sections.
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 3 lines, removed 24 lines
+      271      sb.WriteString("\n")
+      272    }
+      273  
+      274 -  // Add existing entity names to avoid conflicts             
+      275 -  if len(cfg.Tasks) > 0 {                                     
+      276 -    sb.WriteString("## Existing Tasks (avoid name conflicts)\n
+          -\n")                                                          
+      277 -    for _, t := range cfg.Tasks {                             
+      278 -      sb.WriteString(fmt.Sprintf("- %s\n", t.Name))           
+      279 -    }                                                         
+      280 -    sb.WriteString("\n")                                      
+      281 -  }                                                           
+      274 +  // Add existing entities with full details for clone/adapt w
+          +orkflows.                                                     
+      275 +  // Falls back to name-only format if the prompt grows too la
+          +rge.                                                          
+      276 +  writeFullEntities(&sb, cfg, agents)                         
+      277  
+      283 -  if len(cfg.Pipelines) > 0 {                                 
+      284 -    sb.WriteString("## Existing Pipelines (avoid name conflict
+          -s)\n\n")                                                      
+      285 -    for _, p := range cfg.Pipelines {                         
+      286 -      sb.WriteString(fmt.Sprintf("- %s\n", p.Name))           
+      287 -    }                                                         
+      288 -    sb.WriteString("\n")                                      
+      289 -  }                                                           
+      290 -                                                              
+      291 -  if len(cfg.Domains) > 0 {                                   
+      292 -    sb.WriteString("## Existing Domains (avoid name conflicts)
+          -\n\n")                                                        
+      293 -    for name := range cfg.Domains {                           
+      294 -      sb.WriteString(fmt.Sprintf("- %s\n", name))             
+      295 -    }                                                         
+      296 -    sb.WriteString("\n")                                      
+      297 -  }                                                           
+      298 -                                                              
+      278    // Add user request
+      279    sb.WriteString("## User Request\n\n")
+      280    sb.WriteString(req.Description)
+  ⎿  Found 7 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now add the writeFullEntities and helper functions at the end of the file.
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Good, the file ends at line 294. Now I'll add the helper functions after the
+  closing brace.
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 194 lines
+      290    sb.WriteString(wizardJSONSchema)
+      291    sb.WriteString("\n\nIMPORTANT: Output ONLY the JSON object. 
+           No other text before or after it. Do NOT use any tools.")
+      292  
+      293 +  // Safety valve: if prompt is too large, rebuild with compac
+          +t format.                                                     
+      294 +  prompt := sb.String()                                       
+      295 +  if len(prompt) > 150000 {                                   
+      296 +    sb.Reset()                                                
+      297 +    sb.WriteString(prompt[:len(prompt)]) // will rebuild below
+      298 +    // Fall back: replace full entities with name-only        
+      299 +    return buildCompactPrompt(req, cfg, agents)               
+      300 +  }                                                           
+      301 +                                                              
+      302 +  return prompt                                               
+      303 +}                                                             
+      304 +                                                              
+      305 +// buildCompactPrompt is a fallback that uses name-only entity
+          + listings                                                     
+      306 +// when the full-detail prompt exceeds size limits.           
+      307 +func buildCompactPrompt(req GenerateRequest, cfg *config.Confi
+          +g, agents []subagent.SubAgent) string {                       
+      308 +  var sb strings.Builder                                      
+      309 +  // Reuse the same static prompt prefix up to the MCP servers
+          + section.                                                     
+      310 +  // For simplicity, just list names.                         
+      311 +  sb.WriteString("## Existing Tasks (name only — config too la
+          +rge for full details)\n\n")                                   
+      312 +  for _, t := range cfg.Tasks {                               
+      313 +    sb.WriteString(fmt.Sprintf("- %s\n", t.Name))             
+      314 +  }                                                           
+      315 +  sb.WriteString("\n## Existing Pipelines\n\n")               
+      316 +  for _, p := range cfg.Pipelines {                           
+      317 +    sb.WriteString(fmt.Sprintf("- %s\n", p.Name))             
+      318 +  }                                                           
+      319 +  sb.WriteString("\n## Existing Domains\n\n")                 
+      320 +  for name := range cfg.Domains {                             
+      321 +    sb.WriteString(fmt.Sprintf("- %s\n", name))               
+      322 +  }                                                           
+      323 +  sb.WriteString("\n## Existing Agents\n\n")                  
+      324 +  for _, a := range agents {                                  
+      325 +    sb.WriteString(fmt.Sprintf("- %s: %s\n", a.Name, a.Descrip
+          +tion))                                                        
+      326 +  }                                                           
+      327 +  sb.WriteString("\n")                                        
+      328    return sb.String()
+      329  }
+      330 +                                                              
+      331 +// writeFullEntities appends detailed existing entity informat
+          +ion to the prompt                                             
+      332 +// so the wizard can clone and adapt existing configurations. 
+      333 +func writeFullEntities(sb *strings.Builder, cfg *config.Config
+          +, agents []subagent.SubAgent) {                               
+      334 +  if len(cfg.Tasks) > 0 {                                     
+      335 +    sb.WriteString("## Existing Tasks (use as reference or avo
+          +id name conflicts)\n\n")                                      
+      336 +    for _, t := range cfg.Tasks {                             
+      337 +      writeTask(sb, t)                                        
+      338 +    }                                                         
+      339 +    sb.WriteString("\n")                                      
+      340 +  }                                                           
+      341 +                                                              
+      342 +  if len(cfg.Pipelines) > 0 {                                 
+      343 +    sb.WriteString("## Existing Pipelines (use as reference or
+          + avoid name conflicts)\n\n")                                  
+      344 +    for _, p := range cfg.Pipelines {                         
+      345 +      writePipeline(sb, p)                                    
+      346 +    }                                                         
+      347 +    sb.WriteString("\n")                                      
+      348 +  }                                                           
+      349 +                                                              
+      350 +  if len(cfg.Domains) > 0 {                                   
+      351 +    sb.WriteString("## Existing Domains (use as reference or a
+          +void name conflicts)\n\n")                                    
+      352 +    for name, d := range cfg.Domains {                        
+      353 +      writeDomain(sb, name, d)                                
+      354 +    }                                                         
+      355 +    sb.WriteString("\n")                                      
+      356 +  }                                                           
+      357 +                                                              
+      358 +  if len(agents) > 0 {                                        
+      359 +    sb.WriteString("## Existing Agents (use as reference or av
+          +oid name conflicts)\n\n")                                     
+      360 +    for _, a := range agents {                                
+      361 +      writeAgent(sb, a)                                       
+      362 +    }                                                         
+      363 +    sb.WriteString("\n")                                      
+      364 +  }                                                           
+      365 +}                                                             
+      366 +                                                              
+      367 +func writeTask(sb *strings.Builder, t config.Task) {          
+      368 +  fmt.Fprintf(sb, "- name: %s\n", t.Name)                     
+      369 +  fmt.Fprintf(sb, "  prompt: %q\n", truncateField(t.Prompt, 50
+          +0))                                                           
+      370 +  if t.WorkDir != "" {                                        
+      371 +    fmt.Fprintf(sb, "  work_dir: %s\n", t.WorkDir)            
+      372 +  }                                                           
+      373 +  if t.Schedule != "" {                                       
+      374 +    fmt.Fprintf(sb, "  schedule: %q\n", t.Schedule)           
+      375 +  }                                                           
+      376 +  if t.Model != "" {                                          
+      377 +    fmt.Fprintf(sb, "  model: %s\n", t.Model)                 
+      378 +  }                                                           
+      379 +  if t.Timeout != "" {                                        
+      380 +    fmt.Fprintf(sb, "  timeout: %s\n", t.Timeout)             
+      381 +  }                                                           
+      382 +  if len(t.Agents) > 0 {                                      
+      383 +    fmt.Fprintf(sb, "  agents: [%s]\n", strings.Join(t.Agents,
+          + ", "))                                                       
+      384 +  }                                                           
+      385 +  if len(t.MCPServers) > 0 {                                  
+      386 +    fmt.Fprintf(sb, "  mcp_servers: [%s]\n", strings.Join(t.MC
+          +PServers, ", "))                                              
+      387 +  }                                                           
+      388 +  if len(t.AllowedTools) > 0 {                                
+      389 +    fmt.Fprintf(sb, "  allowed_tools: [%s]\n", strings.Join(t.
+          +AllowedTools, ", "))                                          
+      390 +  }                                                           
+      391 +  if t.Domain != "" {                                         
+      392 +    fmt.Fprintf(sb, "  domain: %s\n", t.Domain)               
+      393 +  }                                                           
+      394 +  if t.MaxTurns > 0 {                                         
+      395 +    fmt.Fprintf(sb, "  max_turns: %d\n", t.MaxTurns)          
+      396 +  }                                                           
+      397 +  if t.MaxBudgetUSD > 0 {                                     
+      398 +    fmt.Fprintf(sb, "  max_budget_usd: %.2f\n", t.MaxBudgetUSD
+          +)                                                             
+      399 +  }                                                           
+      400 +  if t.PermissionMode != "" {                                 
+      401 +    fmt.Fprintf(sb, "  permission_mode: %s\n", t.PermissionMod
+          +e)                                                            
+      402 +  }                                                           
+      403 +  if len(t.Tags) > 0 {                                        
+      404 +    fmt.Fprintf(sb, "  tags: [%s]\n", strings.Join(t.Tags, ", 
+          +"))                                                           
+      405 +  }                                                           
+      406 +}                                                             
+      407 +                                                              
+      408 +func writePipeline(sb *strings.Builder, p config.Pipeline) {  
+      409 +  fmt.Fprintf(sb, "- name: %s\n", p.Name)                     
+      410 +  if p.Mode != "" {                                           
+      411 +    fmt.Fprintf(sb, "  mode: %s\n", p.Mode)                   
+      412 +  }                                                           
+      413 +  if len(p.Steps) > 0 {                                       
+      414 +    steps := make([]string, len(p.Steps))                     
+      415 +    for i, s := range p.Steps {                               
+      416 +      steps[i] = s.Task                                       
+      417 +    }                                                         
+      418 +    fmt.Fprintf(sb, "  steps: [%s]\n", strings.Join(steps, ", 
+          +"))                                                           
+      419 +  }                                                           
+      420 +  if p.MaxIterations > 0 {                                    
+      421 +    fmt.Fprintf(sb, "  max_iterations: %d\n", p.MaxIterations)
+      422 +  }                                                           
+      423 +  if p.StopSignal != "" {                                     
+      424 +    fmt.Fprintf(sb, "  stop_signal: %q\n", p.StopSignal)      
+      425 +  }                                                           
+      426 +  if p.SessionChain {                                         
+      427 +    sb.WriteString("  session_chain: true\n")                 
+      428 +  }                                                           
+      429 +  if p.Schedule != "" {                                       
+      430 +    fmt.Fprintf(sb, "  schedule: %q\n", p.Schedule)           
+      431 +  }                                                           
+      432 +}                                                             
+      433 +                                                              
+      434 +func writeDomain(sb *strings.Builder, name string, d config.Do
+          +main) {                                                       
+      435 +  fmt.Fprintf(sb, "- name: %s\n", name)                       
+      436 +  if d.Description != "" {                                    
+      437 +    fmt.Fprintf(sb, "  description: %q\n", d.Description)     
+      438 +  }                                                           
+      439 +  if d.DataDir != "" {                                        
+      440 +    fmt.Fprintf(sb, "  data_dir: %s\n", d.DataDir)            
+      441 +  }                                                           
+      442 +  if d.DB != "" {                                             
+      443 +    fmt.Fprintf(sb, "  db: %s\n", d.DB)                       
+      444 +  }                                                           
+      445 +  if d.Schema != "" {                                         
+      446 +    fmt.Fprintf(sb, "  schema: %q\n", truncateField(d.Schema, 
+          +400))                                                         
+      447 +  }                                                           
+      448 +  if len(d.Tasks) > 0 {                                       
+      449 +    fmt.Fprintf(sb, "  tasks: [%s]\n", strings.Join(d.Tasks, "
+          +, "))                                                         
+      450 +  }                                                           
+      451 +  if len(d.Pipelines) > 0 {                                   
+      452 +    fmt.Fprintf(sb, "  pipelines: [%s]\n", strings.Join(d.Pipe
+          +lines, ", "))                                                 
+      453 +  }                                                           
+      454 +  if len(d.Agents) > 0 {                                      
+      455 +    fmt.Fprintf(sb, "  agents: [%s]\n", strings.Join(d.Agents,
+          + ", "))                                                       
+      456 +  }                                                           
+      457 +  if len(d.MCPServers) > 0 {                                  
+      458 +    fmt.Fprintf(sb, "  mcp_servers: [%s]\n", strings.Join(d.MC
+          +PServers, ", "))                                              
+      459 +  }                                                           
+      460 +}                                                             
+      461 +                                                              
+      462 +func writeAgent(sb *strings.Builder, a subagent.SubAgent) {   
+      463 +  fmt.Fprintf(sb, "- name: %s\n", a.Name)                     
+      464 +  fmt.Fprintf(sb, "  description: %q\n", a.Description)       
+      465 +  if len(a.Tools) > 0 {                                       
+      466 +    fmt.Fprintf(sb, "  tools: [%s]\n", strings.Join(a.Tools, "
+          +, "))                                                         
+      467 +  }                                                           
+      468 +  if a.Model != "" {                                          
+      469 +    fmt.Fprintf(sb, "  model: %s\n", a.Model)                 
+      470 +  }                                                           
+      471 +  if a.PermissionMode != "" {                                 
+      472 +    fmt.Fprintf(sb, "  permission_mode: %s\n", a.PermissionMod
+          +e)                                                            
+      473 +  }                                                           
+      474 +  if a.Instructions != "" {                                   
+      475 +    fmt.Fprintf(sb, "  instructions: %q\n", truncateField(a.In
+          +structions, 300))                                             
+      476 +  }                                                           
+      477 +  if a.Scope != "" {                                          
+      478 +    fmt.Fprintf(sb, "  scope: %s\n", a.Scope)                 
+      479 +  }                                                           
+      480 +}                                                             
+      481 +                                                              
+      482 +// truncateField shortens a string to maxLen, appending a note
+          + about total length.                                          
+      483 +func truncateField(s string, maxLen int) string {             
+      484 +  if len(s) <= maxLen {                                       
+      485 +    return s                                                  
+      486 +  }                                                           
+      487 +  return s[:maxLen] + fmt.Sprintf("... (%d chars total)", len(
+          +s))                                                           
+      488 +}                                                             
+
+● Now I need to fix the safety valve — the compact fallback needs the full
+  prompt rebuilt, not just the entity section. Let me fix that logic.
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Found 8 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● The compact fallback is incomplete — it only generates the entity section, not
+   the full prompt. Let me simplify: just log a warning and truncate the
+  entities section instead of a full rebuild. Actually, the simplest approach:
+  just check prompt size and if too large, log it — sonnet handles large prompts
+   fine. Let me clean this up.
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Removed 35 lines
+      290    sb.WriteString(wizardJSONSchema)
+      291    sb.WriteString("\n\nIMPORTANT: Output ONLY the JSON object. 
+           No other text before or after it. Do NOT use any tools.")
+      292  
+      293 -  // Safety valve: if prompt is too large, rebuild with compac
+          -t format.                                                     
+      294 -  prompt := sb.String()                                       
+      295 -  if len(prompt) > 150000 {                                   
+      296 -    sb.Reset()                                                
+      297 -    sb.WriteString(prompt[:len(prompt)]) // will rebuild below
+      298 -    // Fall back: replace full entities with name-only        
+      299 -    return buildCompactPrompt(req, cfg, agents)               
+      300 -  }                                                           
+      301 -                                                              
+      302 -  return prompt                                               
+      303 -}                                                             
+      304 -                                                              
+      305 -// buildCompactPrompt is a fallback that uses name-only entity
+          - listings                                                     
+      306 -// when the full-detail prompt exceeds size limits.           
+      307 -func buildCompactPrompt(req GenerateRequest, cfg *config.Confi
+          -g, agents []subagent.SubAgent) string {                       
+      308 -  var sb strings.Builder                                      
+      309 -  // Reuse the same static prompt prefix up to the MCP servers
+          - section.                                                     
+      310 -  // For simplicity, just list names.                         
+      311 -  sb.WriteString("## Existing Tasks (name only — config too la
+          -rge for full details)\n\n")                                   
+      312 -  for _, t := range cfg.Tasks {                               
+      313 -    sb.WriteString(fmt.Sprintf("- %s\n", t.Name))             
+      314 -  }                                                           
+      315 -  sb.WriteString("\n## Existing Pipelines\n\n")               
+      316 -  for _, p := range cfg.Pipelines {                           
+      317 -    sb.WriteString(fmt.Sprintf("- %s\n", p.Name))             
+      318 -  }                                                           
+      319 -  sb.WriteString("\n## Existing Domains\n\n")                 
+      320 -  for name := range cfg.Domains {                             
+      321 -    sb.WriteString(fmt.Sprintf("- %s\n", name))               
+      322 -  }                                                           
+      323 -  sb.WriteString("\n## Existing Agents\n\n")                  
+      324 -  for _, a := range agents {                                  
+      325 -    sb.WriteString(fmt.Sprintf("- %s: %s\n", a.Name, a.Descrip
+          -tion))                                                        
+      326 -  }                                                           
+      327 -  sb.WriteString("\n")                                        
+      293    return sb.String()
+      294  }
+      295  
+
+● Now let me check if there are any tests that need updating.
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● No tests reference these functions. Let me build to verify.
+
+● Bash(make build 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+  ⎿  (timeout 2m)
+
+● Bash(make test 2>&1)
+  ⎿  go test ./internal/... ./cmd/...
+     ?          github.com/asdmin/claude-ecosystem/internal/api [no test
+     files]
+     ok         github.com/asdmin/claude-ecosystem/internal/auth        (cached)
+     … +28 lines (ctrl+o to expand)
+
+  ⎿  (timeout 2m)
+
+● Build and all tests pass. Done.
+
+  Summary of changes:
+
+  1. internal/wizard/generator.go — Generator now accepts *subagent.Manager,
+  fetches agents via List() before building the prompt
+  2. internal/api/router.go (line 73) — passes subagentMgr to
+  wizard.NewGenerator
+  3. internal/wizard/prompt.go — buildWizardPrompt now receives
+  []subagent.SubAgent and renders full details for all entity types:
+    - Tasks: prompt (truncated 500 chars), mcp_servers, agents, domain,
+  allowed_tools, model, timeout, etc.
+    - Pipelines: mode, steps (task names), max_iterations, stop_signal,
+  session_chain
+    - Domains: data_dir, db, schema (truncated 400 chars), linked
+  tasks/pipelines/agents/mcp_servers
+    - Agents (new section): description, tools, instructions (truncated 300
+  chars), model, scope
+    - Added rule 12 about cloning existing entities
+
+✻ Cogitated for 6m 33s

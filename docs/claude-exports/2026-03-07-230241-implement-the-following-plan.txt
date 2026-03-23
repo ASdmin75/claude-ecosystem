@@ -1,0 +1,263 @@
+
+ ▐▛███▜▌   Claude Code v2.1.71
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ Plan: Wire up agents field + Leads Pipeline + MCP Servers                    │
+│                                                                              │
+│ Context                                                                      │
+│                                                                              │
+│ The user needs to send full lead lists (not summaries) to the CEO as an      │
+│ Excel report, delivered via email, file share, and Telegram. This requires:  │
+│ 1. Fixing a critical bug: agents field in task config is never wired up      │
+│ 2. Implementing 3 MCP servers (Excel, Email, Telegram) — currently stubs     │
+│ 3. Creating a leads pipeline that finds leads → generates Excel → delivers   │
+│ to CEO                                                                       │
+│                                                                              │
+│ Part 1: Wire up agents field (bug fix)                                       │
+│                                                                              │
+│ Problem                                                                      │
+│                                                                              │
+│ config.Task.Agents and task.RunOptions.AgentsJSON exist but are never        │
+│ connected. All 9 call sites pass task.RunOptions{}. subagent.ToAgentsJSON()  │
+│ exists but is never called.                                                  │
+│                                                                              │
+│ Solution                                                                     │
+│                                                                              │
+│ Create internal/task/resolve.go:                                             │
+│ func ResolveRunOptions(t config.Task, subMgr *subagent.Manager, mcpMgr       │
+│ *mcpmanager.Manager) (RunOptions, error)                                     │
+│ - Resolves t.Agents → opts.AgentsJSON via subMgr.Get() +                     │
+│ subagent.ToAgentsJSON()                                                      │
+│ - Resolves t.MCPServers → opts.MCPConfigPath via mcpMgr (if non-nil)         │
+│                                                                              │
+│ Call sites to update (9 locations)                                           │
+│                                                                              │
+│ ┌─────────────────────────────────┬──────────┐                               │
+│ │              File               │   Line   │                               │
+│ ├─────────────────────────────────┼──────────┤                               │
+│ │ cmd/server/main.go              │ 66       │                               │
+│ ├─────────────────────────────────┼──────────┤                               │
+│ │ internal/api/tasks.go           │ 166, 252 │                               │
+│ ├─────────────────────────────────┼──────────┤                               │
+│ │ internal/api/pipelines.go       │ 83       │                               │
+│ ├─────────────────────────────────┼──────────┤                               │
+│ │ internal/pipeline/sequential.go │ 60       │                               │
+│ ├─────────────────────────────────┼──────────┤                               │
+│ │ internal/pipeline/parallel.go   │ 40, 84   │                               │
+│ ├─────────────────────────────────┼──────────┤                               │
+│ │ internal/scheduler/scheduler.go │ 57       │                               │
+│ ├─────────────────────────────────┼──────────┤                               │
+│ │ internal/watcher/watcher.go     │ 129      │                               │
+│ └─────────────────────────────────┴──────────┘                               │
+│                                                                              │
+│ Dependency injection                                                         │
+│                                                                              │
+│ - pipeline.Runner — add subMgr field to struct, update NewRunner()           │
+│ - scheduler.Scheduler — add subMgr field                                     │
+│ - watcher.Watcher — add subMgr field                                         │
+│ - api.Server — already has subagentMgr                                       │
+│ - cmd/server/main.go — pass subagentMgr to all constructors                  │
+│                                                                              │
+│ ---                                                                          │
+│ Part 2: Implement MCP Servers                                                │
+│                                                                              │
+│ All 3 MCP servers follow the same JSON-RPC 2.0 stdio pattern already         │
+│ established in the project. Each currently has tool definitions but returns  │
+│ "not implemented yet" on tools/call.                                         │
+│                                                                              │
+│ 2A: mcp-excel — реализация через excelize                                    │
+│                                                                              │
+│ File: cmd/mcp/mcp-excel/main.go                                              │
+│ Dependency: github.com/xuri/excelize/v2                                      │
+│                                                                              │
+│ Implement tools/call handler for existing tools:                             │
+│ - create_spreadsheet — excelize.NewFile(), add sheet name, optional headers  │
+│ row, save to path                                                            │
+│ - write_spreadsheet — open file, write 2D data array starting at cell, save  │
+│ - read_spreadsheet — open file, read range (or full sheet), return as JSON   │
+│ 2D array                                                                     │
+│                                                                              │
+│ Add new tool:                                                                │
+│ - add_styled_table — create table with auto-filter, header styling,          │
+│ alternating row colors. Params: path, sheet, headers []string, data          │
+│ [][]string, table_name. Uses excelize.AddTable() + style. This is key for    │
+│ CEO-quality reports.                                                         │
+│                                                                              │
+│ 2B: mcp-email — реализация через gomail                                      │
+│                                                                              │
+│ File: cmd/mcp/mcp-email/main.go                                              │
+│ Dependency: gopkg.in/gomail.v2                                               │
+│                                                                              │
+│ Config via env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD,         │
+│ SMTP_FROM                                                                    │
+│                                                                              │
+│ Update send_email tool to support:                                           │
+│ - attachments []string — file paths to attach (for Excel files)              │
+│ - html_body string — optional HTML body (alternative to plain text body)     │
+│ - Actual SMTP send via gomail with TLS                                       │
+│                                                                              │
+│ Keep existing read_inbox and search_emails as stubs (not needed for this use │
+│  case).                                                                      │
+│                                                                              │
+│ 2C: mcp-telegram — новый MCP сервер                                          │
+│                                                                              │
+│ New file: cmd/mcp/mcp-telegram/main.go                                       │
+│ Dependency: gopkg.in/telebot.v4                                              │
+│                                                                              │
+│ Config via env vars: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID (default           │
+│ recipient)                                                                   │
+│                                                                              │
+│ Tools:                                                                       │
+│ - send_message — send text message to chat_id. Params: chat_id (optional,    │
+│ defaults to env), text, parse_mode ("Markdown"/"HTML")                       │
+│ - send_document — send file (Excel report) to chat_id. Params: chat_id,      │
+│ file_path, caption                                                           │
+│                                                                              │
+│ Add to Makefile build targets and tasks.yaml mcp_servers section.            │
+│                                                                              │
+│ 2D: mcp-filesystem — copy_file tool                                          │
+│                                                                              │
+│ File: cmd/mcp/mcp-filesystem/main.go                                         │
+│                                                                              │
+│ Add tool:                                                                    │
+│ - copy_file — copy file from src to dst path. For copying Excel to CEO's     │
+│ private share.                                                               │
+│                                                                              │
+│ Implement existing stubs too: read_file, write_file, list_directory,         │
+│ search_files.                                                                │
+│                                                                              │
+│ ---                                                                          │
+│ Part 3: Leads Pipeline                                                       │
+│                                                                              │
+│ Pipeline structure (3 steps)                                                 │
+│                                                                              │
+│ pipelines:                                                                   │
+│   - name: leads-to-ceo                                                       │
+│     mode: sequential                                                         │
+│     steps:                                                                   │
+│       - task: find-leads                                                     │
+│       - task: compile-leads-excel                                            │
+│       - task: deliver-leads-report                                           │
+│                                                                              │
+│ Task 1: find-leads                                                           │
+│                                                                              │
+│ - Prompt: search for leads, output FULL structured list as JSON (not         │
+│ summary)                                                                     │
+│ - max_turns: 30                                                              │
+│ - json_schema: enforce array of objects with fields: company, contact,       │
+│ email, phone, position, source, notes                                        │
+│ - Output: raw JSON array of all leads                                        │
+│                                                                              │
+│ Task 2: compile-leads-excel                                                  │
+│                                                                              │
+│ - Prompt: "Вот список лидов в JSON:\n\n{{.PrevOutput}}\n\nСоздай Excel-отчёт │
+│  для CEO: /tmp/leads-report-YYYY-MM-DD.xlsx. Используй create_spreadsheet и  │
+│ add_styled_table. Добавь лист 'Leads' с таблицей и лист 'Summary' с          │
+│ итогами."                                                                    │
+│ - mcp_servers: [excel]                                                       │
+│ - agents: [leads-report-compiler]                                            │
+│ - Output: path to generated Excel file                                       │
+│                                                                              │
+│ Task 3: deliver-leads-report                                                 │
+│                                                                              │
+│ - Prompt: "Файл отчёта: {{.PrevOutput}}\n\nВыполни доставку:\n1. Отправь     │
+│ email CEO с вложением\n2. Скопируй файл в шару /shares/ceo/reports/\n3.      │
+│ Отправь уведомление в Telegram с файлом"                                     │
+│ - mcp_servers: [email, filesystem, telegram]                                 │
+│ - agents: [delivery-agent]                                                   │
+│                                                                              │
+│ Sub-agents                                                                   │
+│                                                                              │
+│ leads-report-compiler (user scope):                                          │
+│ - Description: Formats lead data into Excel reports for CEO                  │
+│ - Instructions: create xlsx with styled table, summary sheet with totals,    │
+│ date in filename                                                             │
+│ - Tools: mcp__excel__create_spreadsheet, mcp__excel__add_styled_table,       │
+│ mcp__excel__write_spreadsheet                                                │
+│                                                                              │
+│ delivery-agent (user scope):                                                 │
+│ - Description: Delivers reports via email, file share, and Telegram          │
+│ - Instructions: send Excel as email attachment, copy to share, send Telegram │
+│  notification with document                                                  │
+│ - Tools: mcp__email__send_email, mcp__filesystem__copy_file,                 │
+│ mcp__telegram__send_document, mcp__telegram__send_message                    │
+│                                                                              │
+│ tasks.yaml mcp_servers config                                                │
+│                                                                              │
+│ mcp_servers:                                                                 │
+│   - name: excel                                                              │
+│     command: ./bin/mcp-excel                                                 │
+│   - name: email                                                              │
+│     command: ./bin/mcp-email                                                 │
+│     env:                                                                     │
+│       SMTP_HOST: ${SMTP_HOST}                                                │
+│       SMTP_PORT: ${SMTP_PORT}                                                │
+│       SMTP_USER: ${SMTP_USER}                                                │
+│       SMTP_PASSWORD: ${SMTP_PASSWORD}                                        │
+│       SMTP_FROM: ${SMTP_FROM}                                                │
+│   - name: telegram                                                           │
+│     command: ./bin/mcp-telegram                                              │
+│     env:                                                                     │
+│       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}                              │
+│       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}                                  │
+│   - name: filesystem                                                         │
+│     command: ./bin/mcp-filesystem                                            │
+│                                                                              │
+│ ---                                                                          │
+│ Files Summary                                                                │
+│                                                                              │
+│ New files                                                                    │
+│                                                                              │
+│ - internal/task/resolve.go — ResolveRunOptions helper                        │
+│ - cmd/mcp/mcp-telegram/main.go — Telegram Bot MCP server                     │
+│                                                                              │
+│ Modified files                                                               │
+│                                                                              │
+│ - cmd/mcp/mcp-excel/main.go — implement tools + add add_styled_table         │
+│ - cmd/mcp/mcp-email/main.go — implement send_email with attachments via      │
+│ gomail                                                                       │
+│ - cmd/mcp/mcp-filesystem/main.go — implement existing tools + add copy_file  │
+│ - internal/pipeline/sequential.go — add subMgr, use ResolveRunOptions        │
+│ - internal/pipeline/parallel.go — same                                       │
+│ - internal/pipeline/factory.go — pass subMgr through NewRunner()             │
+│ - internal/scheduler/scheduler.go — add subMgr, use ResolveRunOptions        │
+│ - internal/watcher/watcher.go — add subMgr, use ResolveRunOptions            │
+│ - internal/api/tasks.go — use ResolveRunOptions in run handlers              │
+│ - internal/api/pipelines.go — use ResolveRunOptions                          │
+│ - cmd/server/main.go — pass subagentMgr to constructors, use in CLI run      │
+│ - go.mod / go.sum — add excelize, gomail, telebot                            │
+│ - Makefile — add mcp-telegram to build targets                               │
+│                                                                              │
+│ ---                                                                          │
+│ Execution Order                                                              │
+│                                                                              │
+│ 1. go get dependencies: excelize, gomail, telebot                            │
+│ 2. Part 1: resolve.go + update all 9 call sites + DI changes → make build →  │
+│ make test                                                                    │
+│ 3. Part 2A: mcp-excel implementation → test with manual JSON-RPC             │
+│ 4. Part 2B: mcp-email implementation → test with manual JSON-RPC             │
+│ 5. Part 2C: mcp-telegram new server → test with manual JSON-RPC              │
+│ 6. Part 2D: mcp-filesystem implementation → test                             │
+│ 7. Part 3: Add tasks/pipeline/sub-agents to tasks.yaml                       │
+│ 8. End-to-end: make run-pipeline PIPELINE=leads-to-ceo                       │
+│                                                                              │
+│ Verification                                                                 │
+│                                                                              │
+│ 1. Build: make build — no compilation errors                                 │
+│ 2. Unit test: internal/task/resolve_test.go — verify AgentsJSON populated    │
+│ 3. MCP test: send JSON-RPC tools/call to each MCP binary via stdin, verify   │
+│ responses                                                                    │
+│ 4. Integration: run leads-to-ceo pipeline, verify:                           │
+│   - Excel file created with styled table                                     │
+│   - Email sent with attachment                                               │
+│   - File copied to share path                                                │
+│   - Telegram message + document sent                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+● I'll start by reading the key files to understand the current state, then
+  execute the plan.
+  ⎿  Interrupted · What should Claude do instead?

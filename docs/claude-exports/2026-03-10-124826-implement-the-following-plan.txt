@@ -1,0 +1,212 @@
+ ▐▛███▜▌   Claude Code v2.1.72
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ Wizard: Auto-Generation of Tasks, Agents, Pipelines, Domains                 │
+│                                                                              │
+│ Context                                                                      │
+│                                                                              │
+│ Currently, creating a new automation in Claude Ecosystem requires manually   │
+│ configuring multiple entities: tasks in tasks.yaml, sub-agent .md files,     │
+│ domain schemas, pipelines — and understanding how they all wire together.    │
+│ The wizard automates this: user describes what they want in natural          │
+│ language, Claude analyzes it, and generates all necessary configuration      │
+│ entities for optimal execution.                                              │
+│                                                                              │
+│ Architecture                                                                 │
+│                                                                              │
+│ Two-phase flow: Generate (Claude produces a structured plan via json_schema) │
+│  → Preview/Edit → Apply (create all entities in dependency order).           │
+│                                                                              │
+│ The wizard doesn't need its own data model — it reuses existing config       │
+│ structs. Plans are held in memory with TTL (no persistence needed for a      │
+│ generate→preview→apply cycle).                                               │
+│                                                                              │
+│ Backend                                                                      │
+│                                                                              │
+│ New package: internal/wizard/                                                │
+│                                                                              │
+│ types.go — Plan and sub-plan structs:                                        │
+│ - GenerateRequest{Description, WorkDir}                                      │
+│ - Plan{ID, Description, Summary, Domains[], Agents[], Tasks[], Pipelines[],  │
+│ Status}                                                                      │
+│ - DomainPlan{Name, Description, DataDir, DB, Schema, DomainDoc, Tasks[],     │
+│ Pipelines[], Agents[], MCPServers[]}                                         │
+│ - AgentPlan{Name, Description, Tools[], Model, PermissionMode, Instructions, │
+│  Scope}                                                                      │
+│ - TaskPlan{Name, Prompt, WorkDir, Schedule, Tags[], Model, Timeout,          │
+│ Agents[], MCPServers[], AllowedTools[], MaxTurns, MaxBudgetUSD,              │
+│ PermissionMode, Domain}                                                      │
+│ - PipelinePlan{Name, Mode, Steps[], MaxIterations, StopSignal}               │
+│ - ApplyResult{DomainsCreated[], AgentsCreated[], TasksCreated[],             │
+│ PipelinesCreated[], Errors[]}                                                │
+│                                                                              │
+│ prompt.go — Wizard prompt template + JSON schema constant:                   │
+│ - buildWizardPrompt(req GenerateRequest, cfg *config.Config) — builds the    │
+│ system prompt with available MCP servers, existing entity names, and rules   │
+│ - wizardJSONSchema — JSON Schema string constraining Claude's output to Plan │
+│  structure                                                                   │
+│ - The prompt teaches Claude about all entity types, MCP server tool names,   │
+│ naming conventions (kebab-case), and configuration rules                     │
+│                                                                              │
+│ generator.go — Generator struct:                                             │
+│ - NewGenerator(runner *task.Runner) *Generator                               │
+│ - Generate(ctx, req, cfg) (*Plan, error) — creates a synthetic config.Task   │
+│ with the wizard prompt and json_schema, runs it via task.Runner, parses JSON │
+│  output into Plan, assigns UUID + status "draft"                             │
+│ - Uses model sonnet for speed, permission_mode: plan (read-only), timeout    │
+│ 5m, max_turns 3                                                              │
+│                                                                              │
+│ applier.go — Applier struct:                                                 │
+│ - NewApplier(cfg, subagentMgr, domainMgr) *Applier                           │
+│ - Apply(plan *Plan) (*ApplyResult, error) — creates entities in strict       │
+│ order:                                                                       │
+│   a. Domains → add to cfg.Domains, call domainMgr.AddDomain() (new method)   │
+│   b. Agents → subagentMgr.Create() for each                                  │
+│   c. Tasks → append to cfg.Tasks                                             │
+│   d. Pipelines → append to cfg.Pipelines                                     │
+│   e. Save → cfg.Save()                                                       │
+│ - Accumulates rollback functions; on any failure, executes rollbacks in      │
+│ reverse order                                                                │
+│ - Validates before mutating: no duplicate names, MCP servers exist,          │
+│ agent/task references valid                                                  │
+│                                                                              │
+│ store.go — PlanStore (in-memory with 30-min TTL):                            │
+│ - NewPlanStore() *PlanStore                                                  │
+│ - Put(plan), Get(id) (*Plan, bool), Delete(id)                               │
+│                                                                              │
+│ Modify: internal/domain/manager.go                                           │
+│                                                                              │
+│ Add AddDomain(name string, d config.Domain) error method:                    │
+│ - Registers domain in internal map                                           │
+│ - Runs init for just this domain (mkdir, apply schema, generate DOMAIN.md)   │
+│ - Extract per-domain init logic from existing Init() into initSingle(name,   │
+│ d) error                                                                     │
+│                                                                              │
+│ New file: internal/api/wizard.go                                             │
+│                                                                              │
+│ Handlers on Server struct (no new fields on Server — wizard components       │
+│ instantiated from existing deps):                                            │
+│                                                                              │
+│ Endpoint: POST /api/v1/wizard/generate                                       │
+│ Handler: handleWizardGenerate                                                │
+│ Description: Accepts {description, work_dir}, runs Claude, returns Plan      │
+│ ────────────────────────────────────────                                     │
+│ Endpoint: GET /api/v1/wizard/plans/{id}                                      │
+│ Handler: handleWizardGetPlan                                                 │
+│ Description: Returns stored plan by ID                                       │
+│ ────────────────────────────────────────                                     │
+│ Endpoint: PUT /api/v1/wizard/plans/{id}                                      │
+│ Handler: handleWizardUpdatePlan                                              │
+│ Description: User edits plan before applying                                 │
+│ ────────────────────────────────────────                                     │
+│ Endpoint: POST /api/v1/wizard/plans/{id}/apply                               │
+│ Handler: handleWizardApply                                                   │
+│ Description: Creates all entities, returns ApplyResult                       │
+│ ────────────────────────────────────────                                     │
+│ Endpoint: DELETE /api/v1/wizard/plans/{id}                                   │
+│ Handler: handleWizardDiscard                                                 │
+│ Description: Discards plan                                                   │
+│                                                                              │
+│ The PlanStore and Generator are stored as fields on Server struct,           │
+│ initialized in NewServer. Since NewServer already takes all the needed deps  │
+│ (taskRunner, cfg, subagentMgr, domainMgr), the wizard components are created │
+│  internally — no signature change to NewServer.                              │
+│                                                                              │
+│ Modify: internal/api/router.go                                               │
+│                                                                              │
+│ - Add wizardGen *wizard.Generator and wizardStore *wizard.PlanStore fields   │
+│ to Server                                                                    │
+│ - Initialize them in NewServer() body                                        │
+│ - Register 5 wizard routes in Handler()                                      │
+│                                                                              │
+│ No changes to: cmd/server/main.go                                            │
+│                                                                              │
+│ Everything is self-contained inside api.NewServer.                           │
+│                                                                              │
+│ Frontend                                                                     │
+│                                                                              │
+│ New types in web/src/types/index.ts                                          │
+│                                                                              │
+│ WizardPlan, DomainPlan, AgentPlan, TaskPlan, PipelinePlan, ApplyResult —     │
+│ mirror backend structs.                                                      │
+│                                                                              │
+│ New API methods in web/src/api/client.ts                                     │
+│                                                                              │
+│ wizardGenerate(description, workDir?) → WizardPlan                           │
+│ wizardGetPlan(id) → WizardPlan                                               │
+│ wizardUpdatePlan(id, plan) → WizardPlan                                      │
+│ wizardApply(id) → ApplyResult                                                │
+│ wizardDiscard(id) → void                                                     │
+│                                                                              │
+│ New component: web/src/components/Wizard.tsx                                 │
+│                                                                              │
+│ Three-state UI:                                                              │
+│                                                                              │
+│ State 1 — Input: Large textarea for task description (placeholder: "Describe │
+│  what you want to automate..."), optional work_dir field, "Generate" button. │
+│  Loading spinner during generation (~30-60s).                                │
+│                                                                              │
+│ State 2 — Preview: Collapsible sections showing generated entities:          │
+│ - Summary card (Claude's explanation)                                        │
+│ - Domains section (name, schema SQL in <pre>)                                │
+│ - Agents section (name, description, tools list, instructions in markdown)   │
+│ - Tasks section (name, prompt preview, agents/MCP/tools badges)              │
+│ - Pipelines section (name, mode, steps as flow)                              │
+│ - Each field editable inline                                                 │
+│ - "Apply" and "Discard" buttons                                              │
+│                                                                              │
+│ State 3 — Result: Success/failure display with lists of created entities.    │
+│ Navigation links to tasks/pipelines pages.                                   │
+│                                                                              │
+│ Modify: web/src/App.tsx                                                      │
+│                                                                              │
+│ - Add { path: '/wizard', label: 'Wizard' } to navItems (position 2, after    │
+│ Dashboard)                                                                   │
+│ - Add <Route path="/wizard" element={<Wizard />} />                          │
+│ - Import Wizard component                                                    │
+│                                                                              │
+│ Files Summary                                                                │
+│                                                                              │
+│ ┌────────┬─────────────────────────────────────────────────────────┐         │
+│ │ Action │                          File                           │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/wizard/types.go                                │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/wizard/prompt.go                               │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/wizard/generator.go                            │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/wizard/applier.go                              │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/wizard/store.go                                │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ internal/api/wizard.go                                  │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Create │ web/src/components/Wizard.tsx                           │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Modify │ internal/api/router.go — add fields + routes            │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Modify │ internal/domain/manager.go — add AddDomain + initSingle │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Modify │ web/src/types/index.ts — add wizard types               │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Modify │ web/src/api/client.ts — add wizard API methods          │         │
+│ ├────────┼─────────────────────────────────────────────────────────┤         │
+│ │ Modify │ web/src/App.tsx — add nav item + route                  │         │
+│ └────────┴─────────────────────────────────────────────────────────┘         │
+│                                                                              │
+│ Verification                                                                 │
+│                                                                              │
+│ 1. make build — compiles successfully                                        │
+│ 2. make build-ui — frontend builds                                           │
+│ 3. make run — server starts, wizard routes respond                           │
+│ 4. Manual test: POST /api/v1/wizard/generate with description → get Plan     │
+│ JSON → POST /apply → entities appear in tasks.yaml and .claude/agents/       │
+│ 5. UI test: navigate to /wizard, enter description, preview generated plan,  │
+│ apply, verify entities on tasks/pipelines pages                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ⎿  Interrupted · What should Claude do instead?

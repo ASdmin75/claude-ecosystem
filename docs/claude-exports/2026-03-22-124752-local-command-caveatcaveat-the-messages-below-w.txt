@@ -1,0 +1,362 @@
+ ▐▛███▜▌   Claude Code v2.1.81
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯   Нужно доработать UI так, чтобы была возможность удалять pipeline, task,     
+sub-agent. task.yaml должен быть изменятся соответствующим образом с            
+воследующей валидацией. Домены также должны удаляться при удалении              
+соответствующего пайплайна. Перед любым удалением необходимо делать копию       
+изменяемых файлов, удаляемых каталого доменов и т.п., например в папку          
+data/backup с ведением лога в иде log файла либо SQLite БД. Соответственно      
+должна быть возможность восстановить любой элемент, пайплайн, такск....         
+  При этом если есть зваисимочть одной сущности от другой, то удаление должно   
+быть невозможно. Например если таск или сабагент используется в пайплайне, то   
+их удалить д.б. невозможно, только вместе пайплайном и то при условии, что они  
+не входяят в другие пайплайны. Должно выдавться уведомление о невозможности     
+удаления  пользователю.Если же таск или сабагент включены только в данный       
+пайплайн, то данный пайплайн удаляется вместе с его компонентами. Т.е. дожна    
+поддерживаться логическая целостность. Перед удалением дожно быть получено      
+подтверждение от пользователя.                                                  
+
+● I'll start by exploring the codebase to understand the current architecture
+  before designing the plan.
+
+● Explore(Explore API and config structure)
+  ⎿  Done (27 tool uses · 80.0k tokens · 1m 2s)
+  (ctrl+o to expand)
+
+● Explore(Explore UI components and existing delete)
+  ⎿  Done (13 tool uses · 62.1k tokens · 32s)
+  (ctrl+o to expand)
+
+● Now let me read the key files I need for the plan design.
+
+  Read 6 files (ctrl+o to expand)
+
+● Now let me read the API client and key UI components.
+
+  Read 2 files (ctrl+o to expand)
+
+● Now let me read the domain manager and config structures more closely.
+
+  Read 3 files (ctrl+o to expand)
+
+● Now I have a thorough understanding. Let me design the plan.
+
+● Plan(Design delete/backup/restore system)
+  ⎿  Done (28 tool uses · 77.7k tokens · 2m 30s)
+  (ctrl+o to expand)
+
+● Now let me write the final plan.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● The plan is already written and complete from the previous session. Let me
+  exit plan mode for your approval.
+
+  Read 1 file (ctrl+o to expand)
+
+● The plan is complete and unchanged. Submitting for your approval.
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/giggly-churning-glacier.md · /plan to edit
+     Plan: Safe Delete with Backup/Restore for Tasks, Pipelines, Sub-Agents
+
+     Context
+
+     Currently the system has delete only for pipelines and sub-agents (simple
+     removal without backup or dependency checks). Tasks have no delete at all.
+     The user needs:
+     - Dependency-aware deletion (prevent breaking referential integrity)
+     - Cascade delete for pipelines (exclusive tasks/agents deleted together)
+     - Backup before any deletion to data/backup/ with SQLite log
+     - Restore capability from backup
+     - UI confirmation with dependency info before delete
+
+     Architecture
+
+     Three new backend packages + enhanced API handlers + frontend changes.
+
+     ---
+     Phase 1: Backend Foundation
+
+     1.1 New package internal/depcheck/checker.go
+
+     Pure-function dependency analyzer — no I/O, operates on *config.Config.
+
+     type DeleteAnalysis struct {
+         Entity       Dependency   // what is being deleted
+         UsedBy       []Dependency // who references it
+         CanDelete    bool
+         CascadeItems []Dependency // exclusive items that will also be deleted
+         Blocked      bool
+         BlockReason  string
+     }
+
+     Functions:
+     - AnalyzeTaskDelete(cfg, taskName) — blocked if any pipeline references the
+      task
+     - AnalyzePipelineDelete(cfg, pipelineName) — cascade-deletes tasks
+     exclusive to this pipeline + their exclusive agents
+     - AnalyzeSubAgentDelete(cfg, agentName) — blocked if any task references
+     the agent
+     - Helper: findPipelinesUsingTask, findTasksUsingAgent,
+     isTaskExclusiveToPipeline
+
+     Files: internal/depcheck/checker.go, internal/depcheck/checker_test.go
+
+     1.2 New package internal/backup/manager.go
+
+     Backup manager using the app's SQLite DB + file copies under
+     data/backup/{id}/.
+
+     New migration table backup_log:
+     CREATE TABLE IF NOT EXISTS backup_log (
+         id           TEXT PRIMARY KEY,
+         entity_type  TEXT NOT NULL,
+         entity_name  TEXT NOT NULL,
+         action       TEXT NOT NULL,
+         parent_id    TEXT NOT NULL DEFAULT '',
+         config_snap  TEXT NOT NULL DEFAULT '',
+         files        TEXT NOT NULL DEFAULT '',
+         created_at   DATETIME NOT NULL,
+         restored_at  DATETIME
+     )
+
+     Manager methods:
+     - CreateBackup(ctx, entry BackupEntry, filesToCopy map[string]string) —
+     inserts row, copies files to backup dir
+     - ListBackups(ctx, filter) — list with optional entity_type filter
+     - GetBackup(ctx, id) — single entry + backed-up file paths
+     - RestoreFiles(ctx, id) — returns config snapshot + file contents from
+     backup dir
+     - MarkRestored(ctx, id) — sets restored_at
+
+     Key design:
+     - config_snap stores full tasks.yaml content at time of backup (safe
+     restore via re-parse + validate)
+     - Sub-agent .md files copied to data/backup/{id}/agents/
+     - Domain data dirs are NOT backed up (too large); only config entry +
+     DOMAIN.md backed up
+     - Cascade delete creates one parent backup + child entries linked via
+     parent_id
+
+     Files: internal/backup/manager.go, internal/backup/manager_test.go,
+     migration in internal/store/sqlite/migrations.go
+
+     1.3 Domain Manager: add RemoveDomain method
+
+     In internal/domain/manager.go, add:
+     func (m *Manager) RemoveDomain(name string) { delete(m.domains, name) }
+     Domain data dir is NOT deleted (left on disk as safety measure). Only
+     removed from in-memory map + config.
+
+     ---
+     Phase 2: API Handlers
+
+     2.1 Wire backupMgr into Server
+
+     - Add backupMgr *backup.Manager field to Server struct in router.go
+     - Pass DB handle from cmd/server/main.go to create backup manager
+     - Add to NewServer() params
+
+     2.2 Delete-info endpoints (new file internal/api/delete.go)
+
+     Pre-delete analysis — frontend calls before showing confirmation:
+
+     GET /api/v1/tasks/{name}/delete-info      → DeleteAnalysis JSON
+     GET /api/v1/pipelines/{name}/delete-info  → DeleteAnalysis JSON
+     GET /api/v1/subagents/{name}/delete-info  → DeleteAnalysis JSON
+
+     2.3 Task delete (new, in internal/api/tasks.go)
+
+     DELETE /api/v1/tasks/{name}
+
+     1. depcheck.AnalyzeTaskDelete() — if blocked, return 409 with analysis
+     2. Read current tasks.yaml for backup
+     3. backupMgr.CreateBackup() with config snapshot
+     4. Remove task from cfg.Tasks
+     5. Clean task name from domain Tasks lists
+     6. config.Validate() — if fails, rollback in-memory, return 500
+     7. cfg.Save()
+     8. Return 200 {backup_id, deleted: [...]}
+
+     2.4 Enhanced pipeline delete (internal/api/pipelines.go)
+
+     DELETE /api/v1/pipelines/{name}
+
+     1. depcheck.AnalyzePipelineDelete() — get cascade items
+     2. Backup config + cascade agent .md files
+     3. Delete cascade sub-agents via subagentMgr.Delete()
+     4. Remove cascade tasks from cfg.Tasks
+     5. Remove pipeline from cfg.Pipelines
+     6. Clean domain references
+     7. Validate + save
+     8. Return 200 with backup_id + all deleted items
+
+     2.5 Enhanced sub-agent delete (internal/api/subagents.go)
+
+     1. depcheck.AnalyzeSubAgentDelete() — if blocked, return 409
+     2. Backup .md file
+     3. subagentMgr.Delete()
+     4. Return 200 with backup_id
+
+     2.6 Backup/Restore endpoints (new file internal/api/backups.go)
+
+     GET  /api/v1/backups              → list backups (most recent first)
+     GET  /api/v1/backups/{id}         → single backup details
+     POST /api/v1/backups/{id}/restore → restore from backup
+
+     Restore logic:
+     1. Load backup entry + config snapshot
+     2. Check name conflicts — if entity with same name exists, return 409
+     3. Parse backed-up YAML, extract relevant entity, merge into current config
+     4. For sub-agents, write .md file back from backup
+     5. config.Validate() merged config
+     6. cfg.Save()
+     7. Mark backup as restored
+
+     2.7 Concurrency safety
+
+     Use s.guard.TryAcquire("config:write") / Release in all delete + restore
+     handlers to serialize config modifications.
+
+     2.8 Route registration in router.go
+
+     // Task delete
+     mux.HandleFunc("DELETE /api/v1/tasks/{name}",
+     s.withAuth(s.handleDeleteTask))
+
+     // Delete-info
+     mux.HandleFunc("GET /api/v1/tasks/{name}/delete-info",
+     s.withAuth(s.handleTaskDeleteInfo))
+     mux.HandleFunc("GET /api/v1/pipelines/{name}/delete-info",
+     s.withAuth(s.handlePipelineDeleteInfo))
+     mux.HandleFunc("GET /api/v1/subagents/{name}/delete-info",
+     s.withAuth(s.handleSubAgentDeleteInfo))
+
+     // Backups
+     mux.HandleFunc("GET /api/v1/backups", s.withAuth(s.handleListBackups))
+     mux.HandleFunc("GET /api/v1/backups/{id}", s.withAuth(s.handleGetBackup))
+     mux.HandleFunc("POST /api/v1/backups/{id}/restore",
+     s.withAuth(s.handleRestoreBackup))
+
+     ---
+     Phase 3: Frontend
+
+     3.1 New types (web/src/types/index.ts)
+
+     export interface Dependency { type: 'task' | 'pipeline' | 'subagent' |
+     'domain'; name: string }
+     export interface DeleteAnalysis {
+       entity: Dependency; used_by: Dependency[]; can_delete: boolean
+       cascade_items: Dependency[]; blocked: boolean; block_reason?: string
+     }
+     export interface BackupEntry {
+       id: string; entity_type: string; entity_name: string; action: string
+       parent_id: string; created_at: string; restored_at?: string
+     }
+
+     3.2 API client methods (web/src/api/client.ts)
+
+     deleteTask: (name) => request<{backup_id: string}>(`/tasks/${name}`, {
+     method: 'DELETE' }),
+     getDeleteInfo: (type, name) =>
+     request<DeleteAnalysis>(`/${type}/${name}/delete-info`),
+     listBackups: () => request<BackupEntry[]>('/backups'),
+     restoreBackup: (id) => request<void>(`/backups/${id}/restore`, { method:
+     'POST' }),
+
+     Update deletePipeline/deleteSubAgent return types to {backup_id: string}.
+
+     3.3 Enhanced ConfirmModal.tsx
+
+     Add optional details?: DeleteAnalysis prop. When provided:
+     - Show "Used by" list with type badges
+     - Show "Will also be deleted" cascade items list
+     - If blocked, disable Confirm button and show block reason in red
+     - Add loading?: boolean prop to disable button during API call
+
+     3.4 TaskList.tsx — Add Delete button
+
+     Add Delete button next to Edit/Run (matching PipelineList pattern). Flow:
+     1. Click Delete → fetch getDeleteInfo('tasks', name)
+     2. Open ConfirmModal with analysis
+     3. On confirm → deleteTask(name) → toast success → invalidate queries
+
+     3.5 PipelineList.tsx — Replace window.confirm
+
+     Replace window.confirm with ConfirmModal + delete-info prefetch:
+     1. Click Delete → setDeleteTarget(name) → fetch getDeleteInfo('pipelines', 
+     name)
+     2. Show ConfirmModal with cascade items
+     3. On confirm → deletePipeline(name) → toast with backup_id
+
+     3.6 SubAgentList.tsx — Replace window.confirm
+
+     Same pattern as PipelineList.
+
+     ---
+     Edge Cases
+
+     ┌────────────────────────┬────────────────────────────────────────────────┐
+     │        Scenario        │                    Behavior                    │
+     ├────────────────────────┼────────────────────────────────────────────────┤
+     │ Task in 2+ pipelines   │ Blocked — must delete pipelines first          │
+     ├────────────────────────┼────────────────────────────────────────────────┤
+     │ Shared domain between  │ Domain never cascade-deleted; only tasks list  │
+     │ tasks                  │ cleaned                                        │
+     ├────────────────────────┼────────────────────────────────────────────────┤
+     │ Restore when name      │ 409 — delete/rename existing entity first      │
+     │ exists                 │                                                │
+     ├────────────────────────┼────────────────────────────────────────────────┤
+     │ Concurrent deletions   │ Serialized via runguard key config:write       │
+     ├────────────────────────┼────────────────────────────────────────────────┤
+     │ Pipeline cascade +     │ Tasks cascade-deleted, domain stays, domain    │
+     │ domain                 │ refs cleaned                                   │
+     ├────────────────────────┼────────────────────────────────────────────────┤
+     │ Restore cascade        │ Restores pipeline + all cascade items from     │
+     │ pipeline               │ config snapshot                                │
+     └────────────────────────┴────────────────────────────────────────────────┘
+
+     Critical Files
+
+     New files:
+     - internal/depcheck/checker.go + _test.go
+     - internal/backup/manager.go + _test.go
+     - internal/api/delete.go (delete-info handlers)
+     - internal/api/backups.go (backup/restore handlers)
+
+     Modified files:
+     - internal/store/sqlite/migrations.go — add backup_log table
+     - internal/api/router.go — new routes + backupMgr field
+     - internal/api/tasks.go — add handleDeleteTask
+     - internal/api/pipelines.go — enhance handleDeletePipeline
+     - internal/api/subagents.go — enhance handleDeleteSubAgent
+     - internal/domain/manager.go — add RemoveDomain()
+     - cmd/server/main.go — wire backup manager
+     - web/src/types/index.ts — new types
+     - web/src/api/client.ts — new methods
+     - web/src/components/ConfirmModal.tsx — enhanced with DeleteAnalysis
+     - web/src/components/TaskList.tsx — add Delete button
+     - web/src/components/PipelineList.tsx — replace window.confirm
+     - web/src/components/SubAgentList.tsx — replace window.confirm
+
+     Verification
+
+     1. make test — unit tests for depcheck and backup packages
+     2. make build — ensure Go compiles
+     3. make build-ui — ensure React compiles
+     4. make run — start server, test via UI:
+       - Try deleting a task used by a pipeline → should be blocked with
+     notification
+       - Delete a pipeline → should cascade-delete exclusive tasks/agents with
+     confirmation
+       - Check data/backup/ for backup files
+       - Restore via API POST /api/v1/backups/{id}/restore
+       - Verify tasks.yaml integrity after each operation
+  ⎿  Interrupted · What should Claude do instead?

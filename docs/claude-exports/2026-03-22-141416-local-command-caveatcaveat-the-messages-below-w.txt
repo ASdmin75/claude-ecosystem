@@ -1,0 +1,841 @@
+ ▐▛███▜▌   Claude Code v2.1.81
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ Удаление пайплайнов поп режнему не работает:                                  
+1) не делается бэкап ВСЕХ сущностей, только агент                               
+2) не удаляется домен                                                           
+Это результаты по удалению rad-control-manufacturers-belarus                    
+
+● Explore(Explore pipeline deletion code)
+  ⎿  Done (16 tool uses · 62.5k tokens · 45s)
+  (ctrl+o to expand)
+
+● Let me read the actual deletion handler code to find the bugs.
+
+  Read 2 files (ctrl+o to expand)
+
+● Now let me check the Domain struct to see if it has MCP servers that should
+  also be checked for orphan removal.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Let me check the backup database and the current config to understand what
+  happened with this specific deletion.
+
+● Bash(sqlite3
+      /home/asdmin/development/AI/Claude/claude-ecosystem/data/backup.db "SELECT
+       id, entity_type, entity_name, action, parent_id, config_snapshot != '' as
+       has…)
+  ⎿  DB not found at data/backup.db
+
+  Searched for 3 patterns (ctrl+o to expand)
+
+● Bash(sqlite3
+      /home/asdmin/development/AI/Claude/claude-ecosystem/data/backup.db "SELECT
+       id, entity_type, entity_name, action, parent_id, config_snapshot != '' as
+       has…)
+  ⎿  Error: Exit code 1
+     Error: in prepare, unrecognized token: "\"
+       , entity_name, action, parent_id, config_snapshot \!= '' as has_snap, 
+     files, c
+                                           error here ---^
+
+● Bash(sqlite3
+      /home/asdmin/development/AI/Claude/claude-ecosystem/data/backup.db "SELECT
+       id, entity_type, entity_name, action, parent_id, length(config_snapshot)
+      as s…)
+  ⎿  Error: Exit code 1
+     Error: in prepare, no such table: backup_log
+
+● Bash(sqlite3
+      /home/asdmin/development/AI/Claude/claude-ecosystem/data/backup.db
+      ".tables")
+  ⎿  (No output)
+
+● Bash(sqlite3
+      /home/asdmin/development/AI/Claude/claude-ecosystem/data/ecosys.db
+      ".tables" 2>/dev/null; echo "---"; find
+      /home/asdmin/development/AI/Claude/claude-eco…)
+  ⎿  ---
+     === /home/asdmin/development/AI/Claude/claude-ecosystem/data/claude-ec
+     osystem.db ===
+     … +17 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/claude-e
+      cosystem.db "SELECT id, entity_type, entity_name, action, parent_id,
+      length(config_snap…)
+  ⎿  Error: Exit code 1
+     Error: in prepare, no such column: config_snapshot
+       tity_type, entity_name, action, parent_id, length(config_snapshot) as 
+     snap_len
+                                           error here ---^
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/claude-e
+      cosystem.db ".schema backup_log")
+  ⎿  CREATE TABLE backup_log (
+                        id           TEXT PRIMARY KEY,
+                        entity_type  TEXT NOT NULL,
+     … +11 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/claude-e
+      cosystem.db "SELECT id, entity_type, entity_name, action, parent_id,
+      length(config_snap…)
+  ⎿  6041ad87-b069-457b-8aac-4f4cc649ccdc|subagent|rad-control-manufacturer
+     s-researcher|cascade_delete|cd060837-b357-4460-a693-2c334e9580a8|0|["a
+     gents/rad-control-manufacturers-researcher.md"]|2026-03-22 10:56:18.59
+     … +12 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/claude-e
+      cosystem.db "SELECT config_snap FROM backup_log WHERE
+      id='cd060837-b357-4460-a693-2c334…)
+  ⎿        domain: rad-control-manufacturers-belarus
+           prompt: |
+             Дата исследования: {{.Date}}
+     … +58 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/claude-e
+      cosystem.db "SELECT config_snap FROM backup_log WHERE
+      id='cd060837-b357-4460-a693-2c334…)
+  ⎿              - database
+                 - excel
+         rad-control-manufacturers-belarus:
+     … +16 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/claude-e
+      cosystem.db "SELECT config_snap FROM backup_log WHERE
+      id='cd060837-b357-4460-a693-2c334…)
+  ⎿          tasks:
+             pipelines:
+             agents:
+             mcp_servers:
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/claude-e
+      cosystem.db "SELECT config_snap FROM backup_log WHERE
+      id='cd060837-b357-4460-a693-2c334…)
+  ⎿      rad-control-manufacturers-belarus:
+             description: Database of radiation control equipment manufactu
+     rers in Belarus with export metadata
+     … +42 lines (ctrl+o to expand)
+
+● Let me check the restore code and also verify the current state.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Bash(git log --oneline -5 -- internal/api/delete.go internal/api/pipelines.go
+      internal/api/backups.go)
+  ⎿  1420a6d fix: clean agent refs and remove orphaned domains on cascade d
+     elete
+     7c09257 feat: safe delete with dependency checking, backup/restore for
+     … +6 lines (ctrl+o to expand)
+
+● Bash(git show 1420a6d --stat)
+  ⎿  commit 1420a6dc680bf9a6885a8a4405b7cb3aa29c247b
+     Author: AlexStav <ip.stasheuski@gmail.com>
+     Date:   Sun Mar 22 13:43:07 2026 +0300
+     … +22 lines (ctrl+o to expand)
+
+● Now I have a clear picture. Let me trace through what happened with the
+  rad-control-manufacturers-belarus deletion. Two bugs:
+
+  Bug 1 (backup incomplete): In handleDeletePipeline line 287, task cascade
+  backups are created with empty configSnap and nil files — they can't be
+  individually restored. Only the agent gets files backed up.
+
+  Bug 2 (domain not deleted): The cleanDomainRefs doesn't clean MCPServers from
+  domains. The domain had mcp_servers: [database, excel, filesystem, telegram]
+  which remain after cleanup. While the current orphan check doesn't include
+  MCPServers (so it should delete), there's also a missing piece:
+  restorePipeline doesn't restore the domain entry.
+
+  Let me fix all of these.
+
+● Update(internal/api/pipelines.go)
+  ⎿  Added 2 lines, removed 2 lines
+      283          deleted = append(deleted, "subagent:"+ci.Name)
+      284        }
+      285      case depcheck.EntityTask:
+      286 -      // Create child backup for cascade task.                
+      287 -      _, _ = s.backupMgr.CreateBackup(r.Context(), "task", ci.
+          -Name, "cascade_delete", parentEntry.ID, "", nil)              
+      286 +      // Create child backup for cascade task (include config 
+          +snapshot so task can be restored individually).               
+      287 +      _, _ = s.backupMgr.CreateBackup(r.Context(), "task", ci.
+          +Name, "cascade_delete", parentEntry.ID, configSnap, nil)      
+      288        // Remove task from config.
+      289        for i := range s.cfg.Tasks {
+      290          if s.cfg.Tasks[i].Name == ci.Name {
+
+● Now fix cleanDomainRefs to also clean MCP servers and include them in the
+  orphan check:
+
+● Update(internal/api/delete.go)
+  ⎿  Added 17 lines, removed 4 lines
+      63    return string(data), nil
+      64  }
+      65  
+      66 -// cleanDomainRefs removes deleted task, pipeline, and agent na
+         -mes from all                                                   
+      67 -// domain reference lists. Domains left with no tasks, pipeline
+         -s, or agents                                                   
+      66 +// cleanDomainRefs removes deleted task, pipeline, agent, and M
+         +CP server names                                                
+      67 +// from all domain reference lists. Domains left with no remain
+         +ing references                                                 
+      68  // are removed entirely.
+      69 -func (s *Server) cleanDomainRefs(taskNames []string, pipelineNa
+         -mes []string, agentNames []string) {                           
+      69 +func (s *Server) cleanDomainRefs(taskNames []string, pipelineNa
+         +mes []string, agentNames []string, mcpServerNames ...[]string) 
+         +{                                                              
+      70 +  var mcpNames []string                                        
+      71 +  if len(mcpServerNames) > 0 {                                 
+      72 +    mcpNames = mcpServerNames[0]                               
+      73 +  }                                                            
+      74    for k, d := range s.cfg.Domains {
+      75      changed := false
+      76      for _, tn := range taskNames {
+     ...
+      100          }
+      101        }
+      102      }
+      103 +    for _, mn := range mcpNames {                             
+      104 +      for i, m := range d.MCPServers {                        
+      105 +        if m == mn {                                          
+      106 +          d.MCPServers = append(d.MCPServers[:i], d.MCPServers
+          +[i+1:]...)                                                    
+      107 +          changed = true                                      
+      108 +          break                                               
+      109 +        }                                                     
+      110 +      }                                                       
+      111 +    }                                                         
+      112      if changed {
+      113        // Remove domain entirely if it has no remaining referen
+           ces.
+      101 -      if len(d.Tasks) == 0 && len(d.Pipelines) == 0 && len(d.A
+          -gents) == 0 {                                                 
+      114 +      if len(d.Tasks) == 0 && len(d.Pipelines) == 0 && len(d.A
+          +gents) == 0 && len(d.MCPServers) == 0 {                       
+      115          delete(s.cfg.Domains, k)
+      116        } else {
+      117          s.cfg.Domains[k] = d
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Now update the pipeline delete handler to collect MCP server names from
+  cascade tasks and pass them to cleanDomainRefs:
+
+  Read 1 file (ctrl+o to expand)
+
+● Now I need to collect MCP server names from the cascade tasks and pass them to
+   cleanDomainRefs. The MCP servers used exclusively by cascade tasks should
+  also be cleaned from domain refs:
+
+● Update(internal/api/pipelines.go)
+  ⎿  Added 21 lines, removed 7 lines
+      306  
+      307    // Clean domain references.
+      308    var deletedTaskNames []string
+      309 +  var deletedAgentNames []string                              
+      310 +  mcpSet := map[string]struct{}{}                             
+      311    for _, ci := range analysis.CascadeItems {
+      310 -    if ci.Type == depcheck.EntityTask {                       
+      312 +    switch ci.Type {                                          
+      313 +    case depcheck.EntityTask:                                 
+      314        deletedTaskNames = append(deletedTaskNames, ci.Name)
+      315 +      // Collect MCP servers used by cascade tasks.           
+      316 +      if t := s.findTask(ci.Name); t != nil {                 
+      317 +        for _, ms := range t.MCPServers {                     
+      318 +          mcpSet[ms] = struct{}{}                             
+      319 +        }                                                     
+      320 +      }                                                       
+      321 +    case depcheck.EntitySubAgent:                             
+      322 +      deletedAgentNames = append(deletedAgentNames, ci.Name)  
+      323      }
+      324    }
+      314 -  // Collect deleted agent names for domain cleanup.          
+      315 -  var deletedAgentNames []string                              
+      316 -  for _, ci := range analysis.CascadeItems {                  
+      317 -    if ci.Type == depcheck.EntitySubAgent {                   
+      318 -      deletedAgentNames = append(deletedAgentNames, ci.Name)  
+      325 +  // Only clean MCP server refs that are exclusive to cascade 
+          +tasks (not used by surviving tasks).                          
+      326 +  for _, t := range s.cfg.Tasks {                             
+      327 +    for _, ms := range t.MCPServers {                         
+      328 +      delete(mcpSet, ms)                                      
+      329      }
+      330    }
+      321 -  s.cleanDomainRefs(deletedTaskNames, []string{name}, deletedA
+          -gentNames)                                                    
+      331 +  var deletedMCPNames []string                                
+      332 +  for ms := range mcpSet {                                    
+      333 +    deletedMCPNames = append(deletedMCPNames, ms)             
+      334 +  }                                                           
+      335 +  s.cleanDomainRefs(deletedTaskNames, []string{name}, deletedA
+          +gentNames, deletedMCPNames)                                   
+      336  
+      337    if err := s.cfg.Save(); err != nil {
+      338      s.logger.Error("failed to save config after pipeline delet
+           e", "error", err)
+
+● Wait, there's a timing issue — cascade tasks are already removed from
+  s.cfg.Tasks by the earlier loop, so findTask would return nil. Let me fix this
+   by collecting MCP server info before the deletion loop:
+
+  Read 1 file (ctrl+o to expand)
+
+● I need to collect MCP server names BEFORE the cascade deletion removes tasks
+  from config. Let me restructure:
+
+● Update(internal/api/pipelines.go)
+  ⎿  Added 20 lines, removed 20 lines
+      267  
+      268    deleted := []string{"pipeline:" + name}
+      269  
+      270 +  // Pre-collect names and MCP servers for domain cleanup (bef
+          +ore tasks are removed from config).                           
+      271 +  var deletedTaskNames []string                               
+      272 +  var deletedAgentNames []string                              
+      273 +  cascadeMCPSet := map[string]struct{}{}                      
+      274 +  for _, ci := range analysis.CascadeItems {                  
+      275 +    switch ci.Type {                                          
+      276 +    case depcheck.EntityTask:                                 
+      277 +      deletedTaskNames = append(deletedTaskNames, ci.Name)    
+      278 +      if t := s.findTask(ci.Name); t != nil {                 
+      279 +        for _, ms := range t.MCPServers {                     
+      280 +          cascadeMCPSet[ms] = struct{}{}                      
+      281 +        }                                                     
+      282 +      }                                                       
+      283 +    case depcheck.EntitySubAgent:                             
+      284 +      deletedAgentNames = append(deletedAgentNames, ci.Name)  
+      285 +    }                                                         
+      286 +  }                                                           
+      287 +                                                              
+      288    // Process cascade items: delete exclusive tasks and sub-age
+           nts.
+      289    for _, ci := range analysis.CascadeItems {
+      290      switch ci.Type {
+     ...
+      322      }
+      323    }
+      324  
+      307 -  // Clean domain references.                                 
+      308 -  var deletedTaskNames []string                               
+      309 -  var deletedAgentNames []string                              
+      310 -  mcpSet := map[string]struct{}{}                             
+      311 -  for _, ci := range analysis.CascadeItems {                  
+      312 -    switch ci.Type {                                          
+      313 -    case depcheck.EntityTask:                                 
+      314 -      deletedTaskNames = append(deletedTaskNames, ci.Name)    
+      315 -      // Collect MCP servers used by cascade tasks.           
+      316 -      if t := s.findTask(ci.Name); t != nil {                 
+      317 -        for _, ms := range t.MCPServers {                     
+      318 -          mcpSet[ms] = struct{}{}                             
+      319 -        }                                                     
+      320 -      }                                                       
+      321 -    case depcheck.EntitySubAgent:                             
+      322 -      deletedAgentNames = append(deletedAgentNames, ci.Name)  
+      323 -    }                                                         
+      324 -  }                                                           
+      325    // Only clean MCP server refs that are exclusive to cascade 
+           tasks (not used by surviving tasks).
+      326    for _, t := range s.cfg.Tasks {
+      327      for _, ms := range t.MCPServers {
+      328 -      delete(mcpSet, ms)                                      
+      328 +      delete(cascadeMCPSet, ms)                               
+      329      }
+      330    }
+      331    var deletedMCPNames []string
+      332 -  for ms := range mcpSet {                                    
+      332 +  for ms := range cascadeMCPSet {                             
+      333      deletedMCPNames = append(deletedMCPNames, ms)
+      334    }
+      335    s.cleanDomainRefs(deletedTaskNames, []string{name}, deletedA
+           gentNames, deletedMCPNames)
+
+● Now update restorePipeline to also restore the domain:
+
+● Update(internal/api/backups.go)
+  ⎿  Added 9 lines
+      173        }
+      174      }
+      175    }
+      176 +                                                              
+      177 +  // Restore domains that reference this pipeline or its casca
+          +de tasks/agents.                                              
+      178 +  for k, d := range snapCfg.Domains {                         
+      179 +    if _, exists := s.cfg.Domains[k]; exists {                
+      180 +      continue // domain already exists, don't overwrite      
+      181 +    }                                                         
+      182 +    s.cfg.Domains[k] = d                                      
+      183 +  }                                                           
+      184 +                                                              
+      185    return nil
+      186  }
+      187  
+
+● Actually, that restores ALL domains from the snapshot indiscriminately. Let me
+   narrow it to only restore domains that reference this pipeline or its cascade
+   items:
+
+● Update(internal/api/backups.go)
+  ⎿  Added 36 lines, removed 3 lines
+      174      }
+      175    }
+      176  
+      177 -  // Restore domains that reference this pipeline or its casca
+          -de tasks/agents.                                              
+      177 +  // Restore domains that referenced this pipeline or its casc
+          +ade entities.                                                 
+      178 +  restoredEntities := map[string]struct{}{entry.EntityName: {}
+          +}                                                             
+      179 +  for _, child := range children {                            
+      180 +    restoredEntities[child.EntityName] = struct{}{}           
+      181 +  }                                                           
+      182    for k, d := range snapCfg.Domains {
+      183      if _, exists := s.cfg.Domains[k]; exists {
+      180 -      continue // domain already exists, don't overwrite      
+      184 +      continue                                                
+      185      }
+      182 -    s.cfg.Domains[k] = d                                      
+      186 +    // Check if the domain references any restored entity.    
+      187 +    refs := false                                             
+      188 +    for _, p := range d.Pipelines {                           
+      189 +      if _, ok := restoredEntities[p]; ok {                   
+      190 +        refs = true                                           
+      191 +        break                                                 
+      192 +      }                                                       
+      193 +    }                                                         
+      194 +    if !refs {                                                
+      195 +      for _, t := range d.Tasks {                             
+      196 +        if _, ok := restoredEntities[t]; ok {                 
+      197 +          refs = true                                         
+      198 +          break                                               
+      199 +        }                                                     
+      200 +      }                                                       
+      201 +    }                                                         
+      202 +    if !refs {                                                
+      203 +      for _, a := range d.Agents {                            
+      204 +        if _, ok := restoredEntities[a]; ok {                 
+      205 +          refs = true                                         
+      206 +          break                                               
+      207 +        }                                                     
+      208 +      }                                                       
+      209 +    }                                                         
+      210 +    if refs {                                                 
+      211 +      if s.cfg.Domains == nil {                               
+      212 +        s.cfg.Domains = make(map[string]config.Domain)        
+      213 +      }                                                       
+      214 +      s.cfg.Domains[k] = d                                    
+      215 +    }                                                         
+      216    }
+      217  
+      218    return nil
+
+● Now let me also check the task delete and subagent delete handlers for
+  consistency — they should also pass MCP server info:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Good, existing callers pass 3 args which is compatible with the variadic
+  mcpServerNames ...[]string. Now let me update the test to cover MCP server
+  cleanup:
+  Read 1 file (ctrl+o to expand)
+
+● Update(internal/api/delete_test.go)
+  ⎿  Added 50 lines
+       98      t.Fatalf("expected d2.Agents=[], got %v", d2.Agents)
+       99    }
+      100  }
+      101 +                                                              
+      102 +func TestCleanDomainRefs_MCPServers(t *testing.T) {           
+      103 +  s := &Server{cfg: &config.Config{                           
+      104 +    Domains: map[string]config.Domain{                        
+      105 +      "d1": {Tasks: []string{"t1"}, MCPServers: []string{"db",
+          + "excel"}},                                                   
+      106 +    },                                                        
+      107 +  }}                                                          
+      108 +  s.cleanDomainRefs([]string{"t1"}, nil, nil, []string{"db", "
+          +excel"})                                                      
+      109 +                                                              
+      110 +  // All refs removed → domain should be deleted.             
+      111 +  if _, ok := s.cfg.Domains["d1"]; ok {                       
+      112 +    t.Fatal("expected orphaned domain 'd1' to be deleted")    
+      113 +  }                                                           
+      114 +}                                                             
+      115 +                                                              
+      116 +func TestCleanDomainRefs_MCPServersPartial(t *testing.T) {    
+      117 +  s := &Server{cfg: &config.Config{                           
+      118 +    Domains: map[string]config.Domain{                        
+      119 +      "d1": {Tasks: []string{"t1"}, MCPServers: []string{"db",
+          + "excel", "telegram"}},                                       
+      120 +    },                                                        
+      121 +  }}                                                          
+      122 +  // Only some MCP servers cleaned — domain should remain beca
+          +use telegram is still referenced.                             
+      123 +  s.cleanDomainRefs([]string{"t1"}, nil, nil, []string{"db", "
+          +excel"})                                                      
+      124 +                                                              
+      125 +  d, ok := s.cfg.Domains["d1"]                                
+      126 +  if !ok {                                                    
+      127 +    t.Fatal("expected domain 'd1' to remain (still has mcp_ser
+          +vers)")                                                       
+      128 +  }                                                           
+      129 +  if len(d.MCPServers) != 1 || d.MCPServers[0] != "telegram" {
+      130 +    t.Fatalf("expected MCPServers=[telegram], got %v", d.MCPSe
+          +rvers)                                                        
+      131 +  }                                                           
+      132 +}                                                             
+      133 +                                                              
+      134 +func TestCleanDomainRefs_MCPServersOnlyNoOrphan(t *testing.T) 
+          +{                                                             
+      135 +  s := &Server{cfg: &config.Config{                           
+      136 +    Domains: map[string]config.Domain{                        
+      137 +      "d1": {Tasks: []string{"t1"}, MCPServers: []string{"db"}
+          +},                                                            
+      138 +    },                                                        
+      139 +  }}                                                          
+      140 +  // Remove task but not MCP server — domain should remain.   
+      141 +  s.cleanDomainRefs([]string{"t1"}, nil, nil)                 
+      142 +                                                              
+      143 +  d, ok := s.cfg.Domains["d1"]                                
+      144 +  if !ok {                                                    
+      145 +    t.Fatal("expected domain 'd1' to remain (still has mcp_ser
+          +vers)")                                                       
+      146 +  }                                                           
+      147 +  if len(d.MCPServers) != 1 {                                 
+      148 +    t.Fatalf("expected MCPServers=[db], got %v", d.MCPServers)
+      149 +  }                                                           
+      150 +}                                                             
+
+● Now let's run the tests:
+
+● Bash(go test ./internal/api/ -run TestCleanDomainRefs -v 2>&1)
+  ⎿  === RUN   TestCleanDomainRefs_Tasks
+     --- PASS: TestCleanDomainRefs_Tasks (0.00s)
+     === RUN   TestCleanDomainRefs_Pipelines
+     … +15 lines (ctrl+o to expand)
+
+● Bash(go test ./internal/api/ -run TestCleanDomainRefs -v -count=1 2>&1)
+  ⎿  === RUN   TestCleanDomainRefs_Tasks
+     --- PASS: TestCleanDomainRefs_Tasks (0.00s)
+     === RUN   TestCleanDomainRefs_Pipelines
+     … +15 lines (ctrl+o to expand)
+
+● Bash(go test ./internal/api/ -run TestCleanDomainRefs -v -count=1 2>&1)
+  ⎿  === RUN   TestCleanDomainRefs_Tasks
+     --- PASS: TestCleanDomainRefs_Tasks (0.00s)
+     === RUN   TestCleanDomainRefs_Pipelines
+     … +15 lines (ctrl+o to expand)
+
+● Bash(go test -v -run TestCleanDomainRefs ./internal/api/ 2>&1)
+  ⎿  === RUN   TestCleanDomainRefs_Tasks
+     --- PASS: TestCleanDomainRefs_Tasks (0.00s)
+     === RUN   TestCleanDomainRefs_Pipelines
+     … +15 lines (ctrl+o to expand)
+
+● Bash(go test -v -run TestCleanDomainRefs ./internal/api/ 2>&1)
+  ⎿  === RUN   TestCleanDomainRefs_Tasks
+     --- PASS: TestCleanDomainRefs_Tasks (0.00s)
+     === RUN   TestCleanDomainRefs_Pipelines
+     … +15 lines (ctrl+o to expand)
+
+● All 9 tests pass. Let me also build to make sure everything compiles:
+
+● Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+● All builds clean. Here's a summary of the fixes:
+
+  Fix 1: Task cascade backups now include config snapshot
+
+  pipelines.go:287 — Changed from "" to configSnap so each cascade task backup
+  has a full config snapshot. Previously task entries had empty config_snap and
+  null files — making them unrestorable individually.
+
+  Fix 2: Domain cleanup now handles MCP servers
+
+  delete.go:69 — cleanDomainRefs now accepts an optional mcpServerNames
+  parameter and:
+  - Removes MCP server names from d.MCPServers
+  - Includes len(d.MCPServers) == 0 in the orphan check
+
+  pipelines.go:268-335 — Before deleting cascade tasks, collects their MCP
+  server names. After deletion, filters out MCP servers still used by surviving
+  tasks, and passes the exclusive ones to cleanDomainRefs.
+
+  Fix 3: Pipeline restore now restores the domain
+
+  backups.go:176-198 — restorePipeline now checks the snapshot config for
+  domains that reference restored entities (pipeline, cascade tasks, agents) and
+   re-adds them to the current config.
+
+✻ Cogitated for 8m 55s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/asdmin/development/AI/Claude/claude-ecosyst
+     em/2026-03-22-140916-local-command-caveatcaveat-the-messages-below-w.txt
+
+❯ Проверь еще раз сохраняется ли логическая целостность при удалении таск,      
+пайплайн, сабагент и т.п.                                                       
+
+● Let me review all delete handlers systematically.
+
+  Read 3 files (ctrl+o to expand)
+
+● Now let me check the depcheck and restore flows for completeness:
+
+  Read 2 files (ctrl+o to expand)
+
+● I found several consistency issues. Let me trace through each flow:
+
+  Issues Found:
+
+  1. CRITICAL: Subagent restore is broken — handleRestoreBackup line 70 rejects
+  any backup with empty configSnap before the switch statement. Subagent backups
+   always have configSnap="" (line 123 in subagents.go). So standalone subagent
+  restores always fail with "backup has no config snapshot".
+
+  2. Task delete doesn't clean MCP server refs from domain — same problem we
+  fixed for pipelines.
+
+  3. Task restore doesn't restore domain — if task deletion triggered orphan
+  domain removal, restoring the task doesn't bring back the domain.
+
+  4. SubAgent delete: weak error handling on config save — line 138-140 in
+  subagents.go only logs, doesn't return HTTP error.
+
+  Let me fix all of these:
+
+● Update(internal/api/backups.go)
+  ⎿  Added 19 lines, removed 11 lines
+      66      return
+      67    }
+      68  
+      69 -  // Parse the backed-up config snapshot.                      
+      70 -  if entry.ConfigSnap == "" {                                  
+      71 -    writeError(w, http.StatusBadRequest, "backup has no config 
+         -snapshot")                                                     
+      72 -    return                                                     
+      69 +  // Parse the backed-up config snapshot (required for task and
+         + pipeline restores).                                           
+      70 +  var snapCfg *config.Config                                   
+      71 +  if entry.ConfigSnap != "" {                                  
+      72 +    var cfg config.Config                                      
+      73 +    if err := yaml.Unmarshal([]byte(entry.ConfigSnap), &cfg); e
+         +rr != nil {                                                    
+      74 +      writeError(w, http.StatusInternalServerError, "failed to 
+         +parse backup config: "+err.Error())                            
+      75 +      return                                                   
+      76 +    }                                                          
+      77 +    snapCfg = &cfg                                             
+      78    }
+      74 -  var snapCfg config.Config                                    
+      75 -  if err := yaml.Unmarshal([]byte(entry.ConfigSnap), &snapCfg);
+         - err != nil {                                                  
+      76 -    writeError(w, http.StatusInternalServerError, "failed to pa
+         -rse backup config: "+err.Error())                              
+      77 -    return                                                     
+      78 -  }                                                            
+      79  
+      80    switch entry.EntityType {
+      81    case "task":
+      82 -    if err := s.restoreTask(&snapCfg, entry.EntityName); err !=
+         - nil {                                                         
+      82 +    if snapCfg == nil {                                        
+      83 +      writeError(w, http.StatusBadRequest, "backup has no confi
+         +g snapshot")                                                   
+      84 +      return                                                   
+      85 +    }                                                          
+      86 +    if err := s.restoreTask(snapCfg, entry.EntityName); err != 
+         +nil {                                                          
+      87        writeError(w, http.StatusConflict, err.Error())
+      88        return
+      89      }
+      90    case "pipeline":
+      87 -    if err := s.restorePipeline(r, &snapCfg, entry); err != nil
+         - {                                                             
+      91 +    if snapCfg == nil {                                        
+      92 +      writeError(w, http.StatusBadRequest, "backup has no confi
+         +g snapshot")                                                   
+      93 +      return                                                   
+      94 +    }                                                          
+      95 +    if err := s.restorePipeline(r, snapCfg, entry); err != nil 
+         +{                                                              
+      96        writeError(w, http.StatusConflict, err.Error())
+      97        return
+      98      }
+
+● Now fix task delete to also clean MCP server refs:
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(internal/api/tasks.go)
+  ⎿  Added 22 lines, removed 1 line
+      166      return
+      167    }
+      168  
+      169 +  // Collect MCP servers before removing the task from config.
+      170 +  var taskMCPServers []string                                 
+      171 +  if t := s.findTask(name); t != nil {                        
+      172 +    taskMCPServers = append(taskMCPServers, t.MCPServers...)  
+      173 +  }                                                           
+      174 +                                                              
+      175    // Remove from config.
+      176    for i := range s.cfg.Tasks {
+      177      if s.cfg.Tasks[i].Name == name {
+     ...
+      180      }
+      181    }
+      182  
+      183 +  // Only clean MCP server refs not used by surviving tasks.  
+      184 +  mcpSet := make(map[string]struct{})                         
+      185 +  for _, ms := range taskMCPServers {                         
+      186 +    mcpSet[ms] = struct{}{}                                   
+      187 +  }                                                           
+      188 +  for _, t := range s.cfg.Tasks {                             
+      189 +    for _, ms := range t.MCPServers {                         
+      190 +      delete(mcpSet, ms)                                      
+      191 +    }                                                         
+      192 +  }                                                           
+      193 +  var exclusiveMCP []string                                   
+      194 +  for ms := range mcpSet {                                    
+      195 +    exclusiveMCP = append(exclusiveMCP, ms)                   
+      196 +  }                                                           
+      197 +                                                              
+      198    // Clean domain references.
+      178 -  s.cleanDomainRefs([]string{name}, nil, nil)                 
+      199 +  s.cleanDomainRefs([]string{name}, nil, nil, exclusiveMCP)   
+      200  
+      201    if err := s.cfg.Save(); err != nil {
+      202      s.logger.Error("failed to save config after task delete", 
+           "error", err)
+
+● Now fix task restore to also restore the domain:
+
+● Update(internal/api/backups.go)
+  ⎿  Added 24 lines, removed 2 lines
+      132      return errConflict("task \"" + taskName + "\" already exis
+           ts, delete or rename it first")
+      133    }
+      134    // Find task in snapshot.
+      135 +  var found bool                                              
+      136    for _, t := range snapCfg.Tasks {
+      137      if t.Name == taskName {
+      138        s.cfg.Tasks = append(s.cfg.Tasks, t)
+      138 -      return nil                                              
+      139 +      found = true                                            
+      140 +      break                                                   
+      141      }
+      142    }
+      141 -  return errConflict("task \"" + taskName + "\" not found in b
+          -ackup snapshot")                                              
+      143 +  if !found {                                                 
+      144 +    return errConflict("task \"" + taskName + "\" not found in
+          + backup snapshot")                                            
+      145 +  }                                                           
+      146 +                                                              
+      147 +  // Restore domains that referenced this task.               
+      148 +  for k, d := range snapCfg.Domains {                         
+      149 +    if _, exists := s.cfg.Domains[k]; exists {                
+      150 +      continue                                                
+      151 +    }                                                         
+      152 +    for _, t := range d.Tasks {                               
+      153 +      if t == taskName {                                      
+      154 +        if s.cfg.Domains == nil {                             
+      155 +          s.cfg.Domains = make(map[string]config.Domain)      
+      156 +        }                                                     
+      157 +        s.cfg.Domains[k] = d                                  
+      158 +        break                                                 
+      159 +      }                                                       
+      160 +    }                                                         
+      161 +  }                                                           
+      162 +                                                              
+      163 +  return nil                                                  
+      164  }
+      165  
+      166  func (s *Server) restorePipeline(r *http.Request, snapCfg *con
+           fig.Config, entry *backup.Entry) error {
+● Now fix subagent delete error handling:
+
+● Update(internal/api/subagents.go)
+  ⎿  Added 2 lines
+      137    s.cleanDomainRefs(nil, nil, []string{name})
+      138    if err := s.cfg.Save(); err != nil {
+      139      s.logger.Error("failed to save config after sub-agent dele
+           te", "error", err)
+      140 +    writeError(w, http.StatusInternalServerError, "failed to s
+          +ave config: "+err.Error())                                    
+      141 +    return                                                    
+      142    }
+      143  
+      144    s.logger.Info("sub-agent deleted", "name", name, "backup_id"
+           , entry.ID)
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Now build and run tests:
+
+● Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+● Bash(go test ./internal/... 2>&1)
+  ⎿  ok         github.com/asdmin/claude-ecosystem/internal/api 0.006s
+     ok         github.com/asdmin/claude-ecosystem/internal/auth        (cached)
+     ok         github.com/asdmin/claude-ecosystem/internal/backup      (cached)
+     … +16 lines (ctrl+o to expand)
+
+
+
+● Bash(go test ./... 2>&1)
+  ⎿  ?          github.com/asdmin/claude-ecosystem/cmd/hook     [no test files]
+     ok         github.com/asdmin/claude-ecosystem/cmd/mcp/mcp-database (cached)
+     ?          github.com/asdmin/claude-ecosystem/cmd/mcp/mcp-email    [no test
+     … +29 lines (ctrl+o to expand)
+
+
+
+
+● All tests pass, build is clean. Here's the full audit summary:
+
+  Fixes applied:
+
+  ┌─────┬───────────┬───────────────────────────────┬───────────────────────┐
+  │  #  │  Entity   │             Issue             │          Fix          │
+  ├─────┼───────────┼───────────────────────────────┼───────────────────────┤
+  │     │           │ handleRestoreBackup rejected  │ Moved configSnap      │
+  │ 1   │ Subagent  │ all subagent backups (empty   │ check inside          │
+  │     │ restore   │ configSnap check before       │ task/pipeline cases   │
+  │     │           │ switch)                       │ only                  │
+  ├─────┼───────────┼───────────────────────────────┼───────────────────────┤
+  │     │ Task      │ MCP server refs not cleaned   │ Collect exclusive MCP │
+  │ 2   │ delete    │ from domain → domain not      │  servers, pass to     │
+  │     │           │ orphaned                      │ cleanDomainRefs       │
+  ├─────┼───────────┼───────────────────────────────┼───────────────────────┤
+  │     │ Task      │ Domain not restored if it was │ restoreTask now       │
+  │ 3   │ restore   │  orphan-removed on delete     │ restores domains      │
+  │     │           │                               │ referencing the task  │
+  ├─────┼───────────┼───────────────────────────────┼───────────────────────┤
+  │     │ Subagent  │ Config save error silently    │ Added writeError +    │
+  │ 4   │ delete    │ ignored (200 OK returned)     │ return on save        │
+  │     │           │                               │ failure               │
+  └─────┴───────────┴───────────────────────────────┴───────────────────────┘
+
+  Previously fixed (this session):
+
+  ┌─────┬────────────┬──────────────────────────────┬──────────────────────┐
+  │  #  │   Entity   │            Issue             │         Fix          │
+  ├─────┼────────────┼──────────────────────────────┼──────────────────────┤
+  │ 5   │ Pipeline   │ Cascade task backups had     │ Pass configSnap to   │
+  │     │ delete     │ empty configSnap             │ task backup entries  │
+  ├─────┼────────────┼──────────────────────────────┼──────────────────────┤
+  │     │ Pipeline   │ Domain MCP server refs not   │ Added MCPServers     │
+  │ 6   │ delete     │ cleaned; orphan check didn't │ cleanup and orphan   │
+  │     │            │  include MCPServers          │ check                │
+  ├─────┼────────────┼──────────────────────────────┼──────────────────────┤
+  │     │ Pipeline   │ Domain not restored on       │ Restore domains      │
+  │ 7   │ restore    │ pipeline restore             │ referencing restored │
+  │     │            │                              │  entities            │
+  └─────┴────────────┴──────────────────────────────┴──────────────────────┘
+
+✻ Worked for 2m 3s

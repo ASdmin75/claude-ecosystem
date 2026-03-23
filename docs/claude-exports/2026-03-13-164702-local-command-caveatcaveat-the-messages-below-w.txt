@@ -1,0 +1,348 @@
+ ▐▛███▜▌   Claude Code v2.1.74
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ Неполятный результат                                                          
+  ⎿  [Image #1]
+
+● Пайплайн export-by-aviation-to-ceo упал на шаге process-export-by-leads с
+  ошибкой signal: killed — это значит процесс был убит (скорее всего по таймауту
+   или OOM). Длительность 1214.8s (~20 минут).
+
+  Давайте посмотрим конфигурацию пайплайна и таймауты.
+
+● Searched for 4 patterns (ctrl+o to expand)
+
+● Теперь посмотрю таймаут задачи process-export-by-leads.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Вижу картину. Задача process-export-by-leads имеет timeout: 20m, а общая
+  длительность пайплайна — 1214.8s (~20.2 мин). Первый шаг (sync) успешно
+  завершился, затем process-export-by-leads был убит (signal: killed).
+
+  Давайте проверю, как применяется таймаут — на уровне пайплайна или на уровне
+  каждого шага.
+
+● Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Теперь проверю таймаут sync задачи.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Теперь всё ясно. Вот что произошло:
+
+  Пайплайн export-by-aviation-to-ceo — 2 шага:
+  1. sync-export-by-catalog (timeout: 10m) — завершился успешно
+  2. process-export-by-leads (timeout: 20m) — убит по signal: killed
+
+  Общее время: 1214.8s (~20.2 мин). Sync занял часть этого времени, значит на
+  process-export-by-leads осталось примерно 10-15 минут.
+
+  Причина signal: killed:
+
+  Каждый шаг получает свой context.WithTimeout из таймаута задачи (строка 60-61
+  в sequential.go). Таймаут process-export-by-leads = 20 минут, но процесс был
+  убит раньше. Это похоже на OOM kill (системный убийца из-за нехватки памяти) —
+   signal: killed это SIGKILL (9), который посылает именно OOM killer, а не
+  таймаут контекста (тот отправляет SIGTERM/возвращает ошибку контекста).
+
+  Что проверить:
+
+  1. dmesg | grep -i oom — подтвердить OOM kill
+  2. Сколько памяти потребляет claude при обработке 50 компаний с
+  WebFetch/WebSearch
+
+  Возможные решения:
+
+  - Уменьшить limit в get_unanalyzed с 50 до 20-30 (меньше контекста Claude за
+  раз)
+  - Уменьшить max_turns с 50 (сейчас Claude может делать очень длинные сессии)
+  - Увеличить swap на машине
+
+  Хотите проверить логи OOM или сразу уменьшить limit/max_turns?
+
+✻ Cogitated for 1m 15s
+
+❯ да                                                                            
+
+● Bash(dmesg | grep -i oom | tail -20)
+  ⎿  dmesg: read kernel buffer failed: Operation not permitted
+
+● Bash(dmesg | grep -i "killed process" | tail -10)
+  ⎿  dmesg: read kernel buffer failed: Operation not permitted
+
+● Bash(free -h)
+  ⎿                 total        used        free      shared  buff/cache
+      available
+     Mem:            29Gi       7,7Gi       6,0Gi       298Mi        16Gi
+     … +2 lines (ctrl+o to expand)
+
+● Bash(sudo dmesg | grep -i oom | tail -20)
+  ⎿  sudo: a terminal is required to read the password; either use the -S o
+     ption to read from standard input or configure an askpass helper
+     sudo: a password is required
+
+● Bash(journalctl -k --since "2026-03-13 15:43:00" --until "2026-03-13 16:10:00"
+       2>/dev/null | grep -iE "oom|kill|memory" | tail -20)
+  ⎿  (No output)
+
+● Bash(journalctl -k --since "2026-03-13 15:00:00" --until "2026-03-13 16:30:00"
+       2>/dev/null | grep -iE "oom|kill|memory|claude" | tail -20)
+  ⎿  (No output)
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Нашёл причину. Последняя строка лога:
+
+  15:43:46 → 16:03:46 ERROR pipeline step failed ... error="signal: killed: "
+  duration=20m0.066487962s
+
+  Это ровно 20 минут — таймаут задачи process-export-by-leads. Не OOM, а именно
+  таймаут.
+
+  Для сравнения — все предыдущие успешные запуски завершались за 2-4 минуты.
+  Этот конкретный прогон застрял на что-то (скорее всего, много компаний
+  потребовали WebFetch/WebSearch на этапе 1.5, и веб-запросы были медленными или
+   зависали).
+
+  Варианты решения:
+
+  1. Увеличить таймаут до 30m (простое решение, но не устраняет корень)
+  2. Уменьшить limit с 50 до 25 (меньше компаний за раз — быстрее завершение)
+  3. Оба варианта — самое надёжное
+
+  Что предпочитаете? Или сделать оба?
+
+✻ Sautéed for 32s
+
+❯ 1. вариант 2, исправь соответствующим образом и промты                        
+2. Приведи счтетчики и таблицы в состоянтие доэтой сессии                       
+
+● Начну с обоих задач параллельно.
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT COUNT(*) as total, status FROM companies GROUP
+       BY status;")
+  ⎿  10|new
+     47|sent
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT COUNT(*) as total, analyzed FROM raw_companies
+       GROUP BY ana…)
+  ⎿  Error: Exit code 1
+     Error: in prepare, no such column: analyzed
+       SELECT COUNT(*) as total, analyzed FROM raw_companies GROUP BY analyzed;
+                   error here ---^
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT * FROM scan_log ORDER BY id DESC LIMIT 10;")
+  ⎿  Cancelled: parallel tool call Bash(sqlite3 
+     /home/asdmin/development/AI/Clau…) errored
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db ".schema raw_companies")
+  ⎿  Cancelled: parallel tool call Bash(sqlite3 
+     /home/asdmin/development/AI/Clau…) errored
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db ".schema raw_companies")
+  ⎿  CREATE TABLE raw_companies (
+                        id INTEGER PRIMARY KEY,
+                        export_by_id INTEGER UNIQUE NOT NULL,
+     … +13 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT * FROM scan_log ORDER BY id DESC LIMIT 10;")
+  ⎿  18|2026-03-13|0|8|Batch analysis: 50 companies reviewed, 8 accepted (4
+      priority-2, 4 already existed), 42 rejected, 11 auto-rejected by syst
+     em
+     … +26 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT id, name, found_date, status FROM companies
+      WHERE status='n…)
+  ⎿  80|Совместное общество с ограниченной ответственностью «Джофре Лаборте
+     хник»|2026-03-13|new
+     84|Общество с ограниченной ответственностью «АртБиоТех»|2026-03-13|new
+     … +15 lines (ctrl+o to expand)
+
+● Теперь нужно понять состояние "до этой сессии". Посмотрю, какие данные были до
+   сегодняшних запусков (все scan_log записи с 2026-03-13 — это сегодняшняя
+  сессия).
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT * FROM scan_log WHERE scanned_at <
+      '2026-03-13' ORDER BY id…)
+  ⎿  (No output)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT COUNT(*) FROM companies WHERE found_date <
+      '2026-03-13';")
+  ⎿  0
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT id, name, status, found_date FROM companies
+      WHERE found_dat…)
+  ⎿  29|ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ «АТВ-ТЕХ»|sent|2026-03-13
+     30|Частное производственное унитарное предприятие «ЧестВес»|sent|2026-
+     03-13
+     … +59 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT MIN(id), MAX(id), COUNT(*) FROM companies;")
+  ⎿  29|92|57
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT COUNT(*) FROM raw_companies WHERE
+      products_fetched = 0;")
+  ⎿  6874
+
+● Теперь нужно понять, что значит "до этой сессии". Все 57 компаний в companies
+  добавлены 2026-03-13. Scan_log записи до сегодня отсутствуют. Посмотрю, что
+  было до упавшего запуска (15:43) — вероятно, последний успешный запуск
+  отправил лиды (sent), а упавший добавил ещё 10 new.
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT id, scanned_at, new_leads_found, notes FROM
+      scan_log ORDER…)
+  ⎿  7|2026-03-13|7|Проанализировано 50 компаний. Добавлено 7 лидов: 2 прио
+     ритет-2 (фармацевтика, оптика), 5 приоритет-1. Отклонено 43.
+     8|2026-03-13|1|Проанализировано 50 компаний: 1 лид (Савушкин продукт,
+     … +29 lines (ctrl+o to expand)
+
+● Нужно разобраться, какие данные были добавлены во время упавшего запуска
+  (15:43-16:03). Посмотрю mcp-exportby чтобы понять как работают reject и
+  get_unanalyzed.
+
+● Searched for 5 patterns (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT COUNT(*) FROM rejected_companies;")
+  ⎿  1139
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT rejected_at, COUNT(*) FROM rejected_companies
+      GROUP BY subs…)
+  ⎿  2026-03-13 16:01:03|114
+     2026-03-13 16:00:11|24
+     2026-03-13 15:59:27|20
+     … +17 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT rejected_at, COUNT(*) FROM rejected_companies
+      GROUP BY subs…)
+  ⎿  2026-03-13|1
+     2026-03-13 12:40:07|49
+     2026-03-13 12:42:29|43
+     … +27 lines (ctrl+o to expand)
+
+● Теперь вижу полную картину. Упавший запуск (15:43:46 → 16:03:46) частично
+  записал данные:
+  - 10 компаний в companies (status='new', id 80-92)
+  - Записи в rejected_companies после 15:43
+
+  Нужно удалить эти частичные данные.
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT COUNT(*) FROM rejected_companies WHERE
+      rejected_at >= '2026…)
+  ⎿  477
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT COUNT(*) FROM companies WHERE id >= 80;")
+  ⎿  10
+
+● Вот что нужно откатить от упавшего запуска:
+  - 10 компаний в companies (id >= 80, status='new')
+  - 477 записей в rejected_companies (rejected_at >= '2026-03-13 15:43:00')
+
+  Также обновлю промпт — уменьшу limit с 50 до 25. Выполняю:
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "BEGIN; DELETE FROM companies WHERE id >= 80; DELETE
+      FROM rejected_…)
+  ⎿  (No output)
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line, removed 1 line
+      203  
+      204        ШАГ 3. ЕСЛИ pending < 15 → выполни АНАЛИЗ новой порции:
+      205  
+      206 -        3.1. Вызови mcp__exportby__get_unanalyzed с limit=50. 
+      206 +        3.1. Вызови mcp__exportby__get_unanalyzed с limit=25. 
+      207               Если unanalyzed = 0, выведи "Неотправленных: {pen
+           ding}, новых для анализа нет." и ЗАВЕРШИ.
+      208  
+      209          3.2. Для каждой компании выполни ДВУХЭТАПНУЮ оценку СТ
+           РОГО по описанию компании (поле description).
+
+● Теперь обновлю scan_log notes, которые упоминают "50 companies", чтобы
+  соответствовать новому лимиту. Также обновлю DOMAIN.md если там есть
+  упоминание лимита.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Проверю итоговое состояние:
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT 'companies' as tbl, COUNT(*) as total, status
+      FROM companie…)
+  ⎿  companies|47|sent
+     rejected|662|
+
+● Готово. Итог:
+
+  1. Промпт обновлён: limit=50 → limit=25 в задаче process-export-by-leads
+  (строка 206 tasks.yaml). Меньше компаний за раз = быстрее завершение, меньше
+  WebFetch/WebSearch, укладывается в 20m таймаут.
+
+  2. БД откачена до состояния перед упавшим запуском:
+  - Удалено 10 компаний (id 80-92, status='new') из companies
+  - Удалено 477 записей из rejected_companies (добавленных во время упавшего
+  запуска)
+  - Текущее состояние: 47 companies (sent), 662 rejected
+  - scan_log — без изменений (упавший запуск не успел записать в scan_log)
+
+✻ Sautéed for 2m 43s
+
+❯ а на какой компании из raw остановилось сканирование?                         
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT MIN(r.id) as raw_id, MIN(r.export_by_id) as
+      export_by_id, r…)
+  ⎿  210|21400|Частное научно-производственное унитарное предприятие “ЭкоЛи
+     тCервис”
+     626|20889|Общество с ограниченной ответственностью "Торговая компания
+     … +5 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT COUNT(DISTINCT r.name) FROM raw_companies r
+      LEFT JOIN compa…)
+  ⎿  6166
+
+● Также посмотрю, где заканчивается последняя проанализированная (последняя в
+  rejected/companies по raw_id):
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "
+      SELECT 'last_rejected' as src, MAX(r.id) as raw_id, rej.name FROM…)
+  ⎿  last_rejected|6395|Общество с ограниченной ответственностью «Наше дело
+     »
+     last_accepted|676|Крестьянское (фермерское) хозяйство "Ланский сад"
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT COUNT(*) as total FROM raw_companies;")
+  ⎿  6879
+
+● Сканирование остановилось на:
+
+  - Последняя проанализированная: raw_id 6395 — «Наше дело» (rejected)
+  - Следующая неотанализированная: raw_id 210 — «ЭкоЛитCервис» (но это из-за
+  GROUP BY — раньше по ID, просто пропущена)
+  - Всего осталось: 6166 из 6879 raw_companies ещё не проанализированы
+  - Проанализировано: ~713 компаний (47 accepted + 662 rejected + авто-rejected
+  в процессе get_unanalyzed)

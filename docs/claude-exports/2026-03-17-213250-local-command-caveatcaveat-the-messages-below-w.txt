@@ -1,0 +1,621 @@
+ ▐▛███▜▌   Claude Code v2.1.77
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ ──────────────────────────────┼──────────┼───────────────────────────────┤  │ 
+│ │ OPENAPI_SPEC_PATH            │ Yes      │ Путь к OpenAPI-спецификации   │   
+│                                                                               
+│ │                              │          │ (JSON или YAML)               │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_BASE_URL             │ No       │ Переопределение base URL из   │   
+│                                                                               
+│ │                              │          │ спеки                         │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_AUTH_TYPE            │ No       │ bearer, apikey, basic         │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_AUTH_TOKEN           │ No       │ Bearer token                  │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_API_KEY              │ No       │ API key value                 │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_API_KEY_NAME         │ No       │ Header/query param name       │   
+│                                                                               
+│ │                              │          │ (default: X-API-Key)          │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_API_KEY_IN           │ No       │ header (default) или query    │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_BASIC_USER /         │ No       │ Basic auth                    │   
+│                                                                               
+│ │ OPENAPI_BASIC_PASS           │          │                               │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_INCLUDE_TAGS         │ No       │ Фильтр по тегам               │   
+│                                                                               
+│ │                              │          │ (comma-separated)             │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_INCLUDE_PATHS        │ No       │ Фильтр по path-префиксам      │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_INCLUDE_OPS          │ No       │ Фильтр по operationId         │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_EXCLUDE_OPS          │ No       │ Исключение по operationId     │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_MAX_TOOLS            │ No       │ Лимит инструментов (default:  │   
+│                                                                               
+│ │                              │          │ 50)                           │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_TIMEOUT              │ No       │ HTTP timeout (default: 30s)   │   
+│                                                                               
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤   
+│                                                                               
+│ │ OPENAPI_EXTRA_HEADERS        │ No       │ Доп. заголовки                │   
+│                                                                               
+│ │                              │          │ Key:Value,Key2:Value              
+                                                                                
+Это нужно отделбно настраивать для каждой OpenAPI спецификации?                 
+
+● Let me check how OpenAPI MCP servers are configured in this project.
+
+● Searched for 4 patterns, read 1 file (ctrl+o to expand)
+
+● Now let me check how MCP servers are configured in tasks.yaml to see if
+  multiple OpenAPI instances are supported.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Да, каждый экземпляр настраивается отдельно, но это просто — каждый
+  запускается как отдельный MCP-сервер со своим набором env-переменных.
+
+  В tasks.yaml вы объявляете несколько MCP-серверов с одной и той же командой
+  mcp-openapi, но с разными env:
+
+  mcp_servers:
+    - name: petstore-api
+      command: bin/mcp-openapi
+      env:
+        OPENAPI_SPEC_PATH: specs/petstore.yaml
+        OPENAPI_BASE_URL: https://petstore.example.com
+        OPENAPI_AUTH_TYPE: bearer
+        OPENAPI_AUTH_TOKEN: ${PETSTORE_TOKEN}
+
+    - name: payments-api
+      command: bin/mcp-openapi
+      env:
+        OPENAPI_SPEC_PATH: specs/payments.json
+        OPENAPI_BASE_URL: https://payments.internal
+        OPENAPI_AUTH_TYPE: apikey
+        OPENAPI_API_KEY: ${PAYMENTS_API_KEY}
+        OPENAPI_INCLUDE_TAGS: charges,refunds
+
+  Затем задача ссылается на нужные серверы по имени:
+
+  tasks:
+    - name: check-orders
+      mcp_servers: [petstore-api, payments-api]
+      prompt: "..."
+
+  Каждый mcp-openapi процесс запускается независимо со своими переменными
+  окружения (OPENAPI_SPEC_PATH, auth, фильтры и т.д.). Это позволяет одной
+  задаче работать сразу с несколькими API, каждое со своей авторизацией и
+  фильтрацией.
+
+✻ Brewed for 32s
+
+❯ А если используется api_key + api_secret + Bearer token + auth endpoint +     
+refresh token endpoint ?                                                        
+
+● Сейчас mcp-openapi поддерживает только статичные токены — OAuth2/token
+  exchange не реализован. Нужно добавить поддержку.
+
+  Давайте посмотрим, что нужно реализовать:
+
+  1. При старте: POST auth_endpoint с api_key + api_secret → получить
+  access_token + refresh_token
+  2. При 401: автоматически POST refresh_endpoint с refresh_token → новый
+  access_token
+  3. Использовать access_token как Bearer в каждом запросе
+
+  Хотите, чтобы я это реализовал? Конфигурация будет выглядеть примерно так:
+
+  - name: my-api
+    command: bin/mcp-openapi
+    env:
+      OPENAPI_SPEC_PATH: specs/my-api.yaml
+      OPENAPI_AUTH_TYPE: oauth2
+      OPENAPI_AUTH_ENDPOINT: https://api.example.com/auth/token
+      OPENAPI_REFRESH_ENDPOINT: https://api.example.com/auth/refresh
+      OPENAPI_CLIENT_ID: ${API_KEY}
+      OPENAPI_CLIENT_SECRET: ${API_SECRET}
+
+❯ да                                                                            
+
+● Read 1 file (ctrl+o to expand)
+
+● Now let me also check for existing tests.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Реализую OAuth2 client credentials flow с auto-refresh. Основные изменения:
+
+  1. Новый тип oauth2TokenManager — получает токен при старте, автоматически
+  обновляет при 401
+  2. Новые env-переменные: OPENAPI_AUTH_ENDPOINT, OPENAPI_REFRESH_ENDPOINT,
+  OPENAPI_CLIENT_ID, OPENAPI_CLIENT_SECRET
+  3. Retry на 401 с авто-рефрешем токена
+
+● Update(cmd/mcp/mcp-openapi/main.go)
+  ⎿  Added 1 line
+      13    "regexp"
+      14    "strconv"
+      15    "strings"
+      16 +  "sync"                                                       
+      17    "time"
+      18  
+      19    "github.com/pb33f/libopenapi"
+
+● Now add the oauth2TokenManager type and globals after the existing globals
+  section:
+
+● Update(cmd/mcp/mcp-openapi/main.go)
+  ⎿  Added 150 lines
+       86    operation apiOperation
+       87  }
+       88  
+       89 +// --- OAuth2 token manager ---                               
+       90 +                                                              
+       91 +type oauth2TokenManager struct {                              
+       92 +  mu              sync.Mutex                                  
+       93 +  clientID        string                                      
+       94 +  clientSecret    string                                      
+       95 +  authEndpoint    string                                      
+       96 +  refreshEndpoint string                                      
+       97 +  accessToken     string                                      
+       98 +  refreshToken    string                                      
+       99 +  expiresAt       time.Time                                   
+      100 +  httpClient      *http.Client                                
+      101 +}                                                             
+      102 +                                                              
+      103 +func newOAuth2TokenManager(clientID, clientSecret, authEndpoin
+          +t, refreshEndpoint string, client *http.Client) *oauth2TokenMa
+          +nager {                                                       
+      104 +  return &oauth2TokenManager{                                 
+      105 +    clientID:        clientID,                                
+      106 +    clientSecret:    clientSecret,                            
+      107 +    authEndpoint:    authEndpoint,                            
+      108 +    refreshEndpoint: refreshEndpoint,                         
+      109 +    httpClient:      client,                                  
+      110 +  }                                                           
+      111 +}                                                             
+      112 +                                                              
+      113 +type tokenResponse struct {                                   
+      114 +  AccessToken  string `json:"access_token"`                   
+      115 +  RefreshToken string `json:"refresh_token,omitempty"`        
+      116 +  ExpiresIn    int    `json:"expires_in,omitempty"`           
+      117 +  TokenType    string `json:"token_type,omitempty"`           
+      118 +}                                                             
+      119 +                                                              
+      120 +// authenticate performs initial token exchange using client c
+          +redentials.                                                   
+      121 +func (tm *oauth2TokenManager) authenticate() error {          
+      122 +  tm.mu.Lock()                                                
+      123 +  defer tm.mu.Unlock()                                        
+      124 +                                                              
+      125 +  body := map[string]string{                                  
+      126 +    "client_id":     tm.clientID,                             
+      127 +    "client_secret": tm.clientSecret,                         
+      128 +    "grant_type":    "client_credentials",                    
+      129 +  }                                                           
+      130 +  return tm.doTokenRequest(tm.authEndpoint, body)             
+      131 +}                                                             
+      132 +                                                              
+      133 +// refresh exchanges refresh_token for a new access_token.    
+      134 +// If refresh endpoint is not configured, falls back to re-aut
+          +hentication.                                                  
+      135 +func (tm *oauth2TokenManager) refresh() error {               
+      136 +  tm.mu.Lock()                                                
+      137 +  defer tm.mu.Unlock()                                        
+      138 +                                                              
+      139 +  if tm.refreshEndpoint == "" || tm.refreshToken == "" {      
+      140 +    // Fall back to full re-auth                              
+      141 +    body := map[string]string{                                
+      142 +      "client_id":     tm.clientID,                           
+      143 +      "client_secret": tm.clientSecret,                       
+      144 +      "grant_type":    "client_credentials",                  
+      145 +    }                                                         
+      146 +    return tm.doTokenRequest(tm.authEndpoint, body)           
+      147 +  }                                                           
+      148 +                                                              
+      149 +  body := map[string]string{                                  
+      150 +    "client_id":     tm.clientID,                             
+      151 +    "client_secret": tm.clientSecret,                         
+      152 +    "grant_type":    "refresh_token",                         
+      153 +    "refresh_token": tm.refreshToken,                         
+      154 +  }                                                           
+      155 +  err := tm.doTokenRequest(tm.refreshEndpoint, body)          
+      156 +  if err != nil {                                             
+      157 +    // Refresh failed — try full re-auth                      
+      158 +    fmt.Fprintf(os.Stderr, "mcp-openapi: refresh failed (%v), 
+          +re-authenticating\n", err)                                    
+      159 +    reAuthBody := map[string]string{                          
+      160 +      "client_id":     tm.clientID,                           
+      161 +      "client_secret": tm.clientSecret,                       
+      162 +      "grant_type":    "client_credentials",                  
+      163 +    }                                                         
+      164 +    return tm.doTokenRequest(tm.authEndpoint, reAuthBody)     
+      165 +  }                                                           
+      166 +  return nil                                                  
+      167 +}                                                             
+      168 +                                                              
+      169 +func (tm *oauth2TokenManager) doTokenRequest(endpoint string, 
+          +body map[string]string) error {                               
+      170 +  data, err := json.Marshal(body)                             
+      171 +  if err != nil {                                             
+      172 +    return fmt.Errorf("marshal token request: %w", err)       
+      173 +  }                                                           
+      174 +                                                              
+      175 +  req, err := http.NewRequest("POST", endpoint, bytes.NewReade
+          +r(data))                                                      
+      176 +  if err != nil {                                             
+      177 +    return fmt.Errorf("create token request: %w", err)        
+      178 +  }                                                           
+      179 +  req.Header.Set("Content-Type", "application/json")          
+      180 +  req.Header.Set("Accept", "application/json")                
+      181 +                                                              
+      182 +  resp, err := tm.httpClient.Do(req)                          
+      183 +  if err != nil {                                             
+      184 +    return fmt.Errorf("token request failed: %w", err)        
+      185 +  }                                                           
+      186 +  defer resp.Body.Close()                                     
+      187 +                                                              
+      188 +  respBody, err := io.ReadAll(io.LimitReader(resp.Body, 256*10
+          +24))                                                          
+      189 +  if err != nil {                                             
+      190 +    return fmt.Errorf("read token response: %w", err)         
+      191 +  }                                                           
+      192 +                                                              
+      193 +  if resp.StatusCode != http.StatusOK {                       
+      194 +    return fmt.Errorf("token endpoint returned %d: %s", resp.S
+          +tatusCode, string(respBody))                                  
+      195 +  }                                                           
+      196 +                                                              
+      197 +  var tr tokenResponse                                        
+      198 +  if err := json.Unmarshal(respBody, &tr); err != nil {       
+      199 +    return fmt.Errorf("parse token response: %w", err)        
+      200 +  }                                                           
+      201 +                                                              
+      202 +  if tr.AccessToken == "" {                                   
+      203 +    return fmt.Errorf("token endpoint returned empty access_to
+          +ken")                                                         
+      204 +  }                                                           
+      205 +                                                              
+      206 +  tm.accessToken = tr.AccessToken                             
+      207 +  if tr.RefreshToken != "" {                                  
+      208 +    tm.refreshToken = tr.RefreshToken                         
+      209 +  }                                                           
+      210 +  if tr.ExpiresIn > 0 {                                       
+      211 +    tm.expiresAt = time.Now().Add(time.Duration(tr.ExpiresIn) 
+          +* time.Second)                                                
+      212 +  } else {                                                    
+      213 +    tm.expiresAt = time.Time{} // unknown expiry              
+      214 +  }                                                           
+      215 +                                                              
+      216 +  return nil                                                  
+      217 +}                                                             
+      218 +                                                              
+      219 +// getToken returns a valid access token, proactively refreshi
+          +ng if near expiry.                                            
+      220 +func (tm *oauth2TokenManager) getToken() (string, error) {    
+      221 +  tm.mu.Lock()                                                
+      222 +  needsRefresh := !tm.expiresAt.IsZero() && time.Until(tm.expi
+          +resAt) < 30*time.Second                                       
+      223 +  token := tm.accessToken                                     
+      224 +  tm.mu.Unlock()                                              
+      225 +                                                              
+      226 +  if needsRefresh {                                           
+      227 +    if err := tm.refresh(); err != nil {                      
+      228 +      return "", err                                          
+      229 +    }                                                         
+      230 +    tm.mu.Lock()                                              
+      231 +    token = tm.accessToken                                    
+      232 +    tm.mu.Unlock()                                            
+      233 +  }                                                           
+      234 +                                                              
+      235 +  return token, nil                                           
+      236 +}                                                             
+      237 +                                                              
+      238  // --- Globals ---
+      239  
+      240  var (
+     ...
+      250    basicUser      string
+      251    basicPass      string
+      252    extraHeaders   map[string]string
+      253 +  tokenManager   *oauth2TokenManager                          
+      254  )
+      255  
+      256  func main() {
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Now update the auth configuration section in main() to handle oauth2:
+
+● Update(cmd/mcp/mcp-openapi/main.go)
+  ⎿  Added 23 lines
+      342    basicUser = os.Getenv("OPENAPI_BASIC_USER")
+      343    basicPass = os.Getenv("OPENAPI_BASIC_PASS")
+      344  
+      345 +  // OAuth2 client credentials flow                           
+      346 +  if authType == "oauth2" {                                   
+      347 +    authEndpoint := os.Getenv("OPENAPI_AUTH_ENDPOINT")        
+      348 +    if authEndpoint == "" {                                   
+      349 +      fmt.Fprintf(os.Stderr, "OPENAPI_AUTH_ENDPOINT is require
+          +d for oauth2 auth type\n")                                    
+      350 +      os.Exit(1)                                              
+      351 +    }                                                         
+      352 +    clientID := os.Getenv("OPENAPI_CLIENT_ID")                
+      353 +    clientSecret := os.Getenv("OPENAPI_CLIENT_SECRET")        
+      354 +    if clientID == "" || clientSecret == "" {                 
+      355 +      fmt.Fprintf(os.Stderr, "OPENAPI_CLIENT_ID and OPENAPI_CL
+          +IENT_SECRET are required for oauth2 auth type\n")             
+      356 +      os.Exit(1)                                              
+      357 +    }                                                         
+      358 +    refreshEndpoint := os.Getenv("OPENAPI_REFRESH_ENDPOINT")  
+      359 +                                                              
+      360 +    tokenManager = newOAuth2TokenManager(clientID, clientSecre
+          +t, authEndpoint, refreshEndpoint, httpClient)                 
+      361 +    if err := tokenManager.authenticate(); err != nil {       
+      362 +      fmt.Fprintf(os.Stderr, "mcp-openapi: initial authenticat
+          +ion failed: %v\n", err)                                       
+      363 +      os.Exit(1)                                              
+      364 +    }                                                         
+      365 +    fmt.Fprintf(os.Stderr, "mcp-openapi: oauth2 authenticated 
+          +successfully\n")                                              
+      366 +  }                                                           
+      367 +                                                              
+      368    // Parse extra headers
+      369    extraHeaders = parseExtraHeaders(os.Getenv("OPENAPI_EXTRA_HE
+           ADERS"))
+      370  
+  ⎿  Found 7 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now update applyAuth to handle oauth2 and update executeOperation to retry on
+  401:
+
+● Update(cmd/mcp/mcp-openapi/main.go)
+  ⎿  Added 10 lines, removed 1 line
+      850    return textResult(output)
+      851  }
+      852  
+      853 -func applyAuth(req *http.Request) {                           
+      853 +func applyAuth(req *http.Request) error {                     
+      854    switch authType {
+      855    case "bearer":
+      856      if authToken != "" {
+      857        req.Header.Set("Authorization", "Bearer "+authToken)
+      858      }
+      859 +  case "oauth2":                                              
+      860 +    if tokenManager != nil {                                  
+      861 +      token, err := tokenManager.getToken()                   
+      862 +      if err != nil {                                         
+      863 +        return fmt.Errorf("oauth2 get token: %w", err)        
+      864 +      }                                                       
+      865 +      req.Header.Set("Authorization", "Bearer "+token)        
+      866 +    }                                                         
+      867    case "apikey":
+      868      if apiKey != "" {
+      869        if apiKeyIn == "query" {
+     ...
+      880        req.Header.Set("Authorization", "Basic "+cred)
+      881      }
+      882    }
+      883 +  return nil                                                  
+      884  }
+      885  
+      886  func parseExtraHeaders(s string) map[string]string {
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now rewrite executeOperation to support retry on 401 for oauth2:
+
+● Update(cmd/mcp/mcp-openapi/main.go)
+  ⎿  Added 31 lines, removed 10 lines
+      748  }
+      749  
+      750  func executeOperation(op apiOperation, args map[string]any) to
+           olResult {
+      751 +  result, statusCode := doExecute(op, args)                   
+      752 +                                                              
+      753 +  // Auto-retry on 401 for oauth2: refresh token and retry onc
+          +e                                                             
+      754 +  if statusCode == http.StatusUnauthorized && authType == "oau
+          +th2" && tokenManager != nil {                                 
+      755 +    fmt.Fprintf(os.Stderr, "mcp-openapi: 401 received, refresh
+          +ing token\n")                                                 
+      756 +    if err := tokenManager.refresh(); err != nil {            
+      757 +      return errorResult("token refresh failed: " + err.Error(
+          +))                                                            
+      758 +    }                                                         
+      759 +    result, _ = doExecute(op, args)                           
+      760 +  }                                                           
+      761 +                                                              
+      762 +  return result                                               
+      763 +}                                                             
+      764 +                                                              
+      765 +func doExecute(op apiOperation, args map[string]any) (toolResu
+          +lt, int) {                                                    
+      766    // Build URL with path params
+      767    reqPath := op.Path
+      768    queryParams := url.Values{}
+     ...
+      793    }
+      794  
+      795    // Build body
+      781 -  var bodyReader io.Reader                                    
+      796 +  var bodyBytes []byte                                        
+      797    if op.HasBody {
+      798      if bodyData, ok := args["body"]; ok {
+      784 -      bodyBytes, err := json.Marshal(bodyData)                
+      799 +      var err error                                           
+      800 +      bodyBytes, err = json.Marshal(bodyData)                 
+      801        if err != nil {
+      786 -        return errorResult("failed to marshal body: " + err.Er
+          -ror())                                                        
+      802 +        return errorResult("failed to marshal body: " + err.Er
+          +ror()), 0                                                     
+      803        }
+      788 -      bodyReader = bytes.NewReader(bodyBytes)                 
+      804      }
+      805    }
+      806  
+      807    // Create request
+      808 +  var bodyReader io.Reader                                    
+      809 +  if bodyBytes != nil {                                       
+      810 +    bodyReader = bytes.NewReader(bodyBytes)                   
+      811 +  }                                                           
+      812    req, err := http.NewRequest(op.Method, fullURL, bodyReader)
+      813    if err != nil {
+      795 -    return errorResult("failed to create request: " + err.Erro
+          -r())                                                          
+      814 +    return errorResult("failed to create request: " + err.Erro
+          +r()), 0                                                       
+      815    }
+      816  
+      817    if op.HasBody {
+     ...
+      820    req.Header.Set("Accept", "application/json")
+      821  
+      822    // Apply auth
+      804 -  applyAuth(req)                                              
+      823 +  if err := applyAuth(req); err != nil {                      
+      824 +    return errorResult(err.Error()), 0                        
+      825 +  }                                                           
+      826  
+      827    // Apply header params from args
+      828    for _, p := range op.Parameters {
+     ...
+      841    // Execute
+      842    resp, err := httpClient.Do(req)
+      843    if err != nil {
+      823 -    return errorResult("HTTP request failed: " + err.Error()) 
+      844 +    return errorResult("HTTP request failed: " + err.Error()),
+          + 0                                                            
+      845    }
+      846    defer resp.Body.Close()
+      847  
+      848    // Read response (limit 1MB)
+      849    body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024)
+           )
+      850    if err != nil {
+      830 -    return errorResult("failed to read response: " + err.Error
+          -())                                                           
+      851 +    return errorResult("failed to read response: " + err.Error
+          +()), 0                                                        
+      852    }
+      853  
+      854    // Format response
+     ...
+      865      return toolResult{
+      866        Content: []contentItem{{Type: "text", Text: output}},
+      867        IsError: true,
+      847 -    }                                                         
+      868 +    }, resp.StatusCode                                        
+      869    }
+      870  
+      850 -  return textResult(output)                                   
+      871 +  return textResult(output), resp.StatusCode                  
+      872  }
+      873  
+      874  func applyAuth(req *http.Request) error {
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Проверим, что всё компилируется.
+
+● Bash(go build ./cmd/mcp/mcp-openapi/)
+  ⎿  (No output)
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Компилируется. Теперь напишу тест.
+
+● Write(cmd/mcp/mcp-openapi/oauth2_test.go)
+  ⎿  Wrote 172 lines to cmd/mcp/mcp-openapi/oauth2_test.go
+      1 package main
+      2 
+      3 import (
+      4         "encoding/json"
+      5         "net/http"
+      6         "net/http/httptest"
+      7         "testing"
+      8         "time"
+      9 )
+     … +162 lines (ctrl+o to expand)
+
+● Bash(go test ./cmd/mcp/mcp-openapi/ -v -run TestOAuth2)
+  ⎿  === RUN   TestOAuth2TokenManager_Authenticate
+     --- PASS: TestOAuth2TokenManager_Authenticate (0.00s)
+     === RUN   TestOAuth2TokenManager_Refresh
+     … +13 lines (ctrl+o to expand)
+
+● Все 6 тестов проходят. Вот что реализовано:
+
+  Новый authType: oauth2 с env-переменными:
+
+  ┌──────────────────────────┬─────────────┬─────────────────────────────────┐
+  │        Переменная        │ Обязательна │            Описание             │
+  ├──────────────────────────┼─────────────┼─────────────────────────────────┤
+  │ OPENAPI_AUTH_TYPE        │ Да          │ oauth2                          │
+  ├──────────────────────────┼─────────────┼─────────────────────────────────┤
+  │ OPENAPI_AUTH_ENDPOINT    │ Да          │ URL для получения токена        │
+  ├──────────────────────────┼─────────────┼─────────────────────────────────┤
+  │ OPENAPI_REFRESH_ENDPOINT │ Нет         │ URL для refresh (если нет —     │
+  │                          │             │ повторная полная авторизация)   │
+  ├──────────────────────────┼─────────────┼─────────────────────────────────┤
+  │ OPENAPI_CLIENT_ID        │ Да          │ API key / client_id             │
+  ├──────────────────────────┼─────────────┼─────────────────────────────────┤
+  │ OPENAPI_CLIENT_SECRET    │ Да          │ API secret / client_secret      │
+  └──────────────────────────┴─────────────┴─────────────────────────────────┘
+
+  Логика:
+  1. При старте — POST auth_endpoint с client_id + client_secret → получает
+  access_token + refresh_token
+  2. Проактивный refresh — если до истечения токена < 30 сек, обновляет заранее
+  3. Retry на 401 — при получении 401 автоматически делает refresh и повторяет
+  запрос один раз
+  4. Fallback — если refresh не удался, делает полную повторную авторизацию
+  через auth_endpoint
+
+  Пример конфигурации:
+  - name: my-api
+    command: bin/mcp-openapi
+    env:
+      OPENAPI_SPEC_PATH: specs/my-api.yaml
+      OPENAPI_AUTH_TYPE: oauth2
+      OPENAPI_AUTH_ENDPOINT: https://api.example.com/auth/token
+      OPENAPI_REFRESH_ENDPOINT: https://api.example.com/auth/refresh
+      OPENAPI_CLIENT_ID: ${MY_API_KEY}
+      OPENAPI_CLIENT_SECRET: ${MY_API_SECRET}
+
+✻ Churned for 2m 29s

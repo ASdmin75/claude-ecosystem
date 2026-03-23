@@ -1,0 +1,394 @@
+ ▐▛███▜▌   Claude Code v2.1.74
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ А как запускать паплайн по cron ?                                             
+  ⎿  [Image #2]
+
+● Let me check if pipelines currently support cron scheduling.
+
+● Searched for 4 patterns (ctrl+o to expand)
+
+● Сейчас пайплайны не поддерживают cron — поле schedule есть только у задач
+  (tasks). Давай добавим эту фичу. Посмотрю как работает scheduler.
+
+● Read 2 files (ctrl+o to expand)
+
+● Now let me check how pipelines are run and where the scheduler is wired up.
+
+● Searched for 3 patterns (ctrl+o to expand)
+
+● Now let me check how handleRunPipeline actually runs pipelines to understand
+  what dependencies are needed.
+
+● Read 2 files (ctrl+o to expand)
+
+● Now let me see the runPipeline helper on the server and the pipeline Runner
+  type.
+
+● Searched for 2 patterns (ctrl+o to expand)
+
+● Now I see the full picture. The pipeline execution logic is duplicated in
+  api/pipelines.go (not using pipeline.Runner). The scheduler only handles
+  tasks. I need to:
+
+  1. Add Schedule field to Pipeline config
+  2. Add RegisterPipeline to scheduler
+  3. Wire it up in cmd/server/main.go
+  4. Add schedule field to the UI pipeline form
+
+  Let me also check the UI components.
+
+● Searched for 2 patterns (ctrl+o to expand)
+
+● Now let me check the PipelineList component for the form.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I have the full picture. Let me also check how the server passes config
+  and pipeline runner to see what s.runPipeline uses internally, specifically
+  whether it uses s.pipelineRunner or does everything inline.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● So the API server does pipeline execution inline without using
+  pipeline.Runner. The scheduler needs to call s.runPipeline but it's on the API
+   server. Let me check what's available on the Server struct.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Good. Now I understand the architecture. The best approach is:
+
+  1. Add Schedule field to Pipeline struct
+  2. Add RegisterPipeline method to Scheduler that calls runPipeline logic
+  3. The scheduler already has all needed deps (runner, subMgr, mcpMgr,
+  domainMgr, bus) but needs config and store for pipeline execution
+  4. Wire it up in cmd/server/main.go
+  5. Update UI types and form
+
+  Let me look at what the scheduler needs. The runPipeline logic is in
+  api/pipelines.go and uses s.findTask, s.store, etc. Rather than duplicating, I
+   should add a RegisterPipeline that takes a callback function, or give the
+  scheduler access to config + store.
+
+  The simplest approach: add a RegisterPipelineFunc to scheduler that takes a
+  name, schedule, and a run function.
+
+  Let me implement this.
+
+● Update(internal/config/pipeline.go)
+  ⎿  Added 1 line
+       8    MaxIterations int            `yaml:"max_iterations" json:"max
+          _iterations"`
+       9    StopSignal    string         `yaml:"stop_signal,omitempty" js
+          on:"stop_signal,omitempty"`
+      10    Collector     string         `yaml:"collector,omitempty" json
+          :"collector,omitempty"`
+      11 +  Schedule      string         `yaml:"schedule,omitempty" json:
+         +"schedule,omitempty"`                                          
+      12  }
+      13  
+      14  // PipelineStep references a task by name.
+
+● Now add RegisterPipeline to the scheduler. I'll use a callback approach to
+  avoid coupling the scheduler to the API server's pipeline execution logic.
+
+● Update(internal/scheduler/scheduler.go)
+  ⎿  Added 29 lines
+      103    return nil
+      104  }
+      105  
+      106 +// RegisterPipeline registers a pipeline to run on a cron sche
+          +dule.                                                         
+      107 +// The runFn callback is invoked with a context for each sched
+          +uled execution.                                               
+      108 +func (s *Scheduler) RegisterPipeline(p config.Pipeline, runFn 
+          +func(ctx context.Context)) error {                            
+      109 +  if p.Schedule == "" {                                       
+      110 +    return nil                                                
+      111 +  }                                                           
+      112 +                                                              
+      113 +  _, err := s.cron.AddFunc(p.Schedule, func() {               
+      114 +    if s.IsPaused(p.Name) {                                   
+      115 +      s.logger.Info("scheduled pipeline is paused, skipping", 
+          +"pipeline", p.Name)                                           
+      116 +      return                                                  
+      117 +    }                                                         
+      118 +                                                              
+      119 +    s.logger.Info("scheduled pipeline starting", "pipeline", p
+          +.Name)                                                        
+      120 +                                                              
+      121 +    s.ctxMu.RLock()                                           
+      122 +    parentCtx := s.runCtx                                     
+      123 +    s.ctxMu.RUnlock()                                         
+      124 +                                                              
+      125 +    runFn(parentCtx)                                          
+      126 +  })                                                          
+      127 +  if err != nil {                                             
+      128 +    return err                                                
+      129 +  }                                                           
+      130 +                                                              
+      131 +  s.logger.Info("registered scheduled pipeline", "pipeline", p
+          +.Name, "schedule", p.Schedule)                                
+      132 +  return nil                                                  
+      133 +}                                                             
+      134 +                                                              
+      135  // Pause marks a task as paused so its cron callback will be s
+           kipped.
+      136  func (s *Scheduler) Pause(taskName string) error {
+      137    s.pauseMu.Lock()
+
+● Now wire it up in cmd/server/main.go. Let me see the full main.go around the
+  registration area.
+
+● Read 1 file (ctrl+o to expand)
+
+● I see the problem — the pipeline scheduling needs to happen after the API
+  server is created (since runPipeline is on the server). But actually, I should
+   make the scheduler self-contained. Let me look at how runPipeline works in
+  the API server — it uses s.findTask, s.taskRunner, s.store, etc.
+
+  The cleanest approach: expose a RunPipelineScheduled method on the API server,
+   or better yet, just register pipelines right after the API server is created.
+   Let me restructure slightly.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● I'll add a public method to the API server that the scheduler can call, and
+  move pipeline registration after the API server creation.
+
+● Read 1 file (ctrl+o to expand)
+
+● I'll add a RunPipelineByName public method on the Server that handles
+  execution creation, the run, and event publishing — same as
+  handleRunPipelineAsync but callable from the scheduler.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now let me add the public method at the end of the file.
+
+● Update(internal/api/pipelines.go)
+  ⎿  Added 55 lines
+      388      Status:      "running",
+      389    })
+      390  }
+      391 +                                                              
+      392 +// RunPipelineByName runs a pipeline asynchronously with the g
+          +iven trigger label.                                           
+      393 +// It creates the execution record, publishes events, and runs
+          + in a goroutine.                                              
+      394 +func (s *Server) RunPipelineByName(ctx context.Context, name s
+          +tring, trigger string) {                                      
+      395 +  p := s.findPipeline(name)                                   
+      396 +  if p == nil {                                               
+      397 +    s.logger.Error("scheduled pipeline not found", "pipeline",
+          + name)                                                        
+      398 +    return                                                    
+      399 +  }                                                           
+      400 +                                                              
+      401 +  execID := uuid.New().String()                               
+      402 +  now := time.Now().UTC()                                     
+      403 +                                                              
+      404 +  exec := &store.Execution{                                   
+      405 +    ID:           execID,                                     
+      406 +    PipelineName: p.Name,                                     
+      407 +    Status:       "running",                                  
+      408 +    Trigger:      trigger,                                    
+      409 +    StartedAt:    now,                                        
+      410 +  }                                                           
+      411 +  if err := s.store.CreateExecution(ctx, exec); err != nil {  
+      412 +    s.logger.Error("failed to create pipeline execution record
+          +", "error", err)                                              
+      413 +    return                                                    
+      414 +  }                                                           
+      415 +                                                              
+      416 +  s.bus.Publish(events.Event{                                 
+      417 +    Type: "pipeline.started",                                 
+      418 +    Payload: map[string]string{                               
+      419 +      "execution_id": execID,                                 
+      420 +      "pipeline":     name,                                   
+      421 +    },                                                        
+      422 +  })                                                          
+      423 +                                                              
+      424 +  resp := s.runPipeline(ctx, name, execID)                    
+      425 +                                                              
+      426 +  completedAt := time.Now().UTC()                             
+      427 +  exec.Status = resp.Status                                   
+      428 +  exec.Output = resp.Output                                   
+      429 +  exec.Error = resp.Error                                     
+      430 +  exec.DurationMS = resp.DurationMS                           
+      431 +  exec.CompletedAt = &completedAt                             
+      432 +                                                              
+      433 +  if err := s.store.UpdateExecution(ctx, exec); err != nil {  
+      434 +    s.logger.Error("failed to update pipeline execution record
+          +", "error", err)                                              
+      435 +  }                                                           
+      436 +                                                              
+      437 +  s.bus.Publish(events.Event{                                 
+      438 +    Type: "pipeline.completed",                               
+      439 +    Payload: map[string]string{                               
+      440 +      "execution_id": execID,                                 
+      441 +      "pipeline":     name,                                   
+      442 +      "status":       resp.Status,                            
+      443 +    },                                                        
+      444 +  })                                                          
+      445 +}                                                             
+
+● Now wire it up in cmd/server/main.go — register pipelines after the API server
+   is created.
+
+● Update(cmd/server/main.go)
+  ⎿  Added 16 lines, removed 4 lines
+      207      }
+      208    }
+      209  
+      210 -  sched.Start(ctx)                                            
+      211 -  defer sched.Stop()                                          
+      212 -  go w.Start(ctx)                                             
+      213 -                                                              
+      210    // Initialize REST API
+      211    apiServer := api.NewServer(
+      212      cfg, taskRunner, subagentMgr, mcpMgr, domainMgr,
+     ...
+      214      bus, logger,
+      215    )
+      216  
+      217 +  // Register pipeline schedules (needs apiServer for executio
+          +n logic)                                                      
+      218 +  for _, p := range cfg.Pipelines {                           
+      219 +    if p.Schedule != "" {                                     
+      220 +      pName := p.Name                                         
+      221 +      if err := sched.RegisterPipeline(p, func(ctx context.Con
+          +text) {                                                       
+      222 +        apiServer.RunPipelineByName(ctx, pName, "schedule")   
+      223 +      }); err != nil {                                        
+      224 +        logger.Error("failed to register scheduled pipeline", 
+          +"pipeline", p.Name, "error", err)                             
+      225 +      }                                                       
+      226 +    }                                                         
+      227 +  }                                                           
+      228 +                                                              
+      229 +  sched.Start(ctx)                                            
+      230 +  defer sched.Stop()                                          
+      231 +  go w.Start(ctx)                                             
+      232 +                                                              
+      233    httpServer := &http.Server{
+      234      Addr:         cfg.Server.Addr,
+      235      Handler:      apiServer.Handler(),
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Now update the TypeScript types and UI form.
+
+● Update(web/src/types/index.ts)
+  ⎿  File must be read first
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(web/src/types/index.ts)
+  ⎿  Added 1 line
+      55    max_iterations: number
+      56    stop_signal?: string
+      57    collector?: string
+      58 +  schedule?: string                                            
+      59  }
+      60  
+      61  export interface Execution {
+
+● Now add the schedule field to the UI form. I'll add it after the Collector
+  field, before the Save/Cancel buttons.
+
+● Update(web/src/components/PipelineList.tsx)
+  ⎿  Added 9 lines
+      250            />
+      251          </Field>
+      252  
+      253 +        <Field label="Schedule (cron)">                       
+      254 +          <input                                              
+      255 +            value={pipeline.schedule || ''}                   
+      256 +            onChange={(e) => set('schedule', e.target.value)} 
+      257 +            placeholder="e.g. 0 9 * * 1-5"                    
+      258 +            className={inputClass}                            
+      259 +          />                                                  
+      260 +        </Field>                                              
+      261 +                                                              
+      262          <div className="flex gap-2 pt-2">
+      263            <button
+      264              type="submit"
+
+● Also show the schedule in the pipeline card if set.
+
+● Update(web/src/components/PipelineList.tsx)
+  ⎿  Added 1 line
+      101                        <span>Max iterations: {p.max_iterations}
+           </span>
+      102                        {p.stop_signal && <span>Stop: "{p.stop_s
+           ignal}"</span>}
+      103                        {p.collector && <span>Collector: {p.coll
+           ector}</span>}
+      104 +                      {p.schedule && <span>Schedule: {p.schedu
+          +le}</span>}                                                   
+      105                      </div>
+      106                    </div>
+      107                    <div className="flex gap-2">
+
+● Now add the schedule field to emptyForm:
+
+● Update(web/src/components/PipelineList.tsx)
+  ⎿  Added 1 line, removed 1 line
+       4  import type { Pipeline } from '../types'
+       5  
+       6  const emptyForm: Partial<Pipeline> = {
+       7 -  name: '', mode: 'sequential', steps: [{ task: '' }], max_iter
+         -ations: 1, stop_signal: '', collector: '',                     
+       7 +  name: '', mode: 'sequential', steps: [{ task: '' }], max_iter
+         +ations: 1, stop_signal: '', collector: '', schedule: '',       
+       8  }
+       9  
+      10  export default function PipelineList() {
+
+● Now let's build and test.
+
+● Bash(make build 2>&1 | tail -20)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Bash(make build-ui 2>&1 | tail -10)
+  ⎿  transforming...
+     ✓ 351 modules transformed.
+     rendering chunks...
+     … +7 lines (ctrl+o to expand)
+  ⎿  (timeout 1m)
+
+● Всё собралось. Вот что было сделано:
+
+  Backend:
+  1. internal/config/pipeline.go — добавлено поле Schedule string в структуру
+  Pipeline
+  2. internal/scheduler/scheduler.go — добавлен метод RegisterPipeline(p, runFn)
+   который принимает callback для запуска
+  3. internal/api/pipelines.go — добавлен публичный метод RunPipelineByName(ctx,
+   name, trigger) для вызова из шедулера
+  4. cmd/server/main.go — пайплайны с schedule регистрируются в cron-шедулере
+
+  Frontend:
+  5. web/src/types/index.ts — добавлено schedule?: string в интерфейс Pipeline
+  6. web/src/components/PipelineList.tsx — поле "Schedule (cron)" в форме
+  редактирования + отображение в карточке
+
+  Использование — в tasks.yaml добавь schedule к пайплайну:
+
+  pipelines:
+    - name: export-by-aviation-to-ceo
+      mode: sequential
+      steps:
+        - task: sync-export-by-catalog
+        - task: process-export-by-leads
+      max_iterations: 1
+      schedule: "0 9 * * 1-5"   # каждый будний день в 9:00
+
+  Или через UI — новое поле "Schedule (cron)" в форме редактирования пайплайна.
+
+✻ Crunched for 3m 35s

@@ -1,0 +1,75 @@
+ ▐▛███▜▌   Claude Code v2.1.76
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ колько еще  необработанных записей в raw_companies ?                          
+
+● Explore(Find raw_companies database info)
+  ⎿  Done (14 tool uses · 72.2k tokens · 1m 3s)
+  (ctrl+o to expand)
+
+● Bash(sqlite3 data/export-by-aviation/leads.db "SELECT 'total' as status,
+      COUNT(*) as cnt FROM raw_companies UNION ALL SELECT 'unprocessed
+      (products_fetched=0)', COUN…)
+  ⎿  Error: Exit code 1
+     Error: in prepare, no such column: rc.export_by_id
+       EXISTS (SELECT 1 FROM rejected_companies rc WHERE rc.export_by_id = 
+     r.export_b
+                                           error here ---^
+
+● Bash(sqlite3 data/export-by-aviation/leads.db ".schema rejected_companies")
+  ⎿  CREATE TABLE rejected_companies (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       name TEXT UNIQUE NOT NULL,
+     … +3 lines (ctrl+o to expand)
+
+● Bash(sqlite3 data/export-by-aviation/leads.db "SELECT 'total' as status,
+      COUNT(*) as cnt FROM raw_companies UNION ALL SELECT 'products not fetched
+      (=0)', COUNT(*) FR…)
+  ⎿  total|6880
+     products not fetched (=0)|6875
+     products fetched (=1)|5
+     … +2 lines (ctrl+o to expand)
+
+● Статистика по raw_companies:
+
+  ┌─────────────────────────────────────────────────────────────┬────────────┐
+  │                           Статус                            │ Количество │
+  ├─────────────────────────────────────────────────────────────┼────────────┤
+  │ Всего записей                                               │ 6880       │
+  ├─────────────────────────────────────────────────────────────┼────────────┤
+  │ Продукты не загружены (products_fetched=0)                  │ 6875       │
+  ├─────────────────────────────────────────────────────────────┼────────────┤
+  │ Продукты загружены (products_fetched=1)                     │ 5          │
+  ├─────────────────────────────────────────────────────────────┼────────────┤
+  │ Ошибки загрузки                                             │ 0          │
+  ├─────────────────────────────────────────────────────────────┼────────────┤
+  │ Не проанализированы (нет ни в companies, ни в               │ 373        │
+  │ rejected_companies)                                         │            │
+  └─────────────────────────────────────────────────────────────┴────────────┘
+
+  Итого 373 записи ещё не прошли анализ (не классифицированы как лиды и не
+  отклонены). Также у 6875 из 6880 записей ещё не загружены продукты
+  (products_fetched=0).
+
+✻ Churned for 1m 33s
+
+❯ не понял, что за продукты?                                                    
+
+● Searched for 4 patterns (ctrl+o to expand)
+
+● Это поле products в raw_companies — список товаров/продукции, которую
+  производит или продаёт компания с export.by.
+
+  При первичном скрейпинге каталога загружается только базовая информация
+  (название, описание, страна). А продукция подгружается отдельно вторым
+  проходом — поэтому есть флаг products_fetched (0 = ещё не загружали, 1 =
+  загружено).
+
+  По сути, из 6880 компаний только у 5 продукция была дозагружена. Но для вашего
+   основного процесса (анализ лидов) это, похоже, не блокирующий фактор —
+  анализируются компании и без продукции. Главная метрика — 373 
+  неанализированных записи.
+
+❯ .export                                                                       
+  ⎿  Interrupted · What should Claude do instead?

@@ -1,0 +1,275 @@
+
+ ▐▛███▜▌   Claude Code v2.1.71
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ Кнопка Stop не работает                                                       
+  ⎿  [Image #1]
+
+● Let me investigate the Stop button functionality across the frontend and
+  backend.
+
+● Searched for 4 patterns, read 3 files (ctrl+o to expand)
+
+● Now let me check the task runner to see how it handles context cancellation.
+
+● Searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● Good - the UI uses runTaskAsync. Now let me check if there's an issue with the
+   process not actually being killed. Let me look at how exec.CommandContext
+  behaves — specifically, the claude CLI is likely spawning child processes.
+
+● Searched for 2 patterns (ctrl+o to expand)
+  ⎿  [Image #2]
+  ⎿  [Image #3]
+
+● Now I can see the error: "execution not running or not found: 
+  15e54e16-0e81-436a-9c13-1be5b9b8446b". The cancel function isn't in the
+  s.cancels map. Let me check all places that start executions.
+
+● Searched for 2 patterns (ctrl+o to expand)
+
+● Found the problem. s.cancels.Store is only called in handleRunTaskAsync (line
+  271). But executions can also be created by:
+  1. handleRunTask (sync, line 156) — no cancel stored
+  2. Pipeline handlers (lines 261, 312) — no cancel stored
+
+  Also, if the server restarts, the in-memory cancels map is lost, leaving
+  executions stuck as "running" in DB forever.
+
+  Let me check the pipeline handlers too.
+
+● Read 2 files (ctrl+o to expand)
+
+● Now I understand the full picture. There are multiple issues:
+
+  1. handleCancelExecution only looks in in-memory s.cancels map — if the server
+   restarts, cancel functions are lost but executions stay "running" in DB
+  2. Only handleRunTaskAsync stores cancel functions — pipeline async runs
+  (handleRunPipelineAsync) never store them
+  3. No startup cleanup for stale "running" executions from previous server
+  instances
+
+  Let me fix all three issues.
+
+● First, fix handleRunPipelineAsync to store the cancel function:
+
+● Update(internal/api/pipelines.go)
+  ⎿  Added 6 lines, removed 1 line
+      316    }
+      317  
+      318    go func() {
+      319 -    ctx := context.Background()                               
+      319 +    ctx, cancel := context.WithCancel(context.Background())   
+      320 +    defer cancel()                                            
+      321 +                                                              
+      322 +    s.cancels.Store(execID, cancel)                           
+      323 +    defer s.cancels.Delete(execID)                            
+      324 +                                                              
+      325      resp := s.runPipeline(ctx, name, execID)
+      326  
+      327      completedAt := time.Now().UTC()
+
+● Now fix handleCancelExecution to fall back to DB update when the cancel
+  function isn't in memory (stale execution from server restart):
+
+● Update(internal/api/tasks.go)
+  ⎿  Added 28 lines, removed 5 lines
+      320  func (s *Server) handleCancelExecution(w http.ResponseWriter, 
+           r *http.Request) {
+      321    id := r.PathValue("id")
+      322  
+      323 -  cancelFn, ok := s.cancels.Load(id)                          
+      324 -  if !ok {                                                    
+      325 -    writeError(w, http.StatusNotFound, "execution not running 
+          -or not found: "+id)                                           
+      323 +  // Try in-memory cancel first (active process).             
+      324 +  if cancelFn, ok := s.cancels.Load(id); ok {                 
+      325 +    cancelFn.(context.CancelFunc)()                           
+      326 +    s.logger.Info("execution cancelled", "id", id)            
+      327 +    writeJSON(w, http.StatusOK, map[string]string{"status": "c
+          +ancelled", "execution_id": id})                               
+      328      return
+      329    }
+      330  
+      329 -  cancelFn.(context.CancelFunc)()                             
+      330 -  s.logger.Info("execution cancelled", "id", id)              
+      331 +  // Fallback: mark stale "running" execution as cancelled in 
+          +DB                                                            
+      332 +  // (e.g. process lost after server restart).                
+      333 +  exec, err := s.store.GetExecution(r.Context(), id)          
+      334 +  if err != nil || exec == nil {                              
+      335 +    writeError(w, http.StatusNotFound, "execution not found: "
+          ++id)                                                          
+      336 +    return                                                    
+      337 +  }                                                           
+      338 +  if exec.Status != "running" {                               
+      339 +    writeError(w, http.StatusConflict, "execution is not runni
+          +ng: "+exec.Status)                                            
+      340 +    return                                                    
+      341 +  }                                                           
+      342 +                                                              
+      343 +  now := time.Now().UTC()                                     
+      344 +  exec.Status = "cancelled"                                   
+      345 +  exec.Error = "cancelled by user (process no longer tracked)"
+      346 +  exec.CompletedAt = &now                                     
+      347 +  if err := s.store.UpdateExecution(r.Context(), exec); err !=
+          + nil {                                                        
+      348 +    s.logger.Error("failed to update cancelled execution", "id
+          +", id, "error", err)                                          
+      349 +    writeError(w, http.StatusInternalServerError, "failed to u
+          +pdate execution")                                             
+      350 +    return                                                    
+      351 +  }                                                           
+      352 +                                                              
+      353 +  s.logger.Info("stale execution marked as cancelled", "id", i
+          +d)                                                            
+      354    writeJSON(w, http.StatusOK, map[string]string{"status": "can
+           celled", "execution_id": id})
+      355  }
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+  ⎿  [Image #4]
+
+● The screenshot confirms the diagnosis — this was a pipeline execution ("step
+  find-leads failed: signal: terminated:") and the cancel handler couldn't find
+  it because handleRunPipelineAsync never stored a cancel function.
+
+  Now let me verify the store has the GetExecution method I'm using in the
+  fallback:
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Good, GetExecution exists. Now let me build and test:
+
+● Bash(make build 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+  ⎿  (timeout 1m)
+
+● Build succeeds. Let me also add startup cleanup for stale "running"
+  executions. Let me check where the server starts:
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now let me check the store interface for a method to clean up stale
+  executions:
+
+● Read 1 file (ctrl+o to expand)
+
+● I can use ListExecutions with Status: "running" to find stale executions. Let
+  me add a cleanup method to the Server and call it on startup:
+
+● Update(internal/api/router.go)
+  ⎿  Added 28 lines, removed 1 line
+      46    bus *events.Bus,
+      47    logger *slog.Logger,
+      48  ) *Server {
+      49 -  return &Server{                                              
+      49 +  s := &Server{                                                
+      50      cfg:         cfg,
+      51      taskRunner:  taskRunner,
+      52      subagentMgr: subagentMgr,
+     ...
+      58      bus:         bus,
+      59      logger:      logger,
+      60    }
+      61 +  s.cleanupStaleExecutions()                                   
+      62 +  return s                                                     
+      63  }
+      64  
+      65 +// cleanupStaleExecutions marks any "running" executions from a
+         + previous server                                               
+      66 +// instance as failed, since their processes are no longer trac
+         +ked.                                                           
+      67 +func (s *Server) cleanupStaleExecutions() {                    
+      68 +  ctx, cancel := context.WithTimeout(context.Background(), 10*t
+         +ime.Second)                                                    
+      69 +  defer cancel()                                               
+      70 +                                                               
+      71 +  execs, err := s.store.ListExecutions(ctx, store.ExecutionFilt
+         +er{Status: "running", Limit: 100})                             
+      72 +  if err != nil {                                              
+      73 +    s.logger.Error("failed to list stale executions", "error", 
+         +err)                                                           
+      74 +    return                                                     
+      75 +  }                                                            
+      76 +                                                               
+      77 +  now := time.Now().UTC()                                      
+      78 +  for i := range execs {                                       
+      79 +    execs[i].Status = "failed"                                 
+      80 +    execs[i].Error = "server restarted while task was running" 
+      81 +    execs[i].CompletedAt = &now                                
+      82 +    if err := s.store.UpdateExecution(ctx, &execs[i]); err != n
+         +il {                                                           
+      83 +      s.logger.Error("failed to clean up stale execution", "id"
+         +, execs[i].ID, "error", err)                                   
+      84 +      continue                                                 
+      85 +    }                                                          
+      86 +    s.logger.Info("cleaned up stale execution", "id", execs[i].
+         +ID, "task", execs[i].TaskName)                                 
+      87 +  }                                                            
+      88 +}                                                              
+      89 +                                                               
+      90  // Handler builds and returns the top-level http.Handler with a
+          ll routes registered.
+      91  // Public routes (auth) are mounted without authentication.
+      92  // All other /api/v1/* routes are wrapped with the auth middlew
+          are.
+
+● Now add the missing imports to router.go:
+
+● Read 1 file (ctrl+o to expand)
+  ⎿  Found 2 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Update(internal/api/router.go)
+  ⎿  Added 1 line
+      1  package api
+      2  
+      3  import (
+      4 +  "context"                                                     
+      5    "io/fs"
+      6    "log/slog"
+      7    "net/http"
+
+● Bash(make build 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Build succeeds. Let me run the tests:
+
+● Bash(make test 2>&1)
+  ⎿  go test ./internal/...
+     ?          github.com/asdmin/claude-ecosystem/internal/api [no test files]
+     ?          github.com/asdmin/claude-ecosystem/internal/auth        [no test
+     … +15 lines (ctrl+o to expand)
+
+
+  ⎿  (timeout 2m)
+
+● All tests pass. Here's a summary of the three fixes:
+
+  Changes made
+
+  1. internal/api/pipelines.go — Store cancel function for async pipeline runs
+  - handleRunPipelineAsync now creates a cancellable context and stores it in
+  s.cancels, matching the pattern already used by handleRunTaskAsync. This was
+  the direct cause of your bug — pipeline executions were never cancellable.
+
+  2. internal/api/tasks.go — Fallback in cancel handler for stale executions
+  - handleCancelExecution now falls back to checking the DB when no in-memory
+  cancel function is found. If the execution is still "running" in DB (e.g.
+  after server restart), it marks it as "cancelled" directly. Previously it just
+   returned 404.
+
+  3. internal/api/router.go — Startup cleanup for stale executions
+  - cleanupStaleExecutions() runs on server startup, finds any executions stuck
+  as "running" in DB (left over from a previous server instance), and marks them
+   as "failed". This prevents ghost "running" entries from accumulating.
+
+  Rebuild the UI-embedded binary with make build and restart the server to apply
+   the fix.
+
+✻ Cogitated for 4m 19s

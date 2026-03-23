@@ -1,0 +1,627 @@
+ ▐▛███▜▌   Claude Code v2.1.76
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+  ↑ Opus now defaults to 1M context · 5x more room, same pricing
+
+❯ Нужно в каждый таск или паплайн добавить флаг, который позволяет либо         
+запрещает запуск (по cron или вручную) если предыдущий запуск еще не завершен,  
+т.е. параллельный запуск одного и того же таск или паплайн.                     
+
+● Explore(Explore task/pipeline config and execution)
+  ⎿  Done (21 tool uses · 76.1k tokens · 1m 14s)
+  (ctrl+o to expand)
+
+● Now let me read the key files I need to modify.
+
+● Read 6 files (ctrl+o to expand)
+
+● Let me also check the main wiring and the store interface.
+
+● Read 1 file (ctrl+o to expand)
+
+● Let me also check the watcher.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I have a complete picture. Let me implement this feature. I'll:
+
+  1. Add AllowConcurrent *bool to Task and Pipeline config structs
+  2. Create a shared runguard package for tracking running tasks/pipelines
+  3. Integrate the guard into scheduler, API handlers, and watcher
+
+● Update(internal/config/task.go)
+  ⎿  Added 1 line
+      30    MaxBudgetUSD       float64       `yaml:"max_budget_usd,omitem
+          pty" json:"max_budget_usd,omitempty"`
+      31    OutputFormat       string        `yaml:"output_format,omitemp
+          ty" json:"output_format,omitempty"`
+      32    PermissionMode     string        `yaml:"permission_mode,omite
+          mpty" json:"permission_mode,omitempty"`
+      33 +  AllowConcurrent    *bool         `yaml:"allow_concurrent,omit
+         +empty" json:"allow_concurrent,omitempty"`                      
+      34    Notify             *NotifyConfig `yaml:"notify,omitempty" jso
+          n:"notify,omitempty"`
+      35  }
+      36  
+
+● Update(internal/config/task.go)
+  ⎿  Added 9 lines
+      62    }
+      63  }
+      64  
+      65 +// ConcurrentAllowed reports whether concurrent runs of this ta
+         +sk are permitted.                                              
+      66 +// Defaults to true when AllowConcurrent is not explicitly set.
+      67 +func (t Task) ConcurrentAllowed() bool {                       
+      68 +  if t.AllowConcurrent == nil {                                
+      69 +    return true                                                
+      70 +  }                                                            
+      71 +  return *t.AllowConcurrent                                    
+      72 +}                                                              
+      73 +                                                               
+      74  // ParsedTimeout returns the task timeout as a time.Duration.
+      75  // Falls back to DefaultTimeout when the field is empty or unpa
+          rseable.
+      76  func (t Task) ParsedTimeout() time.Duration {
+
+● Update(internal/config/pipeline.go)
+  ⎿  Added 2 lines, removed 1 line
+       8    MaxIterations int            `yaml:"max_iterations" json:"max
+          _iterations"`
+       9    StopSignal    string         `yaml:"stop_signal,omitempty" js
+          on:"stop_signal,omitempty"`
+      10    Collector     string         `yaml:"collector,omitempty" json
+          :"collector,omitempty"`
+      11 -  Schedule      string         `yaml:"schedule,omitempty" json:
+         -"schedule,omitempty"`                                          
+      11 +  Schedule        string         `yaml:"schedule,omitempty" jso
+         +n:"schedule,omitempty"`                                        
+      12 +  AllowConcurrent *bool          `yaml:"allow_concurrent,omitem
+         +pty" json:"allow_concurrent,omitempty"`                        
+      13  }
+      14  
+      15  // PipelineStep references a task by name.
+
+● Update(internal/config/pipeline.go)
+  ⎿  Added 9 lines
+      17    Task string `yaml:"task" json:"task"`
+      18  }
+      19  
+      20 +// ConcurrentAllowed reports whether concurrent runs of this pi
+         +peline are permitted.                                          
+      21 +// Defaults to true when AllowConcurrent is not explicitly set.
+      22 +func (p Pipeline) ConcurrentAllowed() bool {                   
+      23 +  if p.AllowConcurrent == nil {                                
+      24 +    return true                                                
+      25 +  }                                                            
+      26 +  return *p.AllowConcurrent                                    
+      27 +}                                                              
+      28 +                                                               
+      29  // MaxIter returns MaxIterations with a default of 10.
+      30  func (p Pipeline) MaxIter() int {
+      31    if p.MaxIterations <= 0 {
+
+● Now create the runguard package:
+
+● Read 1 file (ctrl+o to expand)
+
+● Write(internal/runguard/runguard.go)
+  ⎿  Wrote 34 lines to internal/runguard/runguard.go
+       1 package runguard
+       2 
+       3 import "sync"
+       4 
+       5 // Guard tracks which tasks and pipelines are currently running
+       6 // and prevents concurrent execution when configured.
+       7 type Guard struct {
+       8        mu      sync.Mutex
+       9        running map[string]bool
+      10 }
+     … +24 lines (ctrl+o to expand)
+
+● Now integrate the guard into the scheduler:
+
+● Update(internal/scheduler/scheduler.go)
+  ⎿  Added 1 line
+      11    "github.com/asdmin/claude-ecosystem/internal/domain"
+      12    "github.com/asdmin/claude-ecosystem/internal/events"
+      13    "github.com/asdmin/claude-ecosystem/internal/mcpmanager"
+      14 +  "github.com/asdmin/claude-ecosystem/internal/runguard"       
+      15    "github.com/asdmin/claude-ecosystem/internal/subagent"
+      16    "github.com/asdmin/claude-ecosystem/internal/task"
+      17    "github.com/robfig/cron/v3"
+
+● Update(internal/scheduler/scheduler.go)
+  ⎿  Added 1 line
+      24    mcpMgr    *mcpmanager.Manager
+      25    domainMgr *domain.Manager
+      26    bus       *events.Bus
+      27 +  guard     *runguard.Guard                                    
+      28    logger    *slog.Logger
+      29    ctxMu     sync.RWMutex
+      30    runCtx    context.Context
+
+● Update(internal/scheduler/scheduler.go)
+  ⎿  Added 2 lines, removed 1 line
+      32    paused    map[string]bool
+      33  }
+      34  
+      35 -func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr 
+         -*mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus
+         -, logger *slog.Logger) *Scheduler {                            
+      35 +func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr 
+         +*mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus
+         +, guard *runguard.Guard, logger *slog.Logger) *Scheduler {     
+      36    return &Scheduler{
+      37      cron:      cron.New(),
+      38      runner:    runner,
+     ...
+      40      mcpMgr:    mcpMgr,
+      41      domainMgr: domainMgr,
+      42      bus:       bus,
+      43 +    guard:     guard,                                          
+      44      logger:    logger,
+      45      runCtx:    context.Background(),
+      46      paused:    make(map[string]bool),
+
+● Now add the guard check in the scheduler's Register function for tasks:
+
+● Update(internal/scheduler/scheduler.go)
+  ⎿  Added 8 lines
+      58        return
+      59      }
+      60  
+      61 +    if !t.ConcurrentAllowed() {                                
+      62 +      if !s.guard.TryAcquire("task:" + t.Name) {               
+      63 +        s.logger.Info("scheduled task is already running, skipp
+         +ing", "task", t.Name)                                          
+      64 +        return                                                 
+      65 +      }                                                        
+      66 +      defer s.guard.Release("task:" + t.Name)                  
+      67 +    }                                                          
+      68 +                                                               
+      69      s.logger.Info("scheduled task starting", "task", t.Name)
+      70  
+      71      s.ctxMu.RLock()
+
+● Now add the guard check for pipelines in the scheduler:
+
+● Update(internal/scheduler/scheduler.go)
+  ⎿  Added 8 lines
+      127        return
+      128      }
+      129  
+      130 +    if !p.ConcurrentAllowed() {                               
+      131 +      if !s.guard.TryAcquire("pipeline:" + p.Name) {          
+      132 +        s.logger.Info("scheduled pipeline is already running, 
+          +skipping", "pipeline", p.Name)                                
+      133 +        return                                                
+      134 +      }                                                       
+      135 +      defer s.guard.Release("pipeline:" + p.Name)             
+      136 +    }                                                         
+      137 +                                                              
+      138      s.logger.Info("scheduled pipeline starting", "pipeline", p
+           .Name)
+      139  
+      140      s.ctxMu.RLock()
+
+● Now integrate the guard into the API server. First, update the Server struct
+  and constructor:
+
+● Update(internal/api/router.go)
+  ⎿  Added 1 line
+      14    "github.com/asdmin/claude-ecosystem/internal/domain"
+      15    "github.com/asdmin/claude-ecosystem/internal/events"
+      16    "github.com/asdmin/claude-ecosystem/internal/mcpmanager"
+      17 +  "github.com/asdmin/claude-ecosystem/internal/runguard"       
+      18    "github.com/asdmin/claude-ecosystem/internal/store"
+      19    "github.com/asdmin/claude-ecosystem/internal/subagent"
+      20    "github.com/asdmin/claude-ecosystem/internal/task"
+
+● Update(internal/api/router.go)
+  ⎿  Added 1 line
+      36    bus         *events.Bus
+      37    logger      *slog.Logger
+      38    cancels     sync.Map // map[executionID]context.CancelFunc
+      39 +  guard       *runguard.Guard                                  
+      40    wizardGen   *wizard.Generator
+      41    wizardStore *wizard.PlanStore
+      42  }
+
+● Update(internal/api/router.go)
+  ⎿  Added 2 lines
+      53    authMw *auth.Middleware,
+      54    paseto *auth.PASETOManager,
+      55    bus *events.Bus,
+      56 +  guard *runguard.Guard,                                       
+      57    logger *slog.Logger,
+      58  ) *Server {
+      59    s := &Server{
+     ...
+      67      authMw:      authMw,
+      68      paseto:      paseto,
+      69      bus:         bus,
+      70 +    guard:       guard,                                        
+      71      logger:      logger,
+      72    }
+      73    s.wizardGen = wizard.NewGenerator(taskRunner, logger)
+
+● Now add the guard checks in API task handlers. For handleRunTask:
+
+● Update(internal/api/tasks.go)
+  ⎿  Added 8 lines
+      138      return
+      139    }
+      140  
+      141 +  if !t.ConcurrentAllowed() {                                 
+      142 +    if !s.guard.TryAcquire("task:" + t.Name) {                
+      143 +      writeError(w, http.StatusConflict, "task is already runn
+          +ing: "+t.Name)                                                
+      144 +      return                                                  
+      145 +    }                                                         
+      146 +    defer s.guard.Release("task:" + t.Name)                   
+      147 +  }                                                           
+      148 +                                                              
+      149    var req runTaskRequest
+      150    // Body is optional; ignore decode errors for empty bodies.
+      151    _ = readJSON(r, &req)
+
+● Now for handleRunTaskAsync:
+
+● Update(internal/api/tasks.go)
+  ⎿  Added 10 lines
+      245      return
+      246    }
+      247  
+      248 +  if !t.ConcurrentAllowed() {                                 
+      249 +    if !s.guard.TryAcquire("task:" + t.Name) {                
+      250 +      writeError(w, http.StatusConflict, "task is already runn
+          +ing: "+t.Name)                                                
+      251 +      return                                                  
+      252 +    }                                                         
+      253 +  }                                                           
+      254 +                                                              
+      255    var req runTaskRequest
+      256    _ = readJSON(r, &req)
+      257  
+     ...
+      268    }
+      269    if err := s.store.CreateExecution(r.Context(), exec); err !=
+            nil {
+      270      s.logger.Error("failed to create execution record", "error
+           ", err)
+      271 +    if !t.ConcurrentAllowed() {                               
+      272 +      s.guard.Release("task:" + t.Name)                       
+      273 +    }                                                         
+      274      writeError(w, http.StatusInternalServerError, "failed to c
+           reate execution record")
+      275      return
+      276    }
+
+● Now I need to add the guard release in the async goroutine and handle early
+  returns for resolve error. Let me read the current state of the async handler:
+
+● Read 1 file (ctrl+o to expand)
+
+● I need to add guard release on the resolve error path and in the goroutine
+  completion:
+
+● Update(internal/api/tasks.go)
+  ⎿  Added 3 lines
+      279    asyncOpts, asyncCleanup, asyncResolveErr := task.ResolveRunO
+           ptions(*t, s.subagentMgr, s.mcpMgr, s.domainMgr)
+      280    if asyncResolveErr != nil {
+      281      s.logger.Error("failed to resolve run options", "task", t.
+           Name, "error", asyncResolveErr)
+      282 +    if !t.ConcurrentAllowed() {                               
+      283 +      s.guard.Release("task:" + t.Name)                       
+      284 +    }                                                         
+      285      writeError(w, http.StatusInternalServerError, "failed to r
+           esolve run options: "+asyncResolveErr.Error())
+      286      return
+      287    }
+
+● Now add the guard release in the async goroutine:
+
+● Update(internal/api/tasks.go)
+  ⎿  Added 3 lines
+      298    taskCopy := *t
+      299    templateVars := req.TemplateVars
+      300    go func() {
+      301 +    if !taskCopy.ConcurrentAllowed() {                        
+      302 +      defer s.guard.Release("task:" + taskCopy.Name)          
+      303 +    }                                                         
+      304      if asyncCleanup != nil {
+      305        defer asyncCleanup()
+      306      }
+
+● Now add the guard checks for pipeline handlers in pipelines.go:
+
+● Update(internal/api/pipelines.go)
+  ⎿  Added 8 lines
+      270      return
+      271    }
+      272  
+      273 +  if !p.ConcurrentAllowed() {                                 
+      274 +    if !s.guard.TryAcquire("pipeline:" + p.Name) {            
+      275 +      writeError(w, http.StatusConflict, "pipeline is already 
+          +running: "+p.Name)                                            
+      276 +      return                                                  
+      277 +    }                                                         
+      278 +    defer s.guard.Release("pipeline:" + p.Name)               
+      279 +  }                                                           
+      280 +                                                              
+      281    execID := uuid.New().String()
+      282    now := time.Now().UTC()
+      283  
+
+● Now for handleRunPipelineAsync:
+
+● Update(internal/api/pipelines.go)
+  ⎿  Added 15 lines
+      337      return
+      338    }
+      339  
+      340 +  if !p.ConcurrentAllowed() {                                 
+      341 +    if !s.guard.TryAcquire("pipeline:" + p.Name) {            
+      342 +      writeError(w, http.StatusConflict, "pipeline is already 
+          +running: "+p.Name)                                            
+      343 +      return                                                  
+      344 +    }                                                         
+      345 +  }                                                           
+      346 +                                                              
+      347    execID := uuid.New().String()
+      348    now := time.Now().UTC()
+      349  
+     ...
+      356    }
+      357    if err := s.store.CreateExecution(r.Context(), exec); err !=
+            nil {
+      358      s.logger.Error("failed to create pipeline execution record
+           ", "error", err)
+      359 +    if !p.ConcurrentAllowed() {                               
+      360 +      s.guard.Release("pipeline:" + p.Name)                   
+      361 +    }                                                         
+      362      writeError(w, http.StatusInternalServerError, "failed to c
+           reate execution record")
+      363      return
+      364    }
+     ...
+      371      },
+      372    })
+      373  
+      374 +  pipelineName := p.Name                                      
+      375 +  concurrentAllowed := p.ConcurrentAllowed()                  
+      376    go func() {
+      377 +    if !concurrentAllowed {                                   
+      378 +      defer s.guard.Release("pipeline:" + pipelineName)       
+      379 +    }                                                         
+      380      ctx, cancel := context.WithCancel(context.Background())
+      381      defer cancel()
+      382  
+
+● Now for RunPipelineByName (used by scheduler for pipeline runs):
+
+● Update(internal/api/pipelines.go)
+  ⎿  Added 10 lines, removed 2 lines
+      412    })
+      413  }
+      414  
+      415 -// RunPipelineByName runs a pipeline asynchronously with the g
+          -iven trigger label.                                           
+      416 -// It creates the execution record, publishes events, and runs
+          - in a goroutine.                                              
+      415 +// RunPipelineByName runs a pipeline with the given trigger la
+          +bel.                                                          
+      416 +// It creates the execution record, publishes events, and runs
+          + synchronously.                                               
+      417  func (s *Server) RunPipelineByName(ctx context.Context, name s
+           tring, trigger string) {
+      418    p := s.findPipeline(name)
+      419    if p == nil {
+     ...
+      421      return
+      422    }
+      423  
+      424 +  if !p.ConcurrentAllowed() {                                 
+      425 +    if !s.guard.TryAcquire("pipeline:" + p.Name) {            
+      426 +      s.logger.Info("pipeline is already running, skipping", "
+          +pipeline", p.Name, "trigger", trigger)                        
+      427 +      return                                                  
+      428 +    }                                                         
+      429 +    defer s.guard.Release("pipeline:" + p.Name)               
+      430 +  }                                                           
+      431 +                                                              
+      432    execID := uuid.New().String()
+      433    now := time.Now().UTC()
+      434  
+
+● Now update the watcher to use the guard:
+
+● Update(internal/watcher/watcher.go)
+  ⎿  Added 1 line
+      12    "github.com/asdmin/claude-ecosystem/internal/domain"
+      13    "github.com/asdmin/claude-ecosystem/internal/events"
+      14    "github.com/asdmin/claude-ecosystem/internal/mcpmanager"
+      15 +  "github.com/asdmin/claude-ecosystem/internal/runguard"       
+      16    "github.com/asdmin/claude-ecosystem/internal/subagent"
+      17    "github.com/asdmin/claude-ecosystem/internal/task"
+      18    "github.com/fsnotify/fsnotify"
+
+● Update(internal/watcher/watcher.go)
+  ⎿  Added 1 line
+      27    mcpMgr    *mcpmanager.Manager
+      28    domainMgr *domain.Manager
+      29    bus       *events.Bus
+      30 +  guard     *runguard.Guard                                    
+      31    logger    *slog.Logger
+      32    mu        sync.RWMutex
+      33    tasks     []config.Task
+
+● Update(internal/watcher/watcher.go)
+  ⎿  Added 2 lines, removed 1 line
+      35    wg        sync.WaitGroup // tracks in-flight task goroutines
+      36  }
+      37  
+      38 -func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr 
+         -*mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus
+         -, logger *slog.Logger) (*Watcher, error) {                     
+      38 +func New(runner *task.Runner, subMgr *subagent.Manager, mcpMgr 
+         +*mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus
+         +, guard *runguard.Guard, logger *slog.Logger) (*Watcher, error)
+         + {                                                             
+      39    fsw, err := fsnotify.NewWatcher()
+      40    if err != nil {
+      41      return nil, err
+     ...
+      47      mcpMgr:    mcpMgr,
+      48      domainMgr: domainMgr,
+      49      bus:       bus,
+      50 +    guard:     guard,                                          
+      51      logger:    logger,
+      52      sem:       make(chan struct{}, maxConcurrentTasks),
+      53    }, nil
+
+● Now add the guard check in the watcher's task goroutine:
+
+● Update(internal/watcher/watcher.go)
+  ⎿  Added 13 lines
+      121  
+      122          w.logger.Info("file change detected, running task", "t
+           ask", t.Name, "file", event.Name)
+      123  
+      124 +        if !t.ConcurrentAllowed() {                           
+      125 +          if !w.guard.TryAcquire("task:" + t.Name) {          
+      126 +            w.logger.Info("watched task is already running, sk
+          +ipping", "task", t.Name)                                      
+      127 +            continue                                          
+      128 +          }                                                   
+      129 +        }                                                     
+      130 +                                                              
+      131          // Acquire semaphore to limit concurrency
+      132          select {
+      133          case w.sem <- struct{}{}:
+      134          case <-ctx.Done():
+      135 +          if !t.ConcurrentAllowed() {                         
+      136 +            w.guard.Release("task:" + t.Name)                 
+      137 +          }                                                   
+      138            return
+      139          }
+      140  
+     ...
+      142          go func(t config.Task, file string) {
+      143            defer w.wg.Done()
+      144            defer func() { <-w.sem }()
+      145 +          if !t.ConcurrentAllowed() {                         
+      146 +            defer w.guard.Release("task:" + t.Name)           
+      147 +          }                                                   
+      148  
+      149            opts, cleanup, err := task.ResolveRunOptions(t, w.su
+           bMgr, w.mcpMgr, w.domainMgr)
+      150            if err != nil {
+
+● Now update cmd/server/main.go to create and pass the guard:
+
+● Update(cmd/server/main.go)
+  ⎿  Added 1 line
+      22    "github.com/asdmin/claude-ecosystem/internal/mcpmanager"
+      23    "github.com/asdmin/claude-ecosystem/internal/notify"
+      24    "github.com/asdmin/claude-ecosystem/internal/pipeline"
+      25 +  "github.com/asdmin/claude-ecosystem/internal/runguard"       
+      26    "github.com/asdmin/claude-ecosystem/internal/scheduler"
+      27    "github.com/asdmin/claude-ecosystem/internal/store"
+      28    "github.com/asdmin/claude-ecosystem/internal/store/sqlite"
+
+● Now add the guard creation and pass it to the components. I need to add it
+  before the scheduler and watcher creation:
+
+● Update(cmd/server/main.go)
+  ⎿  Added 5 lines, removed 2 lines
+      186    bearerAuth := auth.NewBearerAuth(cfg.Auth.BearerTokens)
+      187    authMw := auth.NewMiddleware(pasetoMgr, bearerAuth)
+      188  
+      189 +  // Initialize concurrency guard (shared across scheduler, wa
+          +tcher, and API)                                               
+      190 +  guard := runguard.New()                                     
+      191 +                                                              
+      192    // Initialize scheduler and watcher
+      190 -  sched := scheduler.New(taskRunner, subagentMgr, mcpMgr, doma
+          -inMgr, bus, logger)                                           
+      191 -  w, err := watcher.New(taskRunner, subagentMgr, mcpMgr, domai
+          -nMgr, bus, logger)                                            
+      193 +  sched := scheduler.New(taskRunner, subagentMgr, mcpMgr, doma
+          +inMgr, bus, guard, logger)                                    
+      194 +  w, err := watcher.New(taskRunner, subagentMgr, mcpMgr, domai
+          +nMgr, bus, guard, logger)                                     
+      195    if err != nil {
+      196      logger.Error("failed to create watcher", "error", err)
+      197      os.Exit(1)
+
+● Update(cmd/server/main.go)
+  ⎿  Added 1 line, removed 1 line
+      215    apiServer := api.NewServer(
+      216      cfg, taskRunner, subagentMgr, mcpMgr, domainMgr,
+      217      db, db, authMw, pasetoMgr,
+      218 -    bus, logger,                                              
+      218 +    bus, guard, logger,                                       
+      219    )
+      220  
+      221    // Register pipeline schedules (needs apiServer for executio
+           n logic)
+
+● Now let's build to check for compilation errors:
+
+● Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+● Builds cleanly. Let's run the tests:
+
+● Bash(make test 2>&1)
+  ⎿  go test ./internal/...
+     ?          github.com/asdmin/claude-ecosystem/internal/api [no test files]
+     ?          github.com/asdmin/claude-ecosystem/internal/auth        [no test
+     … +15 lines (ctrl+o to expand)
+
+
+
+● All builds and tests pass. Here's a summary of the changes:
+
+  What was added
+
+  New field allow_concurrent on both Task and Pipeline config structs (*bool,
+  defaults to true if omitted for backward compatibility).
+
+  New package internal/runguard/ — a simple mutex-based guard that tracks which
+  tasks/pipelines are currently running. Shared across all execution paths (API,
+   scheduler, watcher).
+
+  How it works
+
+  When allow_concurrent: false is set on a task or pipeline:
+  - Scheduler (cron): skips the run with a log message if already running
+  - API (manual /run and /run-async): returns 409 Conflict with "task/pipeline 
+  is already running"
+  - Watcher (file change): skips the run with a log message if already running
+  - RunPipelineByName (scheduler pipeline callback): skips with a log message
+
+  The guard uses a "task:<name>" / "pipeline:<name>" key namespace to avoid
+  collisions between tasks and pipelines with the same name.
+
+  Usage in tasks.yaml
+
+  tasks:
+    - name: long-running-task
+      prompt: "..."
+      allow_concurrent: false   # prevent parallel runs
+      schedule: "*/5 * * * *"
+
+  pipelines:
+    - name: daily-pipeline
+      allow_concurrent: false   # prevent parallel runs
+      schedule: "0 9 * * *"
+      steps:
+        - task: step-one
+        - task: step-two
+
+✻ Churned for 7m 8s

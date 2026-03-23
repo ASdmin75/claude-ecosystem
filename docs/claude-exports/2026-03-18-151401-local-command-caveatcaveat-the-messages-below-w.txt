@@ -1,0 +1,479 @@
+ ▐▛███▜▌   Claude Code v2.1.78
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ Очень странный результат, что то скорее всего не так с пайплайном.            
+  ⎿  [Image #2]
+  ⎿  [Image #3]
+
+● Вижу — пайплайн завершился, но БД пустая (0 записей). Агент-исследователь был
+  прерван из-за лимита бюджета ($2.00). Давайте разберёмся в конфигурации.
+
+● Explore(Explore vet-manufacturers pipeline)
+  ⎿  Done (44 tool uses · 56.7k tokens · 2m 33s)
+  (ctrl+o to expand)
+
+● Анализ проблемы
+
+  Корневая причина: задача research-vet-manufacturers имеет max_budget_usd: 2 —
+  этого недостаточно для полноценного исследования. Агент исчерпал бюджет до
+  того, как успел вставить данные в БД.
+
+  Структура пайплайна (3 шага):
+
+  1. research-vet-manufacturers — исследует и заполняет БД (бюджет $2,
+  max_turns: 40)
+  2. compile-vet-manufacturers-excel — генерирует Excel из БД
+  3. deliver-vet-manufacturers-report — отправляет в Telegram
+
+  Почему 0 результатов:
+
+  - Агент-исследователь использует WebSearch/WebFetch для обхода 7+ источников
+  (vetnauka.by, belgosvet.by, egr.gov.by и т.д.)
+  - При модели Sonnet $2.00 кончаются за ~6 минут, до завершения сбора данных
+  - Агент не успел выполнить INSERT в БД до прерывания
+
+  Рекомендации:
+
+  1. Увеличить бюджет до $5-10 для задачи research-vet-manufacturers
+  2. Уменьшить max_turns с 40 до 20-25 для фокусировки
+  3. Приоритизировать источники — сначала официальные реестры, потом торговые
+  базы
+  4. Добавить промежуточное сохранение — вставлять данные по мере нахождения, а
+  не в конце
+
+  Хотите, чтобы я внёс изменения в конфигурацию? Например, увеличить бюджет и
+  оптимизировать промпт агента-исследователя?
+
+✻ Crunched for 2m 25s
+
+❯ да                                                                            
+
+● Давайте посмотрим текущую конфигурацию и агента.
+
+● Read 3 files (ctrl+o to expand)
+
+● Теперь вношу изменения. Ключевые правки:
+
+  1. Бюджет: $2 → $8
+  2. max_turns: 40 → 25 (фокусировка)
+  3. Промпт задачи: инструкция сохранять данные по мере нахождения
+  4. Агент-исследователь: приоритизация источников + промежуточное сохранение
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line, removed 1 line
+      220        permission_mode: bypassPermissions
+      221      - name: research-vet-manufacturers
+      222        domain: vet-manufacturers-belarus
+      223 -      prompt: "Дата исследования: {{.Date}}\n\nПроведи комплек
+          -сное исследование всех производителей ветеринарных препаратов 
+          -в Республике Беларусь. \n\nЗадачи:\n1. Найди полный актуальный
+          - список производителей ветеринарных препаратов, зарегистрирова
+          -нных или работающих в РБ\n2. Для каждого производителя определ
+          -и:\n   - Экспортирует ли продукцию за пределы РБ\n   - Использ
+          -ует ли авиатранспорт для экспорта\n   - Страны назначения\n3. 
+          -Сохрани все данные в базу данных через инструменты database\n4
+          -. Создай запись в таблице sync_log с результатами\n\nОсобо выд
+          -ели производителей, использующих авиатранспорт — это приоритет
+          -ная информация.\n\nПо завершении выведи структурированный отчё
+          -т:\n- Всего производителей найдено\n- Новых добавлено / обновл
+          -ено\n- Список экспортёров\n- Список авиаэкспортёров (с маршрут
+          -ами если известны)"                                           
+      223 +      prompt: "Дата исследования: {{.Date}}\n\nПроведи исследо
+          +вание производителей ветеринарных препаратов в Республике Бела
+          +русь.\n\nВАЖНО — стратегия работы:\n- Сохраняй каждого найденн
+          +ого производителя в БД СРАЗУ после нахождения (не накапливай)\
+          +n- Используй check_exists перед insert чтобы избежать дубликат
+          +ов\n- Начни с официальных реестров (Госреестр ветпрепаратов РБ
+          +), затем расширяй поиск\n- Если бюджет заканчивается — данные 
+          +уже будут в БД\n\nЗадачи:\n1. Найди производителей ветеринарны
+          +х препаратов РБ через поиск и официальные источники\n2. Для ка
+          +ждого определи: экспорт, авиатранспорт, страны назначения\n3. 
+          +СРАЗУ сохраняй в БД через mcp__database__insert\n4. В конце со
+          +здай запись в sync_log\n\nПо завершении выведи:\n- Всего произ
+          +водителей найдено и добавлено\n- Список экспортёров\n- Список 
+          +авиаэкспортёров"                                              
+      224        work_dir: .
+      225        schedule: 0 8 * * 1
+      226        tags:
+
+● Update(tasks.yaml)
+  ⎿  Added 2 lines, removed 2 lines
+      242          - mcp__database__check_exists
+      243          - mcp__database__list_tables
+      244          - mcp__database__describe_table
+      245 -      max_turns: 40                                           
+      246 -      max_budget_usd: 2                                       
+      245 +      max_turns: 25                                           
+      246 +      max_budget_usd: 8                                       
+      247        permission_mode: dontAsk
+      248      - name: compile-vet-manufacturers-excel
+      249        domain: vet-manufacturers-belarus
+
+● Write(.claude/agents/vet-manufacturers-researcher.md)
+  ⎿  Added 29 lines, removed 19 lines
+      15  You are a specialized research agent for finding veterinary dru
+          g manufacturers in Belarus.
+      16  
+      17  ## Your Mission
+      18 -Find ALL manufacturers of veterinary drugs and biologics regist
+         -ered or operating in Belarus. For each manufacturer:           
+      19 -1. Verify it is a real, active company                         
+      20 -2. Determine if it exports products outside Belarus            
+      21 -3. Specifically flag companies that use AIR TRANSPORT for expor
+         -t                                                              
+      22 -4. Identify destination countries                              
+      18 +Find ALL manufacturers of veterinary drugs and biologics regist
+         +ered or operating in Belarus.                                  
+      19  
+      24 -## Sources to Search                                           
+      25 -- Departament veterinarnogo i prodovol'stvennogo nadzora RB (ve
+         -tnauka.by, belgosvet.by)                                       
+      26 -- Gosudarstvennyy reestr veterinarnykh preparatov RB           
+      27 -- Belarusian Chamber of Commerce (cci.by)                      
+      28 -- Export portal of Belarus (export.by)                         
+      29 -- Trade databases: Panjiva, ImportGenius for air freight manife
+         -sts                                                            
+      30 -- Company registries: portal.nalog.gov.by, egr.gov.by          
+      31 -- Search queries in Russian: "производитель ветеринарных препар
+         -атов Беларусь", "ветеринарные препараты экспорт РБ авиа"       
+      32 -- IATA cargo databases for Minsk National Airport (MSQ) freight
+      20 +## CRITICAL: Save Data Incrementally                           
+      21 +**Save each manufacturer to the database IMMEDIATELY after find
+         +ing it.** Do NOT collect all data first and save later — budget
+         + may run out. Use this workflow for each manufacturer:         
+      22 +1. Find manufacturer info                                      
+      23 +2. `check_exists` by name                                      
+      24 +3. If new → `insert` immediately                               
+      25 +4. Move to next manufacturer                                   
+      26  
+      27 +## Search Strategy (in priority order)                         
+      28 +                                                               
+      29 +### Phase 1 — Official registries (START HERE)                 
+      30 +1. WebSearch: "Государственный реестр ветеринарных препаратов Р
+         +еспублики Беларусь"                                            
+      31 +2. WebSearch: "производители ветеринарных препаратов Беларусь с
+         +писок"                                                         
+      32 +3. WebFetch official registry pages (vetnauka.by, belgosvet.by)
+      33 +                                                               
+      34 +### Phase 2 — Company registries                               
+      35 +4. WebSearch: "производство ветеринарных препаратов Беларусь si
+         +te:egr.gov.by"                                                 
+      36 +5. WebSearch on cci.by, export.by                              
+      37 +                                                               
+      38 +### Phase 3 — Export & air transport (if budget remains)       
+      39 +6. WebSearch: "ветеринарные препараты экспорт РБ авиа"         
+      40 +7. WebSearch: "Belarus veterinary export air freight"          
+      41 +8. Trade databases: Panjiva, ImportGenius for air freight manif
+         +ests                                                           
+      42 +9. IATA cargo databases for Minsk National Airport (MSQ) freigh
+         +t                                                              
+      43 +                                                               
+      44  ## Data to Collect Per Manufacturer
+      45  - Company name (as registered)
+      46  - Legal name if different
+      47  - Address and city
+      48  - Website, phone, email
+      49  - License number and issuing authority
+      40 -- Whether they export abroad (boolean)                         
+      41 -- Whether they use air transport for export (boolean)          
+      50 +- Whether they export abroad (boolean: 0 or 1)                 
+      51 +- Whether they use air transport for export (boolean: 0 or 1)  
+      52  - Export destination countries (comma-separated)
+      53  - Air export notes (routes, freight forwarders, commodities)
+      54  - Product categories (vaccines, antibiotics, antiparasitics, et
+          c.)
+      55  - Source URL
+      56  
+      57  ## Database Operations
+      48 -Use mcp__database__check_exists before inserting to avoid dupli
+         -cates.                                                         
+      49 -Use mcp__database__execute to INSERT or UPDATE records.        
+      50 -After all research, insert a record into sync_log with counts o
+         -f added/updated records.                                       
+      58 +- `check_exists`: check by `name` field before every insert    
+      59 +- `insert`: save immediately after finding each company        
+      60 +- After all research, insert a record into `sync_log` with coun
+         +ts                                                             
+      61  
+      62  ## Output
+      63  Return a structured summary: total found, new additions, update
+          s, and a highlighted list of air exporters.
+
+● Готово. Внесённые изменения:
+
+  tasks.yaml — задача research-vet-manufacturers:
+
+  - Бюджет: $2 → $8 (×4, достаточно для полного исследования)
+  - max_turns: 40 → 25 (меньше витков = более фокусированная работа)
+  - Промпт: добавлена инструкция сохранять каждого производителя сразу после
+  нахождения, а не накапливать
+
+  Агент vet-manufacturers-researcher.md:
+
+  - Добавлена секция "CRITICAL: Save Data Incrementally" — агент обязан делать
+  INSERT сразу
+  - Приоритизированная стратегия поиска в 3 фазы:
+    a. Официальные реестры (самое ценное)
+    b. Реестры компаний
+    c. Экспорт и авиатранспорт (если остался бюджет)
+  - Чёткий workflow: найти → check_exists → insert → следующий
+
+  Главная идея: даже если бюджет закончится на фазе 2, данные из фазы 1 уже
+  будут в БД и попадут в отчёт. Можете запустить пайплайн для проверки.
+
+✻ Crunched for 54s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/asdmin/development/AI/Claude/claude-ecosyst
+     em/2026-03-18-124923-local-command-caveatcaveat-the-messages-below-w.txt
+
+❯ Как при повторном запуске пайплайна избежать повторного анализа уже           
+обработанных лидов?                                                             
+
+● Сейчас check_exists предотвращает дубликаты в БД, но агент всё равно тратит 
+  бюджет на повторный поиск тех же компаний. Нужно чтобы агент первым делом
+  читал текущее состояние БД и пропускал известных.
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line, removed 1 line
+      220        permission_mode: bypassPermissions
+      221      - name: research-vet-manufacturers
+      222        domain: vet-manufacturers-belarus
+      223 -      prompt: "Дата исследования: {{.Date}}\n\nПроведи исследо
+          -вание производителей ветеринарных препаратов в Республике Бела
+          -русь.\n\nВАЖНО — стратегия работы:\n- Сохраняй каждого найденн
+          -ого производителя в БД СРАЗУ после нахождения (не накапливай)\
+          -n- Используй check_exists перед insert чтобы избежать дубликат
+          -ов\n- Начни с официальных реестров (Госреестр ветпрепаратов РБ
+          -), затем расширяй поиск\n- Если бюджет заканчивается — данные 
+          -уже будут в БД\n\nЗадачи:\n1. Найди производителей ветеринарны
+          -х препаратов РБ через поиск и официальные источники\n2. Для ка
+          -ждого определи: экспорт, авиатранспорт, страны назначения\n3. 
+          -СРАЗУ сохраняй в БД через mcp__database__insert\n4. В конце со
+          -здай запись в sync_log\n\nПо завершении выведи:\n- Всего произ
+          -водителей найдено и добавлено\n- Список экспортёров\n- Список 
+          -авиаэкспортёров"                                              
+      223 +      prompt: "Дата исследования: {{.Date}}\n\nПроведи исследо
+          +вание производителей ветеринарных препаратов в Республике Бела
+          +русь.\n\nШАГ 0 — Загрузи текущее состояние БД:\nВыполни SELECT
+          + name, updated_at FROM manufacturers ORDER BY name — это списо
+          +к УЖЕ известных производителей. НЕ ТРАТЬ бюджет на их повторны
+          +й поиск. Фокусируйся на поиске НОВЫХ компаний, которых ещё нет
+          + в БД.\n\nСтратегия работы:\n- Сохраняй каждого НОВОГО произво
+          +дителя в БД СРАЗУ после нахождения\n- Используй check_exists п
+          +еред insert чтобы избежать дубликатов\n- Начни с официальных р
+          +еестров (Госреестр ветпрепаратов РБ), затем расширяй поиск\n- 
+          +Если бюджет заканчивается — данные уже будут в БД\n- Для уже с
+          +уществующих записей: обновляй ТОЛЬКО если нашёл новую информац
+          +ию (экспорт, авиа)\n\nЗадачи:\n1. Загрузи список существующих 
+          +производителей из БД (ШАГ 0)\n2. Найди НОВЫХ производителей че
+          +рез поиск и официальные источники\n3. Для каждого нового опред
+          +ели: экспорт, авиатранспорт, страны назначения\n4. СРАЗУ сохра
+          +няй в БД через mcp__database__insert\n5. Обнови существующие з
+          +аписи если нашлась новая информация об экспорте\n6. В конце со
+          +здай запись в sync_log\n\nПо завершении выведи:\n- Всего в БД 
+          +(старых + новых)\n- Новых добавлено / обновлено\n- Список эксп
+          +ортёров\n- Список авиаэкспортёров"                            
+      224        work_dir: .
+      225        schedule: 0 8 * * 1
+      226        tags:
+
+● Теперь обновлю агента с той же логикой:
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(.claude/agents/vet-manufacturers-researcher.md)
+  ⎿  Added 8 lines, removed 3 lines
+      15  You are a specialized research agent for finding veterinary dru
+          g manufacturers in Belarus.
+      16  
+      17  ## Your Mission
+      18 -Find ALL manufacturers of veterinary drugs and biologics regist
+         -ered or operating in Belarus.                                  
+      18 +Find NEW manufacturers of veterinary drugs and biologics in Bel
+         +arus that are not yet in the database.                         
+      19  
+      20 +## STEP 0 — Load Existing Data (ALWAYS DO FIRST)               
+      21 +Run: `SELECT name, updated_at FROM manufacturers ORDER BY name`
+      22 +This gives you the list of already known manufacturers. **Do NO
+         +T waste budget re-searching these.** Focus on finding companies
+         + NOT in this list.                                             
+      23 +                                                               
+      24  ## CRITICAL: Save Data Incrementally
+      21 -**Save each manufacturer to the database IMMEDIATELY after find
+         -ing it.** Do NOT collect all data first and save later — budget
+         - may run out. Use this workflow for each manufacturer:         
+      25 +**Save each NEW manufacturer to the database IMMEDIATELY after 
+         +finding it.** Do NOT collect all data first and save later — bu
+         +dget may run out. Workflow:                                    
+      26  1. Find manufacturer info
+      27  2. `check_exists` by name
+      28  3. If new → `insert` immediately
+      25 -4. Move to next manufacturer                                   
+      29 +4. If exists but you found new export/air info → `execute` UPDA
+         +TE                                                             
+      30 +5. Move to next manufacturer                                   
+      31  
+      32  ## Search Strategy (in priority order)
+      33  
+
+● Готово. Теперь при повторном запуске:
+
+  1. Шаг 0 — агент делает SELECT name FROM manufacturers и получает список уже
+  известных компаний
+  2. Поиск — фокусируется только на новых производителях, которых нет в БД
+  3. Обновление — для существующих записей обновляет только если нашёл новую 
+  информацию (экспорт, авиа)
+  4. sync_log — фиксирует отдельно: сколько добавлено, сколько обновлено
+
+  Это значительно экономит бюджет при повторных запусках — вместо полного
+  переисследования агент ищет только дельту.
+
+✻ Churned for 1m 1s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/asdmin/development/AI/Claude/claude-ecosyst
+     em/2026-03-18-130627-local-command-caveatcaveat-the-messages-below-w.txt
+
+❯ При последующих запусках пайплайна желательно, чтобы выгружались только новые 
+ лиды, дайденные в данном сеансе, а не все подряд.                              
+
+● Хорошая идея. Использую поле first_seen — новые записи получат сегодняшнюю
+  дату, а Excel/Telegram будут фильтровать по ней.
+
+● Read 1 file (ctrl+o to expand)
+
+● Теперь обновлю все три задачи — research (чтобы ставил first_seen = дату
+  запуска), excel (фильтр по новым), deliver (акцент на новых):
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line, removed 1 line
+      247        permission_mode: dontAsk
+      248      - name: compile-vet-manufacturers-excel
+      249        domain: vet-manufacturers-belarus
+      250 -      prompt: "Сформируй Excel-отчёт по производителям ветерин
+          -арных препаратов Беларуси на {{.Date}}.\n\nИсходные данные — п
+          -редыдущий вывод:\n{{.PrevOutput}}\n\nСтруктура отчёта (3 листа
+          -):\n\n**Лист 1 — Все производители**\nКолонки: Название | Юр. 
+          -название | Адрес | Город | Сайт | Телефон | Email | № лицензии
+          - | Экспорт | Авиаэкспорт | Страны экспорта | Категории продукт
+          -ов | Обновлено\n\n**Лист 2 — Экспортёры**\nТолько компании с e
+          -xports_abroad=1. Те же колонки + выделить авиаэкспортёров цвет
+          -ом.\n\n**Лист 3 — Авиаэкспортёры** \nТолько компании с air_exp
+          -ort=1. Колонки: Название | Страны | Примечания по авиадоставке
+          - | Категории товаров | Контакты\n\nЗапроси данные из БД, сформ
+          -ируй файл data/vet-manufacturers-belarus/vet-manufacturers-{{.
+          -Date}}.xlsx.\nИспользуй mcp__excel__create_spreadsheet или mcp
+          -__excel__write_spreadsheet."                                  
+      250 +      prompt: "Сформируй Excel-отчёт по НОВЫМ производителям в
+          +етеринарных препаратов Беларуси, найденным в текущем сеансе ({
+          +{.Date}}).\n\nИсходные данные — предыдущий вывод:\n{{.PrevOutp
+          +ut}}\n\nФильтрация: выгружай только записи, добавленные или об
+          +новлённые СЕГОДНЯ:\n- Новые: WHERE first_seen = '{{.Date}}'\n-
+          + Обновлённые: WHERE updated_at LIKE '{{.Date}}%' AND first_see
+          +n != '{{.Date}}'\n\nСтруктура отчёта (3 листа):\n\n**Лист 1 — 
+          +Новые производители (добавлены {{.Date}})**\nSQL: SELECT * FRO
+          +M manufacturers WHERE first_seen = '{{.Date}}'\nКолонки: Назва
+          +ние | Юр. название | Адрес | Город | Сайт | Телефон | Email | 
+          +№ лицензии | Экспорт | Авиаэкспорт | Страны экспорта | Категор
+          +ии продуктов\n\n**Лист 2 — Новые экспортёры**\nSQL: SELECT * F
+          +ROM manufacturers WHERE first_seen = '{{.Date}}' AND exports_a
+          +broad = 1\nТе же колонки + выделить авиаэкспортёров цветом.\n\
+          +n**Лист 3 — Новые авиаэкспортёры**\nSQL: SELECT * FROM manufac
+          +turers WHERE first_seen = '{{.Date}}' AND air_export = 1\nКоло
+          +нки: Название | Страны | Примечания по авиадоставке | Категори
+          +и товаров | Контакты\n\nЕсли новых записей нет — создай файл с
+          + пустыми таблицами (только заголовки).\nФайл: data/vet-manufac
+          +turers-belarus/vet-manufacturers-{{.Date}}.xlsx\nИспользуй mcp
+          +__excel__create_spreadsheet или mcp__excel__write_spreadsheet.
+          +"                                                             
+      251        work_dir: .
+      252        tags:
+      253          - vet
+
+● Update(tasks.yaml)
+  ⎿  Added 12 lines, removed 10 lines
+      274      - name: deliver-vet-manufacturers-report
+      275        domain: vet-manufacturers-belarus
+      276        prompt: |-
+      277 -        Отправь еженедельный отчёт по производителям ветеринар
+          -ных препаратов Беларуси.                                      
+      277 +        Отправь отчёт по НОВЫМ производителям ветеринарных пре
+          +паратов Беларуси, найденным {{.Date}}.                        
+      278  
+      279          Данные из предыдущего шага:
+      280          {{.PrevOutput}}
+      281  
+      282          Действия:
+      283 -        1. Найди последний сформированный файл отчёта в data/v
+          -et-manufacturers-belarus/ (формат vet-manufacturers-*.xlsx)   
+      284 -        2. Отправь в Telegram сообщение с кратким резюме:     
+      285 -           - Дата обновления                                  
+      286 -           - Всего производителей в БД                        
+      287 -           - Кол-во экспортёров                               
+      288 -           - Кол-во авиаэкспортёров                           
+      289 -           - Список авиаэкспортёров с их странами и примечания
+          -ми                                                            
+      290 -        3. Прикрепи Excel-файл как документ                   
+      283 +        1. Найди файл отчёта data/vet-manufacturers-belarus/ve
+          +t-manufacturers-{{.Date}}.xlsx                                
+      284 +        2. Отправь в Telegram сообщение с резюме:             
+      285 +           - Дата сеанса: {{.Date}}                           
+      286 +           - Новых производителей добавлено                   
+      287 +           - Из них экспортёров                               
+      288 +           - Из них авиаэкспортёров                           
+      289 +           - Список новых авиаэкспортёров с их странами       
+      290 +           - Общее кол-во производителей в БД (итого)         
+      291 +        3. Прикрепи Excel-файл (только новые за сеанс)        
+      292  
+      292 -        Формат сообщения — краткий деловой отчёт на русском яз
+          -ыке.                                                          
+      293 +        Если новых не найдено — отправь короткое сообщение: "С
+          +еанс {{.Date}}: новых производителей не найдено. Всего в БД: N
+          +".                                                            
+      294 +        Формат — краткий деловой отчёт на русском языке.      
+      295        work_dir: .
+      296        tags:
+      297          - vet
+
+● Теперь убедимся, что агент-исследователь корректно ставит first_seen:
+
+● Update(.claude/agents/vet-manufacturers-researcher.md)
+  ⎿  Added 3 lines, removed 2 lines
+      61  
+      62  ## Database Operations
+      63  - `check_exists`: check by `name` field before every insert
+      64 -- `insert`: save immediately after finding each company        
+      65 -- After all research, insert a record into `sync_log` with coun
+         -ts                                                             
+      64 +- `insert`: save immediately. **Always set `first_seen` to toda
+         +y's date (YYYY-MM-DD) and `updated_at` to current ISO timestamp
+         +**                                                             
+      65 +- `execute` UPDATE: for existing records with new info. **Updat
+         +e `updated_at` but NEVER change `first_seen`**                 
+      66 +- After all research, insert a record into `sync_log` with coun
+         +ts of added/updated                                            
+      67  
+      68  ## Output
+      69  Return a structured summary: total found, new additions, update
+          s, and a highlighted list of air exporters.
+
+● Готово. Теперь логика пайплайна при повторных запусках:
+
+  1. Research: загружает существующие записи из БД → ищет только новых → ставит
+  first_seen = '2026-03-18' при INSERT
+  2. Excel: выгружает только WHERE first_seen = '{{.Date}}' — только сегодняшние
+   находки
+  3. Telegram: сообщает сколько новых добавлено + итого в БД
+
+  При повторном запуске в тот же день — если ничего нового нет, отправит "новых
+  не найдено". При запуске в другой день — first_seen будет другой датой, и
+  отчёт покажет только свежие находки.
+
+✻ Cogitated for 1m 12s

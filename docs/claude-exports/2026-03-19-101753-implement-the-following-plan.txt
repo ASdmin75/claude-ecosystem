@@ -1,0 +1,688 @@
+ ▐▛███▜▌   Claude Code v2.1.79
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ SETUP.md Generation After Wizard Apply                                       │
+│                                                                              │
+│ Context                                                                      │
+│                                                                              │
+│ After the Wizard creates new tasks/pipelines/domains/agents, users don't     │
+│ know what env vars to configure or how to run the new feature. DOMAIN.md     │
+│ exists but it's for AI agents (table schemas, dedup rules), not for humans.  │
+│ This feature auto-generates a human-readable SETUP.md with env var           │
+│ checklist, run commands, and dependencies.                                   │
+│                                                                              │
+│ Approach: Hybrid (Programmatic + LLM notes)                                  │
+│                                                                              │
+│ - Structured sections (env var table, run commands, what was created) —      │
+│ generated programmatically from plan data. Deterministic, reliable.          │
+│ - Free-form notes (setup_notes) — Claude fills in context-specific advice    │
+│ (e.g., "create Gmail app password", "download whisper model from ...").      │
+│ Optional, non-critical.                                                      │
+│                                                                              │
+│ Files to Create                                                              │
+│                                                                              │
+│ 1. internal/wizard/envspec.go — Static env var registry                      │
+│                                                                              │
+│ type EnvVarSpec struct {                                                     │
+│     Name        string                                                       │
+│     Description string                                                       │
+│     Required    bool                                                         │
+│     Source      string // "dotenv" or "mcp_env"                              │
+│     Default     string                                                       │
+│ }                                                                            │
+│                                                                              │
+│ type Dependency struct {                                                     │
+│     Name        string                                                       │
+│     URL         string                                                       │
+│     Description string                                                       │
+│ }                                                                            │
+│                                                                              │
+│ Maps MCP server binary names → required env vars:                            │
+│ - mcp-email → SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM      │
+│ - mcp-telegram → TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID                        │
+│ - mcp-whisper → WHISPER_BIN, WHISPER_MODEL, WHISPER_MODELS_DIR,              │
+│ WHISPER_THREADS                                                              │
+│ - mcp-openapi → OPENAPI_SPEC_PATH, OPENAPI_BASE_URL, OPENAPI_AUTH_TYPE, etc. │
+│ - database/excel/filesystem/word/pdf — no user-configured vars               │
+│                                                                              │
+│ Also maps MCP servers → external dependencies:                               │
+│ - mcp-whisper → whisper.cpp, ffmpeg                                          │
+│                                                                              │
+│ Includes extractEnvRefs() to parse ${VAR} references from plan's             │
+│ MCPServerPlan.Env values (catches dynamic vars like ${YEASTAR_BASE_URL}).    │
+│                                                                              │
+│ 2. internal/wizard/setupdoc.go — Generator                                   │
+│                                                                              │
+│ func GenerateSetupDoc(plan *Plan, cfg *config.Config) string                 │
+│ func resolveSetupPath(plan *Plan) string                                     │
+│                                                                              │
+│ Logic:                                                                       │
+│ 1. Collect env vars from plan's MCP servers (registry lookup + ${VAR}        │
+│ extraction)                                                                  │
+│ 2. Check each var via os.LookupEnv() → status "set" / "MISSING"              │
+│ 3. Group by source: .env file vs tasks.yaml → mcp_servers → env              │
+│ 4. Render markdown with sections: What Was Created, Environment Variables,   │
+│ How to Run, Dependencies, Notes                                              │
+│                                                                              │
+│ Output location:                                                             │
+│ - One domain → {domain.DataDir}/SETUP.md                                     │
+│ - Multiple domains → each domain's DataDir                                   │
+│ - No domain → plan's WorkDir or project root                                 │
+│                                                                              │
+│ 3. internal/wizard/setupdoc_test.go — Unit tests                             │
+│                                                                              │
+│ Files to Modify                                                              │
+│                                                                              │
+│ 4. internal/wizard/types.go                                                  │
+│                                                                              │
+│ - Add SetupNotes string to Plan                                              │
+│ - Add SetupDocPath string and Warnings []string to ApplyResult               │
+│                                                                              │
+│ 5. internal/wizard/prompt.go                                                 │
+│                                                                              │
+│ Add setup_notes field to the JSON schema in buildWizardPrompt():             │
+│ "setup_notes": {                                                             │
+│   "type": "string",                                                          │
+│   "description": "Human-readable notes about setup: external deps to         │
+│ install, API keys to obtain, services to configure"                          │
+│ }                                                                            │
+│                                                                              │
+│ 6. internal/wizard/applier.go                                                │
+│                                                                              │
+│ After config save (end of Apply()), call GenerateSetupDoc() and write to     │
+│ disk. Non-fatal on failure — add warning to result.                          │
+│                                                                              │
+│ SETUP.md Format                                                              │
+│                                                                              │
+│ # Setup Guide: {plan.Description}                                            │
+│                                                                              │
+│ > Auto-generated by Wizard on {date}                                         │
+│                                                                              │
+│ ## What Was Created                                                          │
+│ - Tasks: task-a, task-b                                                      │
+│ - Pipelines: pipeline-x (sequential: task-a → task-b)                        │
+│ - MCP Servers: crm-api                                                       │
+│ - Domains: sip-calls (data/sip-calls/)                                       │
+│ - Agents: call-analyst                                                       │
+│                                                                              │
+│ ## Environment Variables                                                     │
+│                                                                              │
+│ ### Required — add to `.env`                                                 │
+│ | Variable | Description | Status |                                          │
+│ |----------|-------------|--------|                                          │
+│ | TELEGRAM_BOT_TOKEN | Bot API token from @BotFather | ❌ MISSING |          │
+│ | SMTP_HOST | SMTP server hostname | ✅ set |                                │
+│                                                                              │
+│ ### Required — already in `tasks.yaml → mcp_servers`                         │
+│ | Variable | Server | Description | Status |                                 │
+│ |----------|--------|-------------|--------|                                 │
+│ | OPENAPI_SPEC_PATH | crm-api | Path to OpenAPI spec | ✅ set |              │
+│                                                                              │
+│ ### Automatic (no action needed)                                             │
+│ DOMAIN_DB_PATH, DOMAIN_DATA_DIR — injected at runtime.                       │
+│                                                                              │
+│ ## How to Run                                                                │
+│ make run-task TASK=task-a                                                    │
+│ make run-pipeline PIPELINE=pipeline-x                                        │
+│ make run  # starts server with schedules                                     │
+│                                                                              │
+│ ## Dependencies                                                              │
+│ - whisper.cpp — https://github.com/ggerganov/whisper.cpp                     │
+│ - ffmpeg — audio format conversion                                           │
+│                                                                              │
+│ ## Notes                                                                     │
+│ {plan.SetupNotes — free-form from Claude}                                    │
+│                                                                              │
+│ Design Decisions                                                             │
+│                                                                              │
+│ - Static registry vs parsing MCP source — static map is explicit, fast,      │
+│ testable. MCP servers change infrequently.                                   │
+│ - os.LookupEnv vs reading .env — by wizard runtime, LoadDotEnv already ran,  │
+│ so process env reflects .env + system env.                                   │
+│ - Non-fatal write — SETUP.md is convenience; plan apply shouldn't fail over  │
+│ a doc file.                                                                  │
+│ - No secret values shown — only "set" / "MISSING" status, never actual       │
+│ values.                                                                      │
+│                                                                              │
+│ Verification                                                                 │
+│                                                                              │
+│ 1. make test — unit tests for GenerateSetupDoc() with mock plans             │
+│ 2. Manual: run Wizard via UI, apply a plan with MCP servers, check SETUP.md  │
+│ appears in correct directory with correct env var statuses                   │
+│ 3. Verify SETUP.md shows MISSING for unset vars, "set" for configured ones   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/asdmin/development/AI/Claude/claude-ecosyst
+     em/2026-03-19-093437-implement-the-following-plan.txt
+
+❯ продолжай                                                                     
+
+● Let me read the existing files I need to modify and understand the current
+  codebase.
+
+  Read 3 files (ctrl+o to expand)
+
+● Now let me check the MCP server binaries to build the registry.
+
+  Read 1 file (ctrl+o to expand)
+
+● Good, I have all the context I need. Let me now implement all the files.
+
+● Write(internal/wizard/envspec.go)
+  ⎿  Wrote 92 lines to internal/wizard/envspec.go
+       1 package wizard
+       2 
+       3 import (
+       4        "regexp"
+       5        "strings"
+       6 )
+       7 
+       8 // EnvVarSpec describes an environment variable required by an M
+         CP server.
+       9 type EnvVarSpec struct {
+      10        Name        string
+     … +82 lines (ctrl+o to expand)
+
+● Write(internal/wizard/setupdoc.go)
+  ⎿  Wrote 260 lines to internal/wizard/setupdoc.go
+       1 package wizard
+       2 
+       3 import (
+       4        "fmt"
+       5        "os"
+       6        "path/filepath"
+       7        "strings"
+       8        "time"
+       9 
+      10        "github.com/asdmin/claude-ecosystem/internal/config"
+     … +250 lines (ctrl+o to expand)
+  ⎿  Found 4 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Good, those "unused" warnings will resolve once setupdoc.go is compiled
+  together. Now modify the existing files.
+
+● Update(internal/wizard/types.go)
+  ⎿  Added 1 line
+      16    Agents      []AgentPlan     `json:"agents,omitempty"`
+      17    Tasks       []TaskPlan      `json:"tasks,omitempty"`
+      18    Pipelines   []PipelinePlan  `json:"pipelines,omitempty"`
+      19 +  SetupNotes  string         `json:"setup_notes,omitempty"`    
+      20    Status      string         `json:"status"` // "draft", "appli
+          ed", "discarded"
+      21  }
+      22  
+
+● Update(internal/wizard/types.go)
+  ⎿  Added 6 lines, removed 4 lines
+      85  type ApplyResult struct {
+      86    MCPServersCreated []string `json:"mcp_servers_created,omitemp
+          ty"`
+      87    DomainsCreated    []string `json:"domains_created,omitempty"`
+      88 -  AgentsCreated    []string `json:"agents_created,omitempty"`  
+      89 -  TasksCreated     []string `json:"tasks_created,omitempty"`   
+      90 -  PipelinesCreated []string `json:"pipelines_created,omitempty"
+         -`                                                              
+      91 -  Errors           []string `json:"errors,omitempty"`          
+      88 +  AgentsCreated     []string `json:"agents_created,omitempty"` 
+      89 +  TasksCreated      []string `json:"tasks_created,omitempty"`  
+      90 +  PipelinesCreated  []string `json:"pipelines_created,omitempty
+         +"`                                                             
+      91 +  SetupDocPath      string   `json:"setup_doc_path,omitempty"` 
+      92 +  Warnings          []string `json:"warnings,omitempty"`       
+      93 +  Errors            []string `json:"errors,omitempty"`         
+      94  }
+  ⎿  Found 10 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● The compiler errors will resolve once the file is re-analyzed (the type was
+  just updated). Now add setup_notes to the JSON schema in prompt.go and update
+  applier.go.
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 5 lines
+      107        }
+      108      }
+      109    },
+      110 +    "setup_notes": {                                          
+      111 +      "type": "string",                                       
+      112 +      "description": "Human-readable notes about setup: extern
+          +al deps to install, API keys to obtain, services to configure.
+          + Optional."                                                   
+      113 +    }                                                         
+      114 +  },                                                          
+      115    "required": ["summary", "tasks"]
+      116  }`
+      117  
+
+● Update(internal/wizard/applier.go)
+  ⎿  Added 3 lines
+       2  
+       3  import (
+       4    "fmt"
+       5 +  "log/slog"                                                   
+       6 +  "os"                                                         
+       7 +  "path/filepath"                                              
+       8  
+       9    "github.com/asdmin/claude-ecosystem/internal/config"
+      10    "github.com/asdmin/claude-ecosystem/internal/domain"
+  ⎿  Found 11 new diagnostic issues in 2 files (ctrl+o to expand)
+
+● Now add the SETUP.md generation call at the end of Apply():
+
+● Update(internal/wizard/applier.go)
+  ⎿  Added 3 lines
+      176      return nil, fmt.Errorf("saving config: %w", err)
+      177    }
+      178  
+      179 +  // 7. Generate SETUP.md (non-fatal)                         
+      180 +  a.generateSetupDoc(plan, result)                            
+      181 +                                                              
+      182    return result, nil
+      183  }
+      184  
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now add the generateSetupDoc method to the Applier:
+
+● Update(internal/wizard/applier.go)
+  ⎿  Added 22 lines
+      269    return nil
+      270  }
+      271  
+      272 +// generateSetupDoc creates SETUP.md files from the plan. Non-
+          +fatal on failure.                                             
+      273 +func (a *Applier) generateSetupDoc(plan *Plan, result *ApplyRe
+          +sult) {                                                       
+      274 +  content := GenerateSetupDoc(plan, a.cfg)                    
+      275 +  paths := resolveAllSetupPaths(plan)                         
+      276 +                                                              
+      277 +  for _, p := range paths {                                   
+      278 +    dir := filepath.Dir(p)                                    
+      279 +    if err := os.MkdirAll(dir, 0o755); err != nil {           
+      280 +      result.Warnings = append(result.Warnings, fmt.Sprintf("f
+          +ailed to create directory for SETUP.md: %v", err))            
+      281 +      continue                                                
+      282 +    }                                                         
+      283 +    if err := os.WriteFile(p, []byte(content), 0o644); err != 
+          +nil {                                                         
+      284 +      result.Warnings = append(result.Warnings, fmt.Sprintf("f
+          +ailed to write %s: %v", p, err))                              
+      285 +      continue                                                
+      286 +    }                                                         
+      287 +    slog.Info("wizard: wrote SETUP.md", "path", p)            
+      288 +    if result.SetupDocPath == "" {                            
+      289 +      result.SetupDocPath = p                                 
+      290 +    }                                                         
+      291 +  }                                                           
+      292 +}                                                             
+      293 +                                                              
+      294  // rollback executes rollback functions in reverse order.
+      295  func (a *Applier) rollback(fns []func()) {
+      296    for i := len(fns) - 1; i >= 0; i-- {
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● The LSP is just catching up — the method is defined in the same file. Now let
+  me write the tests:
+
+● Write(internal/wizard/setupdoc_test.go)
+  ⎿  Wrote 242 lines to internal/wizard/setupdoc_test.go
+       1 package wizard
+       2 
+       3 import (
+       4        "strings"
+       5        "testing"
+       6 
+       7        "github.com/asdmin/claude-ecosystem/internal/config"
+       8 )
+       9 
+      10 func TestGenerateSetupDoc_Basic(t *testing.T) {
+     … +232 lines (ctrl+o to expand)
+
+● Bash(go test ./internal/wizard/ -run TestGenerateSetupDoc -v -count=1 2>&1 |
+      head -80)
+  ⎿  === RUN   TestGenerateSetupDoc_Basic
+     --- PASS: TestGenerateSetupDoc_Basic (0.00s)
+     === RUN   TestGenerateSetupDoc_MCPEnvVars
+     … +11 lines (ctrl+o to expand)
+
+● Bash(go test ./internal/wizard/ -v -count=1 2>&1 | tail -30)
+  ⎿  === RUN   TestGenerateSetupDoc_Basic
+     --- PASS: TestGenerateSetupDoc_Basic (0.00s)
+     === RUN   TestGenerateSetupDoc_MCPEnvVars
+     … +17 lines (ctrl+o to expand)
+
+● All 10 tests pass. Let me verify the full build compiles:
+
+● Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+● Clean build. Here's what was implemented:
+
+  New files:
+  - internal/wizard/envspec.go — Static registry mapping MCP server binaries to
+  env vars and dependencies, plus extractEnvRefs() for ${VAR} parsing
+  - internal/wizard/setupdoc.go — GenerateSetupDoc() generates the markdown,
+  resolveSetupPath()/resolveAllSetupPaths() determine output location
+  - internal/wizard/setupdoc_test.go — 10 tests covering all sections, env var
+  status detection, dynamic refs, dependencies, setup notes
+
+  Modified files:
+  - internal/wizard/types.go — Added SetupNotes to Plan, SetupDocPath and
+  Warnings to ApplyResult
+  - internal/wizard/prompt.go — Added setup_notes field to JSON schema so Claude
+   can provide context-specific setup advice
+  - internal/wizard/applier.go — Calls generateSetupDoc() after config save
+  (non-fatal, adds warnings on failure)
+
+✻ Brewed for 2m 42s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/asdmin/development/AI/Claude/claude-ecosyst
+     em/2026-03-19-095438-implement-the-following-plan.txt
+
+❯ -> % make daemon-status                                                       
+● claude-ecosystem.service - Claude Ecosystem Server                            
+     Loaded: loaded                                                             
+(/home/asdmin/.config/systemd/user/claude-ecosystem.service; enabled; preset:   
+enabled)                                                                        
+     Active: activating (auto-restart) (Result: exit-code) since Thu 2026-03-19 
+ 09:53:26 +03; 4s ago                                                           
+       Docs: https://github.com/asdmin/claude-ecosystem                         
+    Process: 93888                                                              
+ExecStart=/home/asdmin/development/AI/Claude/claude-ecosystem/bin/server        
+-config tasks.yaml (code=exited, status=1/FAILURE)                              
+   Main PID: 93888 (code=exited, status=1/FAILURE)                              
+        CPU: 13ms                                                               
+make: *** [Makefile:84: daemon-status] Error 3                                  
+
+● The daemon is crashing. Let me check what's wrong.
+
+● Bash(journalctl --user -u claude-ecosystem.service -n 30 --no-pager 2>&1)
+  ⎿  сак 19 09:54:19 asdmin-MS-7B84 systemd[11921]: claude-ecosystem.servic
+     e: Scheduled restart job, restart counter is at 27.
+     сак 19 09:54:19 asdmin-MS-7B84 systemd[11921]: Started claude-ecosyste
+     … +58 lines (ctrl+o to expand)
+
+● Config validation error: pipeline daily-sip-processing: stop_signal is 
+  required for sequential pipelines with max_iterations > 1. Let me check the
+  pipeline in tasks.yaml.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● The daily-sip-processing pipeline has max_iterations: 0 but no stop_signal.
+  This is unrelated to my changes — it's a config issue in tasks.yaml. The
+  validation requires stop_signal for sequential pipelines with max_iterations >
+   1, but 0 is being treated as > 1 somewhere. Let me check the validation
+  logic.
+
+  Searched for 3 patterns (ctrl+o to expand)
+
+● Found it. MaxIter() returns 10 when MaxIterations <= 0, so max_iterations: 0
+  defaults to 10, which triggers the validation. The pipeline needs either
+  max_iterations: 1 or a stop_signal. This is a pre-existing config issue — the
+  daily-sip-processing pipeline was added with max_iterations: 0 which means
+  "use default (10)".
+
+  The simplest fix is to add a stop_signal to the pipeline:
+
+● Update(tasks.yaml)
+  ⎿  File must be read first
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line, removed 1 line
+      562          - task: transcribe-sip-recordings
+      563          - task: summarize-sip-transcriptions
+      564          - task: deliver-sip-report
+      565 -      max_iterations: 0                                       
+      565 +      max_iterations: 1                                       
+      566  mcp_servers:
+      567      - name: database
+      568        command: ./bin/mcp-database
+
+● Bash(make build 2>&1 | tail -5)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Bash(systemctl --user restart claude-ecosystem.service && sleep 2 && systemctl
+       --user status claude-ecosystem.service 2>&1)
+  ⎿  ● claude-ecosystem.service - Claude Ecosystem Server
+          Loaded: loaded (/home/asdmin/.config/systemd/user/claude-ecosyste
+     m.service; enabled; preset: enabled)
+     … +32 lines (ctrl+o to expand)
+
+● Service is running. The crash was caused by daily-sip-processing pipeline
+  having max_iterations: 0 (which defaults to 10 via MaxIter()), triggering the
+  validation that requires stop_signal for sequential pipelines with
+  max_iterations > 1. Fixed by setting it to max_iterations: 1 since it's a
+  single-pass pipeline.
+
+✻ Worked for 59s
+
+❯ Создай SETUP.md для уже созданных доменов.                                    
+
+● Let me check the existing domains and their MCP server configs.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now let me see what MCP servers are configured to know the commands:
+
+  Read 1 file (ctrl+o to expand)
+
+● Now I have the full picture. I'll write a small Go script to generate the
+  SETUP.md files using the existing GenerateSetupDoc function:
+
+● Write(cmd/gen-setup/main.go)
+  ⎿  Wrote 104 lines to cmd/gen-setup/main.go
+      1 // gen-setup generates SETUP.md for all existing domains in tasks
+        .yaml.
+      2 // Usage: go run ./cmd/gen-setup
+      3 package main
+      4 
+      5 import (
+      6         "fmt"
+      7         "log"
+      8         "os"
+      9         "path/filepath"
+     … +94 lines (ctrl+o to expand)
+
+● Bash(go run ./cmd/gen-setup 2>&1)
+  ⎿  wrote data/export-by-aviation/SETUP.md
+     wrote data/leads/SETUP.md
+     wrote data/sip-calls/SETUP.md
+     wrote data/vet-manufacturers-belarus/SETUP.md
+
+● Let me verify the output:
+
+  Read 2 files (ctrl+o to expand)
+
+● Работает. Вижу одну проблему: для sip-calls показываются WHISPER_* как
+  "MISSING" хотя они настроены прямо в tasks.yaml → mcp_servers → env, а не
+  через .env. А все optional openapi-переменные показываются хотя не нужны.
+  Доработаю — для whisper env vars, которые уже заданы в конфиге как literal (не
+   ${...}), нужно помечать как "set"; а для openapi нужно показывать только те,
+  что реально используются в env конкретного сервера + ${VAR} ссылки.
+
+  Read 1 file (ctrl+o to expand)
+
+● The issue is clear: for registry-known vars we blindly add all of them and
+  only check os.LookupEnv. But vars like WHISPER_BIN are set in mcp.Env as
+  literal values (not ${...}), not in .env. And for mcp-openapi we dump all
+  possible vars even if only a few are configured.
+
+  The fix:
+  1. Check mcp.Env for literal values — if a var is set there directly, it's
+  "set"
+  2. For mcp-openapi, only show vars that are actually present in mcp.Env (not
+  all possible ones)
+  3. For other servers, show all registry vars but check both os.LookupEnv AND
+  mcp.Env
+
+● Update(internal/wizard/setupdoc.go)
+  ⎿  Added 28 lines, removed 3 lines
+      132    for _, mcp := range plan.MCPServers {
+      133      binName := binaryName(mcp.Command)
+      134  
+      135 -    // Registry-known vars                                    
+      135 +    // Build set of vars explicitly configured in mcp.Env     
+      136 +    configuredVars := make(map[string]string)                 
+      137 +    for k, v := range mcp.Env {                               
+      138 +      configuredVars[k] = v                                   
+      139 +    }                                                         
+      140 +                                                              
+      141 +    // For mcp-openapi: only show vars actually used in this s
+          +erver's env,                                                  
+      142 +    // not the full registry of all possible openapi vars.    
+      143 +    // For other servers: show all registry vars (they're all 
+          +meaningful).                                                  
+      144      if specs, ok := mcpEnvRegistry[binName]; ok {
+      145        for _, spec := range specs {
+      146          if seen[spec.Name] {
+      147            continue
+      148          }
+      149 +                                                              
+      150 +        // For openapi, skip vars not configured in this insta
+          +nce                                                           
+      151 +        if binName == "mcp-openapi" {                         
+      152 +          if _, configured := configuredVars[spec.Name]; !conf
+          +igured {                                                      
+      153 +            continue                                          
+      154 +          }                                                   
+      155 +        }                                                     
+      156 +                                                              
+      157          seen[spec.Name] = true
+      142 -        _, isSet := os.LookupEnv(spec.Name)                   
+      158 +                                                              
+      159 +        // A var is "set" if: (1) it's a literal value in mcp.
+          +Env, or (2) it's in process env                               
+      160 +        isSet := false                                        
+      161 +        if val, ok := configuredVars[spec.Name]; ok && !envRef
+          +Pattern.MatchString(val) {                                    
+      162 +          // Literal value in config (not a ${VAR} reference) 
+      163 +          isSet = true                                        
+      164 +        } else if _, envOk := os.LookupEnv(spec.Name); envOk {
+      165 +          isSet = true                                        
+      166 +        }                                                     
+      167 +                                                              
+      168          vars = append(vars, envVarStatus{
+      169            EnvVarSpec: spec,
+      170            ServerName: mcp.Name,
+     ...
+      173        }
+      174      }
+      175  
+      151 -    // Dynamic ${VAR} references from env values              
+      176 +    // Dynamic ${VAR} references from env values — these need 
+          +to be in .env                                                 
+      177      refs := extractEnvRefs(mcp.Env)
+      178      for _, ref := range refs {
+      179        if seen[ref] {
+
+● Bash(go test ./internal/wizard/ -v -count=1 2>&1 | tail -20)
+  ⎿  === RUN   TestGenerateSetupDoc_MCPEnvVars
+     --- PASS: TestGenerateSetupDoc_MCPEnvVars (0.00s)
+     === RUN   TestGenerateSetupDoc_DynamicEnvRefs
+     … +17 lines (ctrl+o to expand)
+  ⎿  Found 6 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● All tests pass. Now regenerate the SETUP.md files:
+
+● Bash(go run ./cmd/gen-setup 2>&1)
+  ⎿  wrote data/export-by-aviation/SETUP.md
+     wrote data/leads/SETUP.md
+     wrote data/sip-calls/SETUP.md
+     wrote data/vet-manufacturers-belarus/SETUP.md
+
+  Read 3 files (ctrl+o to expand)
+
+● Теперь всё корректно:
+
+  - sip-calls — WHISPER_* показаны как "set" (literal values в конфиге),
+  TELEGRAM_* как "set" (из .env), openapi показаны только 3 реально настроенных
+  переменных вместо 11
+  - export-by-aviation — telegram + email vars, все "set"
+  - leads и vet-manufacturers-belarus — нет env vars (database/excel/filesystem
+  не требуют конфигурации), секция пропущена
+
+  Удалю одноразовый генератор:
+
+● Bash(rm -r /home/asdmin/development/AI/Claude/claude-ecosystem/cmd/gen-setup)
+  ⎿  Done
+
+● Готово. SETUP.md сгенерированы для всех 4 доменов:
+
+  Домен: export-by-aviation
+  Путь: data/export-by-aviation/SETUP.md
+  Env vars: telegram + email (все set)
+  ────────────────────────────────────────
+  Домен: leads
+  Путь: data/leads/SETUP.md
+  Env vars: нет (database + excel не требуют)
+  ────────────────────────────────────────
+  Домен: sip-calls
+  Путь: data/sip-calls/SETUP.md
+  Env vars: whisper (set в конфиге) + telegram (set в .env) + yeastar openapi (3
+
+    vars)
+  ────────────────────────────────────────
+  Домен: vet-manufacturers-belarus
+  Путь: data/vet-manufacturers-belarus/SETUP.md
+  Env vars: нет
+
+✻ Sautéed for 1m 55s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/asdmin/development/AI/Claude/claude-ecosyst
+     em/2026-03-19-100929-implement-the-following-plan.txt
+
+❯ Добавь в @.env.example и @.env недостающие параметры для daily-sip-processing 
+  ⎿  Read .env.example (36 lines)
+  ⎿  Read .env (36 lines)
+
+  Read 2 files (ctrl+o to expand)
+
+● Из конфига yeastar-api в tasks.yaml нужны три переменных: YEASTAR_BASE_URL,
+  YEASTAR_CLIENT_ID, YEASTAR_CLIENT_PASSWORD.
+
+● Update(.env.example)
+  ⎿  Added 7 lines
+      27  TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+      28  TELEGRAM_CHAT_ID=123456789
+      29  
+      30 +# --- Yeastar P-Series PBX (for daily-sip-processing pipeline) 
+         +---                                                            
+      31 +# OAuth2 client credentials for Yeastar Open API.              
+      32 +# Create at PBX Admin → Integrations → API → Open API.         
+      33 +YEASTAR_BASE_URL=https://your-pbx.example.com                  
+      34 +YEASTAR_CLIENT_ID=your-client-id                               
+      35 +YEASTAR_CLIENT_PASSWORD=your-client-secret                     
+      36 +                                                               
+      37  # --- Server (optional overrides) ---
+      38  # SERVER_ADDR=:3580
+      39  # DATA_DIR=data
+
+● Update(.env)
+  ⎿  Added 5 lines
+      17  TELEGRAM_BOT_TOKEN=8166119354:AAGF7QZ-sBdBPFoLk8aLi7kE6EVNmc-gd
+          jc
+      18  TELEGRAM_CHAT_ID=-1003870941443
+      19  
+      20 +# --- Yeastar P-Series PBX (for daily-sip-processing pipeline) 
+         +---                                                            
+      21 +YEASTAR_BASE_URL=                                              
+      22 +YEASTAR_CLIENT_ID=                                             
+      23 +YEASTAR_CLIENT_PASSWORD=                                       
+      24 +                                                               
+      25  # --- Server (optional overrides) ---
+      26  # SERVER_ADDR=:8080
+      27  # DATA_DIR=data
+
+● Добавлены YEASTAR_BASE_URL, YEASTAR_CLIENT_ID, YEASTAR_CLIENT_PASSWORD — это
+  три ${VAR} ссылки из конфига yeastar-api в tasks.yaml. Заполни значения в .env
+   данными из Yeastar PBX Admin → Integrations → API → Open API.

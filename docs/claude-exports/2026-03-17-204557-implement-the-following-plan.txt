@@ -1,0 +1,195 @@
+ ▐▛███▜▌   Claude Code v2.1.77
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ Plan: MCP server mcp-openapi for external API integration                    │
+│                                                                              │
+│ Context                                                                      │
+│                                                                              │
+│ Tasks, SubAgents и Pipelines нуждаются в возможности вызывать внешние API,   │
+│ описанные OpenAPI-спецификациями (JSON/YAML). MCP-сервер — идеальное         │
+│ решение, т.к. полностью вписывается в существующую архитектуру: каждый       │
+│ MCP-сервер — отдельный Go-бинарник с JSON-RPC 2.0 stdio, конфигурируется     │
+│ через env vars, автоматически подхватывается Makefile и mcpmanager.          │
+│                                                                              │
+│ Approach                                                                     │
+│                                                                              │
+│ Создать mcp-openapi — единый MCP-сервер, который при запуске читает          │
+│ OpenAPI-спецификацию и динамически генерирует MCP-инструменты для каждого    │
+│ эндпоинта. Множественные инстансы с разными спеками работают через разные    │
+│ записи в mcp_servers с разными env vars.                                     │
+│                                                                              │
+│ Files to create/modify                                                       │
+│                                                                              │
+│ 1. cmd/mcp/mcp-openapi/main.go — новый файл, единственный файл сервера (по   │
+│ паттерну всех остальных MCP-серверов)                                        │
+│ 2. go.mod / go.sum — добавить github.com/pb33f/libopenapi (парсинг OpenAPI   │
+│ v2/v3/v3.1)                                                                  │
+│                                                                              │
+│ Makefile изменять не нужно — цикл for dir in cmd/mcp/*/ подхватит            │
+│ автоматически.                                                               │
+│                                                                              │
+│ Environment variables                                                        │
+│                                                                              │
+│ ┌──────────────────────────────┬──────────┬───────────────────────────────┐  │
+│ │           Variable           │ Required │          Description          │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_SPEC_PATH            │ Yes      │ Путь к OpenAPI-спецификации   │  │
+│ │                              │          │ (JSON или YAML)               │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_BASE_URL             │ No       │ Переопределение base URL из   │  │
+│ │                              │          │ спеки                         │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_AUTH_TYPE            │ No       │ bearer, apikey, basic         │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_AUTH_TOKEN           │ No       │ Bearer token                  │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_API_KEY              │ No       │ API key value                 │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_API_KEY_NAME         │ No       │ Header/query param name       │  │
+│ │                              │          │ (default: X-API-Key)          │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_API_KEY_IN           │ No       │ header (default) или query    │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_BASIC_USER /         │ No       │ Basic auth                    │  │
+│ │ OPENAPI_BASIC_PASS           │          │                               │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_INCLUDE_TAGS         │ No       │ Фильтр по тегам               │  │
+│ │                              │          │ (comma-separated)             │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_INCLUDE_PATHS        │ No       │ Фильтр по path-префиксам      │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_INCLUDE_OPS          │ No       │ Фильтр по operationId         │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_EXCLUDE_OPS          │ No       │ Исключение по operationId     │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_MAX_TOOLS            │ No       │ Лимит инструментов (default:  │  │
+│ │                              │          │ 50)                           │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_TIMEOUT              │ No       │ HTTP timeout (default: 30s)   │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_EXTRA_HEADERS        │ No       │ Доп. заголовки                │  │
+│ │                              │          │ Key:Value,Key2:Value2         │  │
+│ └──────────────────────────────┴──────────┴───────────────────────────────┘  │
+│                                                                              │
+│ Implementation structure (single main.go)                                    │
+│                                                                              │
+│ 1. JSON-RPC boilerplate (~50 lines)                                          │
+│                                                                              │
+│ Копируем паттерн из mcp-database/main.go: structs jsonRPCRequest,            │
+│ jsonRPCResponse, tool, toolCallParams, contentItem, toolResult, helpers      │
+│ textResult/errorResult, main loop с initialize/tools/list/tools/call.        │
+│                                                                              │
+│ 2. Startup: parse spec & generate tools                                      │
+│                                                                              │
+│ main():                                                                      │
+│   specPath = os.Getenv("OPENAPI_SPEC_PATH")  // required                     │
+│   specData = os.ReadFile(specPath)                                           │
+│   doc = libopenapi.NewDocument(specData)                                     │
+│   model = doc.BuildV3Model() // or BuildV2Model() based on version           │
+│   operations = extractOperations(model)  // -> []apiOperation                │
+│   operations = filterOperations(operations)  // by tags/paths/ops            │
+│   generatedTools = generateTools(operations)  // -> map[string]generatedTool │
+│   // start JSON-RPC loop with generatedTools                                 │
+│                                                                              │
+│ 3. Operation extraction                                                      │
+│                                                                              │
+│ Walk model.Paths → for each path + method → normalize into:                  │
+│ type apiOperation struct {                                                   │
+│     OperationID string                                                       │
+│     Method, Path, Summary, Description string                                │
+│     Tags        []string                                                     │
+│     Parameters  []apiParameter   // path, query, header                      │
+│     RequestBody *apiRequestBody  // body schema for POST/PUT/PATCH           │
+│ }                                                                            │
+│ Поддержка v2 и v3 через отдельные extractV2/extractV3 функции.               │
+│                                                                              │
+│ 4. Tool name generation                                                      │
+│                                                                              │
+│ - Если operationId задан: sanitize(operationId) → lowercase, non-alnum → _   │
+│ - Иначе: method_pathToSnake(path) → get_users_by_id_orders                   │
+│ - Дедупликация через суффиксы _2, _3                                         │
+│                                                                              │
+│ 5. Tool InputSchema generation                                               │
+│                                                                              │
+│ Для каждой операции:                                                         │
+│ - Path params → top-level required string properties                         │
+│ - Query params → top-level properties (required if marked)                   │
+│ - Header params → properties с префиксом header_                             │
+│ - Request body → property body с вложенной JSON Schema из спеки (ограничение │
+│  глубины до 3 уровней для $ref)                                              │
+│                                                                              │
+│ 6. Tool execution (tools/call handler)                                       │
+│                                                                              │
+│ handleToolCall(toolName, arguments):                                         │
+│   op = generatedTools[toolName].operation                                    │
+│   1. URL: baseURL + op.Path, подставить path params из arguments             │
+│   2. Query string: из query params в arguments                               │
+│   3. Headers: Content-Type + auth + header params + extra headers            │
+│   4. Body: marshal arguments["body"] в JSON (для POST/PUT/PATCH)             │
+│   5. HTTP request с timeout                                                  │
+│   6. Response: read body (limit 1MB), return "HTTP {status}\n\n{body}"       │
+│      - JSON → pretty-print                                                   │
+│      - status >= 400 → isError: true                                         │
+│                                                                              │
+│ 7. Auth                                                                      │
+│                                                                              │
+│ В applyAuth(req): switch на OPENAPI_AUTH_TYPE:                               │
+│ - bearer → Authorization: Bearer {OPENAPI_AUTH_TOKEN}                        │
+│ - apikey → header или query param по OPENAPI_API_KEY_NAME/OPENAPI_API_KEY_IN │
+│ - basic → Authorization: Basic base64(user:pass)                             │
+│                                                                              │
+│ tasks.yaml usage example                                                     │
+│                                                                              │
+│ mcp_servers:                                                                 │
+│   - name: crm-api                                                            │
+│     command: ./bin/mcp-openapi                                               │
+│     env:                                                                     │
+│       OPENAPI_SPEC_PATH: specs/crm-openapi.yaml                              │
+│       OPENAPI_BASE_URL: https://api.crm.example.com/v2                       │
+│       OPENAPI_AUTH_TYPE: bearer                                              │
+│       OPENAPI_AUTH_TOKEN: ${CRM_API_TOKEN}                                   │
+│       OPENAPI_INCLUDE_TAGS: contacts,deals                                   │
+│                                                                              │
+│ tasks:                                                                       │
+│   - name: sync-crm-leads                                                     │
+│     prompt: "Fetch new leads from CRM and sync to local database."           │
+│     mcp_servers:                                                             │
+│       - crm-api                                                              │
+│       - database                                                             │
+│     allowed_tools:                                                           │
+│       - mcp__crm-api__list_contacts                                          │
+│       - mcp__crm-api__get_contact                                            │
+│       - mcp__database__insert                                                │
+│                                                                              │
+│ Multiple API instances — просто отдельные entries в mcp_servers с разными    │
+│ env.                                                                         │
+│                                                                              │
+│ Design decisions                                                             │
+│                                                                              │
+│ - libopenapi (pb33f) — поддержка v2+v3+v3.1, разрешение $ref, активно        │
+│ поддерживается                                                               │
+│ - Max 50 tools — большие спеки деградируют качество tool selection;          │
+│ фильтрация через теги/пути решает проблему                                   │
+│ - Без OAuth2 flow — bearer token покрывает большинство случаев, пользователь │
+│  получает токен внешне                                                       │
+│ - Без file upload — multipart/binary скипаются (непрактично для LLM)         │
+│ - Response limit 1MB — защита от OOM                                         │
+│ - Schema depth limit 3 — для circular $ref в InputSchema                     │
+│                                                                              │
+│ Verification                                                                 │
+│                                                                              │
+│ 1. make build — бинарник bin/mcp-openapi собирается                          │
+│ 2. Тест с Petstore spec:                                                     │
+│ OPENAPI_SPEC_PATH=specs/petstore.yaml                                        │
+│ OPENAPI_BASE_URL=https://petstore3.swagger.io/api/v3 \                       │
+│   echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ./bin/mcp-openapi  │
+│ 3. Тест вызова инструмента:                                                  │
+│ echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_pe │
+│ t_by_id","arguments":{"petId":"1"}}}' | ./bin/mcp-openapi                    │
+│ 4. Интеграция: добавить в tasks.yaml, запустить задачу через API/UI          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ⎿  Interrupted · What should Claude do instead?

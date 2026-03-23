@@ -1,0 +1,346 @@
+ ▐▛███▜▌   Claude Code v2.1.81
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ Что нужно сделать чтобы при удалении пайплайна все таки удалялся каталог      
+соответствующего домена из data ????? Давай предпримем уже пятую наверно        
+попытку чтобы решить этот вопрос.                                               
+
+● Let me look at the current delete flow to understand what's missing.
+
+  Searched for 2 patterns, read 3 files (ctrl+o to expand)
+
+● Now let me see the pipeline delete handler.
+
+  Read 1 file (ctrl+o to expand)
+
+● Now I see the full picture. The problem is in two places:
+
+  1. cleanDomainRefs (delete.go:116) — when a domain becomes orphaned, it does
+  delete(s.cfg.Domains, k) but never removes the data/ directory from disk.
+  2. RemoveDomain (domain/manager.go:89) — explicitly says "data directory is
+  left on disk as a safety measure" and only removes from memory.
+
+  Also, cleanDomainRefs never calls s.domainMgr.RemoveDomain() at all — it only
+  removes from s.cfg.Domains.
+
+  Let me also check if the task delete handler has the same issue.
+
+  Read 1 file (ctrl+o to expand)
+
+● Now I see the complete picture. The fix needs two things:
+
+  1. cleanDomainRefs must remove the data directory from disk AND call
+  s.domainMgr.RemoveDomain() when a domain becomes orphaned
+  2. The Server struct needs access to domainMgr in cleanDomainRefs
+
+  Let me check if the server already has domainMgr.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Good, s.domainMgr is available. Now the fix is straightforward. I need to:
+
+  1. In cleanDomainRefs, when a domain is removed, also remove its data
+  directory from disk and call s.domainMgr.RemoveDomain(k)
+  2. Update RemoveDomain in domain manager to optionally delete the data
+  directory, or just handle it in cleanDomainRefs directly
+
+  The simplest approach: add os.RemoveAll(d.DataDir) and
+  s.domainMgr.RemoveDomain(k) in cleanDomainRefs when a domain is being deleted.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(internal/api/delete.go)
+  ⎿  Added 12 lines
+      113        // Remove domain entirely if it has no remaining entity 
+           references.
+      114        // MCP servers are shared tools, not dependents — they d
+           on't keep a domain alive.
+      115        if len(d.Tasks) == 0 && len(d.Pipelines) == 0 && len(d.A
+           gents) == 0 {
+      116 +        // Remove data directory from disk.                   
+      117 +        if d.DataDir != "" {                                  
+      118 +          if err := os.RemoveAll(d.DataDir); err != nil {     
+      119 +            s.logger.Error("failed to remove domain data dir",
+          + "domain", k, "path", d.DataDir, "error", err)                
+      120 +          } else {                                            
+      121 +            s.logger.Info("domain data dir removed", "domain",
+          + k, "path", d.DataDir)                                        
+      122 +          }                                                   
+      123 +        }                                                     
+      124 +        // Remove from domain manager's in-memory map.        
+      125 +        if s.domainMgr != nil {                               
+      126 +          s.domainMgr.RemoveDomain(k)                         
+      127 +        }                                                     
+      128          delete(s.cfg.Domains, k)
+      129        } else {
+      130          s.cfg.Domains[k] = d
+
+● Now I need to add the domain import since cleanDomainRefs needs access to
+  s.domainMgr which is already available, but we also need s.logger. Let me
+  check the imports — os is already imported, and s.logger is already available
+  on the server struct. Let me verify.
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Found 2 new diagnostic issues in 2 files (ctrl+o to expand)
+
+● Good — os is already imported, and s.logger / s.domainMgr are both on the
+  Server struct. Let me also check that s.logger exists.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Now let me build to verify it compiles.
+
+● Bash(go build ./internal/api/ 2>&1)
+  ⎿  (No output)
+
+● Compiles clean. Now let me update the test to verify the new behavior.
+
+  Read 1 file (ctrl+o to expand)
+
+● The existing tests create Server structs without a logger or domainMgr, so
+  s.domainMgr will be nil (handled by the nil check) and s.logger will panic. I
+  need to add a logger to the test servers, and update the orphan removal test
+  to verify the data directory gets deleted.
+
+● Update(internal/api/delete_test.go)
+  ⎿  Added 4 lines
+       1  package api
+       2  
+       3  import (
+       4 +  "log/slog"                                                   
+       5 +  "os"                                                         
+       6 +  "path/filepath"                                              
+       7    "testing"
+       8  
+       9    "github.com/asdmin/claude-ecosystem/internal/config"
+      10 +  "github.com/asdmin/claude-ecosystem/internal/domain"         
+      11  )
+      12  
+      13  func TestCleanDomainRefs_Tasks(t *testing.T) {
+
+● Now I need to add a logger to all test Server structs and update the orphan
+  test to check data dir removal. Let me add a helper and update the tests.
+
+● Update(internal/api/delete_test.go)
+  ⎿  Added 5 lines, removed 1 line
+      10    "github.com/asdmin/claude-ecosystem/internal/domain"
+      11  )
+      12  
+      13 +func testLogger() *slog.Logger {                               
+      14 +  return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerO
+         +ptions{Level: slog.LevelError + 1}))                           
+      15 +}                                                              
+      16 +                                                               
+      17  func TestCleanDomainRefs_Tasks(t *testing.T) {
+      14 -  s := &Server{cfg: &config.Config{                            
+      18 +  s := &Server{logger: testLogger(), cfg: &config.Config{      
+      19      Domains: map[string]config.Domain{
+      20        "d1": {Tasks: []string{"a", "b", "c"}, Pipelines: []strin
+          g{"p1"}, Agents: []string{"ag1"}},
+      21      },
+  ⎿  Found 4 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now update all remaining test functions to include the logger, and add a new
+  test for data dir removal.
+
+● Update(internal/api/delete_test.go)
+  ⎿  Added 8 lines, removed 8 lines
+      28  }
+      29  
+      30  func TestCleanDomainRefs_Pipelines(t *testing.T) {
+      31 -  s := &Server{cfg: &config.Config{                            
+      31 +  s := &Server{logger: testLogger(), cfg: &config.Config{      
+      32      Domains: map[string]config.Domain{
+      33        "d1": {Tasks: []string{"a"}, Pipelines: []string{"p1", "p
+          2"}, Agents: []string{"ag1"}},
+      34      },
+     ...
+      41  }
+      42  
+      43  func TestCleanDomainRefs_Agents(t *testing.T) {
+      44 -  s := &Server{cfg: &config.Config{                            
+      44 +  s := &Server{logger: testLogger(), cfg: &config.Config{      
+      45      Domains: map[string]config.Domain{
+      46        "d1": {Tasks: []string{"a"}, Pipelines: []string{"p1"}, A
+          gents: []string{"ag1", "ag2"}},
+      47      },
+     ...
+      54  }
+      55  
+      56  func TestCleanDomainRefs_OrphanRemoval(t *testing.T) {
+      57 -  s := &Server{cfg: &config.Config{                            
+      57 +  s := &Server{logger: testLogger(), cfg: &config.Config{      
+      58      Domains: map[string]config.Domain{
+      59        "keep":   {Tasks: []string{"a"}, Agents: []string{"ag1"}}
+          ,
+      60        "remove": {Tasks: []string{"b"}, Agents: []string{"ag2"}}
+          ,
+     ...
+      71  }
+      72  
+      73  func TestCleanDomainRefs_NoChangeNoOrphan(t *testing.T) {
+      74 -  s := &Server{cfg: &config.Config{                            
+      74 +  s := &Server{logger: testLogger(), cfg: &config.Config{      
+      75      Domains: map[string]config.Domain{
+      76        "d1": {Tasks: []string{"a"}, Agents: []string{"ag1"}},
+      77      },
+     ...
+      85  }
+      86  
+      87  func TestCleanDomainRefs_MultiDomain(t *testing.T) {
+      88 -  s := &Server{cfg: &config.Config{                            
+      88 +  s := &Server{logger: testLogger(), cfg: &config.Config{      
+      89      Domains: map[string]config.Domain{
+      90        "d1": {Tasks: []string{"shared"}, Agents: []string{"ag1"}
+          },
+      91        "d2": {Tasks: []string{"shared", "other"}, Agents: []stri
+          ng{"ag1"}},
+     ...
+      108  }
+      109  
+      110  func TestCleanDomainRefs_MCPServers(t *testing.T) {
+      111 -  s := &Server{cfg: &config.Config{                           
+      111 +  s := &Server{logger: testLogger(), cfg: &config.Config{     
+      112      Domains: map[string]config.Domain{
+      113        "d1": {Tasks: []string{"t1"}, MCPServers: []string{"db",
+            "excel"}},
+      114      },
+     ...
+      122  }
+      123  
+      124  func TestCleanDomainRefs_MCPServersPartial(t *testing.T) {
+      125 -  s := &Server{cfg: &config.Config{                           
+      125 +  s := &Server{logger: testLogger(), cfg: &config.Config{     
+      126      Domains: map[string]config.Domain{
+      127        "d1": {Tasks: []string{"t1"}, MCPServers: []string{"db",
+            "excel", "telegram"}},
+      128      },
+     ...
+      137  }
+      138  
+      139  func TestCleanDomainRefs_MCPServersOnlyNoOrphan(t *testing.T) 
+           {
+      140 -  s := &Server{cfg: &config.Config{                           
+      140 +  s := &Server{logger: testLogger(), cfg: &config.Config{     
+      141      Domains: map[string]config.Domain{
+      142        "d1": {Tasks: []string{"t1"}, MCPServers: []string{"db"}
+           },
+      143      },
+
+● Now add the test for data directory removal at the end of the file.
+
+  Read 1 file (ctrl+o to expand)
+● Update(internal/api/delete_test.go)
+  ⎿  Error editing file
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(internal/api/delete_test.go)
+  ⎿  Added 44 lines
+      149      t.Fatal("expected orphaned domain 'd1' to be deleted (MCP 
+           servers don't keep domain alive)")
+      150    }
+      151  }
+      152 +                                                              
+      153 +func TestCleanDomainRefs_RemovesDataDir(t *testing.T) {       
+      154 +  // Create a temporary data directory to simulate a domain's 
+          +data dir.                                                     
+      155 +  tmpDir := t.TempDir()                                       
+      156 +  dataDir := filepath.Join(tmpDir, "data", "mydom")           
+      157 +  if err := os.MkdirAll(dataDir, 0o755); err != nil {         
+      158 +    t.Fatal(err)                                              
+      159 +  }                                                           
+      160 +  // Write a file inside to make sure RemoveAll works.        
+      161 +  if err := os.WriteFile(filepath.Join(dataDir, "test.db"), []
+          +byte("test"), 0o644); err != nil {                            
+      162 +    t.Fatal(err)                                              
+      163 +  }                                                           
+      164 +                                                              
+      165 +  logger := testLogger()                                      
+      166 +  domains := map[string]config.Domain{                        
+      167 +    "mydom": {Name: "mydom", DataDir: dataDir, Tasks: []string
+          +{"t1"}},                                                      
+      168 +  }                                                           
+      169 +  domMgr := domain.New(domains, logger)                       
+      170 +                                                              
+      171 +  s := &Server{                                               
+      172 +    logger:    logger,                                        
+      173 +    domainMgr: domMgr,                                        
+      174 +    cfg: &config.Config{                                      
+      175 +      Domains: domains,                                       
+      176 +    },                                                        
+      177 +  }                                                           
+      178 +                                                              
+      179 +  s.cleanDomainRefs([]string{"t1"}, nil, nil)                 
+      180 +                                                              
+      181 +  // Domain should be removed from config.                    
+      182 +  if _, ok := s.cfg.Domains["mydom"]; ok {                    
+      183 +    t.Fatal("expected orphaned domain 'mydom' to be removed fr
+          +om config")                                                   
+      184 +  }                                                           
+      185 +                                                              
+      186 +  // Data directory should be removed from disk.              
+      187 +  if _, err := os.Stat(dataDir); !os.IsNotExist(err) {        
+      188 +    t.Fatalf("expected data dir %s to be removed from disk, bu
+          +t it still exists", dataDir)                                  
+      189 +  }                                                           
+      190 +                                                              
+      191 +  // Domain should be removed from domain manager.            
+      192 +  if _, ok := domMgr.GetDomain("mydom"); ok {                 
+      193 +    t.Fatal("expected domain 'mydom' to be removed from domain
+          + manager")                                                    
+      194 +  }                                                           
+      195 +}                                                             
+
+● Bash(go test ./internal/api/ -run TestCleanDomainRefs -v 2>&1)
+  ⎿  === RUN   TestCleanDomainRefs_Tasks
+     --- PASS: TestCleanDomainRefs_Tasks (0.00s)
+     === RUN   TestCleanDomainRefs_Pipelines
+     … +15 lines (ctrl+o to expand)
+
+● Bash(go test ./internal/api/ -run TestCleanDomainRefs -v -count=1 2>&1)
+  ⎿  === RUN   TestCleanDomainRefs_Tasks
+     --- PASS: TestCleanDomainRefs_Tasks (0.00s)
+     === RUN   TestCleanDomainRefs_Pipelines
+     … +15 lines (ctrl+o to expand)
+
+● Hmm, no verbose output. Let me check if the tests are being cached or
+  something.
+
+● Bash(go test -v -run TestCleanDomainRefs ./internal/api/ 2>&1)
+  ⎿  === RUN   TestCleanDomainRefs_Tasks
+     --- PASS: TestCleanDomainRefs_Tasks (0.00s)
+     === RUN   TestCleanDomainRefs_Pipelines
+     … +15 lines (ctrl+o to expand)
+
+● The -v isn't showing because the package has init() or build tags maybe. Let
+  me try a different way.
+
+● Bash(go test -v -run TestCleanDomainRefs ./internal/api/ 2>&1)
+  ⎿  === RUN   TestCleanDomainRefs_Tasks
+     --- PASS: TestCleanDomainRefs_Tasks (0.00s)
+     === RUN   TestCleanDomainRefs_Pipelines
+     … +15 lines (ctrl+o to expand)
+
+● All 10 tests pass, including the new TestCleanDomainRefs_RemovesDataDir.
+
+  Here's what was wrong and what I fixed:
+
+  Problem: cleanDomainRefs in delete.go:116 only did delete(s.cfg.Domains, k)
+  when a domain became orphaned — it removed the domain from the config map but:
+  1. Never deleted the data directory (data/<domain>/) from disk
+  2. Never called s.domainMgr.RemoveDomain() to clean the in-memory map
+
+  Fix (in cleanDomainRefs): When an orphaned domain is detected, now also:
+  1. os.RemoveAll(d.DataDir) — removes the data directory and all contents from
+  disk
+  2. s.domainMgr.RemoveDomain(k) — removes from domain manager's in-memory map
+
+  This applies to all delete paths (task, pipeline, subagent) since they all go
+  through cleanDomainRefs.
+
+✻ Brewed for 2m 2s

@@ -1,0 +1,307 @@
+ ▐▛███▜▌   Claude Code v2.1.81
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ При попытке выполнить 4log-daily-report ошибка:                               
+step 4log-fetch-daily-data failed: exit status 1:                               
+{"type":"result","subtype":"success","is_error":true,"duration_ms":9596,"durati 
+on_api_ms":9103,"num_turns":4,"result":"API Error: 400                          
+{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\ 
+"tools.15.custom.input_schema.properties: Property keys should match pattern    
+'^[a-zA-Z0-9_.-]{1,64}$'\"},\"request_id\":\"req_011CZKQBC3M65ham2QL1uLsZ\"}"," 
+stop_reason":"stop_sequence","session_id":"62fecb23-49b8-4b4d-858f-fb6da96cb050 
+","total_cost_usd":0.07835325,"usage":{"input_tokens":6,"cache_creation_input_t 
+okens":15439,"cache_read_input_tokens":47030,"output_tokens":422,"server_tool_u 
+se":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard", 
+"cache_creation":{"ephemeral_1h_input_tokens":15439,"ephemeral_5m_input_tokens" 
+:0},"inference_geo":"","iterations":[],"speed":"standard"},"modelUsage":{"claud 
+e-sonnet-4-6":{"inputTokens":6,"outputTokens":422,"cacheReadInputTokens":47030, 
+"cacheCreationInputTokens":15439,"webSearchRequests":0,"costUSD":0.07835325,"co 
+ntextWindow":200000,"maxOutputTokens":32000}},"permission_denials":[],"fast_mod 
+e_state":"off","uuid":"20b29651-7d4d-4f5a-acd1-9c5bda6fda1f"}                   
+
+● The error says tools.15.custom.input_schema.properties: Property keys should 
+  match pattern '^[a-zA-Z0-9_.-]{1,64}$' — one of the MCP tools has a property
+  name with invalid characters.
+
+  Let me find which MCP server is involved in the 4log-fetch-daily-data task.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● The problem is with the 4log-api MCP server — it generates tools from an
+  OpenAPI spec and one of the tools (tool #15) has a property key with invalid
+  characters. Let me find the OpenAPI config.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● The spec file is specs/4log.json. The error is about a property key not
+  matching ^[a-zA-Z0-9_.-]{1,64}$. Let me check the spec for problematic
+  property names.
+
+● Explore(Find invalid property keys in OpenAPI spec)
+  ⎿  Done (26 tool uses · 70.1k tokens · 1m 12s)
+  (ctrl+o to expand)
+
+● The problem is clear: the specs/4log.json OpenAPI spec has 375+ property keys
+  with square brackets (e.g., form[clientBankAccounts][accountChecking]), and
+  the openapi MCP server passes them through as-is. Claude's API rejects
+  property keys not matching ^[a-zA-Z0-9_.-]{1,64}$.
+
+  Let me fix the MCP openapi server to sanitize property names and reverse the
+  mapping when calling the API.
+
+  Read 1 file (ctrl+o to expand)
+
+● Now let me see how the body schema is built and how tool arguments are used
+  when calling the API.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now let me see the full file length to understand the scope.
+
+  Read 1 file (ctrl+o to expand)
+
+● Here's my plan:
+
+  1. Add a BodyKeyMap map[string]string field to apiOperation to track
+  sanitized→original key mappings
+  2. Add a sanitizePropertyKey() function that replaces [ and ] with _
+  3. Modify schemaToMap() to accept and populate the key map
+  4. In doExecute(), restore original keys in the body before sending
+
+● Update(cmd/mcp/mcp-openapi/main.go)
+  ⎿  Added 1 line
+      45    Parameters  []apiParameter
+      46    HasBody     bool
+      47    BodySchema  map[string]any
+      48 +  BodyKeyMap  map[string]string // sanitized key → original key
+         + (for bracket notation)                                        
+      49  }
+      50  
+      51  type generatedTool struct {
+
+● Now add the sanitization function and a key-map-aware version of schemaToMap:
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Good, regexp is already imported. Now add the sanitization helpers right
+  before schemaToMap:
+
+● Update(cmd/mcp/mcp-openapi/main.go)
+  ⎿  Added 39 lines
+      551  
+      552  const maxSchemaDepth = 3
+      553  
+      554 +// sanitizePropertyKey replaces characters invalid for Claude 
+          +tool property keys.                                           
+      555 +// Pattern: ^[a-zA-Z0-9_.-]{1,64}$                            
+      556 +var invalidPropKeyRe = regexp.MustCompile(`[^a-zA-Z0-9_.\-]`) 
+      557 +                                                              
+      558 +func sanitizePropertyKey(key string) string {                 
+      559 +  sanitized := invalidPropKeyRe.ReplaceAllString(key, "_")    
+      560 +  if len(sanitized) > 64 {                                    
+      561 +    sanitized = sanitized[:64]                                
+      562 +  }                                                           
+      563 +  return sanitized                                            
+      564 +}                                                             
+      565 +                                                              
+      566 +// restoreBodyKeys recursively replaces sanitized keys back to
+          + originals in a body map.                                     
+      567 +func restoreBodyKeys(data any, keyMap map[string]string) any {
+      568 +  switch v := data.(type) {                                   
+      569 +  case map[string]any:                                        
+      570 +    restored := make(map[string]any, len(v))                  
+      571 +    for k, val := range v {                                   
+      572 +      origKey := k                                            
+      573 +      if orig, ok := keyMap[k]; ok {                          
+      574 +        origKey = orig                                        
+      575 +      }                                                       
+      576 +      restored[origKey] = restoreBodyKeys(val, keyMap)        
+      577 +    }                                                         
+      578 +    return restored                                           
+      579 +  case []any:                                                 
+      580 +    for i, item := range v {                                  
+      581 +      v[i] = restoreBodyKeys(item, keyMap)                    
+      582 +    }                                                         
+      583 +    return v                                                  
+      584 +  default:                                                    
+      585 +    return data                                               
+      586 +  }                                                           
+      587 +}                                                             
+      588 +                                                              
+      589  func schemaToMap(schema *base.Schema, depth int) map[string]an
+           y {
+      590 +  return schemaToMapWithKeyMap(schema, depth, nil)            
+      591 +}                                                             
+      592 +                                                              
+      593 +func schemaToMapWithKeyMap(schema *base.Schema, depth int, key
+          +Map map[string]string) map[string]any {                       
+      594    if schema == nil || depth > maxSchemaDepth {
+      595      return map[string]any{"type": "object"}
+      596    }
+
+● Now update the body of the schema function to use key mapping:
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Found 6 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Update(cmd/mcp/mcp-openapi/main.go)
+  ⎿  Added 15 lines, removed 4 lines
+      614    // Object properties
+      615    if schema.Properties != nil && orderedmap.Len(schema.Propert
+           ies) > 0 {
+      616      props := make(map[string]any)
+      617 +    var reqList []string                                      
+      618      for pair := orderedmap.First(schema.Properties); pair != n
+           il; pair = pair.Next() {
+      619        if pair.Value() != nil {
+      619 -        props[pair.Key()] = schemaToMap(pair.Value().Schema(),
+          - depth+1)                                                     
+      620 +        origKey := pair.Key()                                 
+      621 +        safeKey := sanitizePropertyKey(origKey)               
+      622 +        if keyMap != nil && safeKey != origKey {              
+      623 +          keyMap[safeKey] = origKey                           
+      624 +        }                                                     
+      625 +        props[safeKey] = schemaToMapWithKeyMap(pair.Value().Sc
+          +hema(), depth+1, keyMap)                                      
+      626        }
+      627      }
+      628      result["properties"] = props
+      623 -  }                                                           
+      624 -                                                              
+      625 -  if len(schema.Required) > 0 {                               
+      629 +    // Sanitize required list to match sanitized property keys
+      630 +    for _, r := range schema.Required {                       
+      631 +      reqList = append(reqList, sanitizePropertyKey(r))       
+      632 +    }                                                         
+      633 +    if len(reqList) > 0 {                                     
+      634 +      result["required"] = reqList                            
+      635 +    }                                                         
+      636 +  } else if len(schema.Required) > 0 {                        
+      637      result["required"] = schema.Required
+      638    }
+      639  
+
+● Now I need to update where BodySchema is built for each operation to use the
+  key-map-aware version. Let me find that code.
+
+  Searched for 1 pattern (ctrl+o to expand)
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Update(cmd/mcp/mcp-openapi/main.go)
+  ⎿  Added 2 lines, removed 1 line
+      516          jsonContent := findJSONContent(op.RequestBody.Content)
+      517          if jsonContent != nil && jsonContent.Schema != nil {
+      518            apiOp.HasBody = true
+      519 -          apiOp.BodySchema = schemaToMap(jsonContent.Schema.Sc
+          -hema(), 0)                                                    
+      519 +          apiOp.BodyKeyMap = make(map[string]string)          
+      520 +          apiOp.BodySchema = schemaToMapWithKeyMap(jsonContent
+          +.Schema.Schema(), 0, apiOp.BodyKeyMap)                        
+      521          }
+      522        }
+      523  
+
+● Now update doExecute to restore original keys before marshaling the body:
+
+● Update(cmd/mcp/mcp-openapi/main.go)
+  ⎿  Added 4 lines
+      863    var bodyBytes []byte
+      864    if op.HasBody {
+      865      if bodyData, ok := args["body"]; ok {
+      866 +      // Restore original property keys (e.g., bracket notatio
+          +n) before sending                                             
+      867 +      if len(op.BodyKeyMap) > 0 {                             
+      868 +        bodyData = restoreBodyKeys(bodyData, op.BodyKeyMap)   
+      869 +      }                                                       
+      870        var err error
+      871        bodyBytes, err = json.Marshal(bodyData)
+      872        if err != nil {  ⎿  Found 4 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● The linter says restoreBodyKeys is unused — this is likely a false positive
+  since it's called indirectly. Let me verify it builds:
+
+● Bash(go build ./cmd/mcp/mcp-openapi/ 2>&1)
+  ⎿  (No output)
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Builds cleanly. Now let me also check there are tests:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Let me verify the fix works correctly by writing a quick test:
+
+● Bash(go test ./cmd/mcp/mcp-openapi/ 2>&1)
+  ⎿  ok         github.com/asdmin/claude-ecosystem/cmd/mcp/mcp-openapi  0.011s
+
+● Let me also verify the sanitization logic handles the actual keys from the
+  spec correctly:
+
+● Bash(go run -v -run='^$' ./cmd/mcp/mcp-openapi/ 2>&1 | head -1; echo "---";
+      cat <<'EOF' | go run -exec echo ./cmd/mcp/mcp-openapi/ 2>&1 | head -1
+      EOF…)
+  ⎿  flag provided but not defined: -run
+     ---
+     /tmp/go-build1367767184/b001/exe/mcp-openapi
+     … +10 lines (ctrl+o to expand)
+
+● The sanitization works. The trailing underscores from ] are a bit ugly but
+  harmless — they match the required pattern and the round-trip via BodyKeyMap
+  restores the originals.
+
+  Let me also do the full build to make sure everything is fine:
+
+● Bash(make build 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Bash(make build 2>&1 | tail -20)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+  Read 1 file (ctrl+o to expand)
+
+● The mcp-openapi binary was already built. Let me check if the Makefile builds
+  it:
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● The loop builds all MCP servers but doesn't show output. Let me rebuild just
+  the openapi one explicitly:
+
+● Bash(go build -o bin/mcp-openapi ./cmd/mcp/mcp-openapi/ 2>&1)
+  ⎿  (No output)
+
+● Build successful. Let me also run all tests:
+
+● Bash(make test 2>&1)
+  ⎿  go test ./internal/... ./cmd/...
+     ok         github.com/asdmin/claude-ecosystem/internal/api (cached)
+     ok         github.com/asdmin/claude-ecosystem/internal/auth        (cached)
+     … +31 lines (ctrl+o to expand)
+
+
+● All tests pass. Here's what was fixed:
+
+  Problem: The specs/4log.json OpenAPI spec uses bracket notation in property
+  names (e.g., form[clientBankAccounts][accountChecking]). The mcp-openapi
+  server passed these through as-is into tool input schemas, but Claude's API
+  requires property keys to match ^[a-zA-Z0-9_.-]{1,64}$.
+
+  Fix in cmd/mcp/mcp-openapi/main.go:
+
+  1. Added sanitizePropertyKey() — replaces invalid characters (brackets, etc.)
+  with underscores
+  2. Added restoreBodyKeys() — recursively restores original keys before sending
+   to the API
+  3. Added BodyKeyMap to apiOperation — tracks sanitized→original key mappings
+  4. schemaToMapWithKeyMap() sanitizes keys when building tool schemas and
+  records the mapping
+  5. doExecute() restores original bracket-notation keys in the request body
+  before marshaling
+
+  The round-trip is transparent: Claude sees clean property names, but the API
+  receives the original bracket notation.
+
+✻ Cogitated for 4m 26s

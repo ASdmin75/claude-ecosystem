@@ -1,0 +1,1229 @@
+ ▐▛███▜▌   Claude Code v2.1.77
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem/web
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ Plan: MCP server mcp-openapi for external API integration                    │
+│                                                                              │
+│ Context                                                                      │
+│                                                                              │
+│ Tasks, SubAgents и Pipelines нуждаются в возможности вызывать внешние API,   │
+│ описанные OpenAPI-спецификациями (JSON/YAML). MCP-сервер — идеальное         │
+│ решение, т.к. полностью вписывается в существующую архитектуру: каждый       │
+│ MCP-сервер — отдельный Go-бинарник с JSON-RPC 2.0 stdio, конфигурируется     │
+│ через env vars, автоматически подхватывается Makefile и mcpmanager.          │
+│                                                                              │
+│ Approach                                                                     │
+│                                                                              │
+│ Создать mcp-openapi — единый MCP-сервер, который при запуске читает          │
+│ OpenAPI-спецификацию и динамически генерирует MCP-инструменты для каждого    │
+│ эндпоинта. Множественные инстансы с разными спеками работают через разные    │
+│ записи в mcp_servers с разными env vars.                                     │
+│                                                                              │
+│ Files to create/modify                                                       │
+│                                                                              │
+│ 1. cmd/mcp/mcp-openapi/main.go — новый файл, единственный файл сервера (по   │
+│ паттерну всех остальных MCP-серверов)                                        │
+│ 2. go.mod / go.sum — добавить github.com/pb33f/libopenapi (парсинг OpenAPI   │
+│ v2/v3/v3.1)                                                                  │
+│                                                                              │
+│ Makefile изменять не нужно — цикл for dir in cmd/mcp/*/ подхватит            │
+│ автоматически.                                                               │
+│                                                                              │
+│ Environment variables                                                        │
+│                                                                              │
+│ ┌──────────────────────────────┬──────────┬───────────────────────────────┐  │
+│ │           Variable           │ Required │          Description          │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_SPEC_PATH            │ Yes      │ Путь к OpenAPI-спецификации   │  │
+│ │                              │          │ (JSON или YAML)               │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_BASE_URL             │ No       │ Переопределение base URL из   │  │
+│ │                              │          │ спеки                         │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_AUTH_TYPE            │ No       │ bearer, apikey, basic         │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_AUTH_TOKEN           │ No       │ Bearer token                  │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_API_KEY              │ No       │ API key value                 │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_API_KEY_NAME         │ No       │ Header/query param name       │  │
+│ │                              │          │ (default: X-API-Key)          │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_API_KEY_IN           │ No       │ header (default) или query    │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_BASIC_USER /         │ No       │ Basic auth                    │  │
+│ │ OPENAPI_BASIC_PASS           │          │                               │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_INCLUDE_TAGS         │ No       │ Фильтр по тегам               │  │
+│ │                              │          │ (comma-separated)             │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_INCLUDE_PATHS        │ No       │ Фильтр по path-префиксам      │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_INCLUDE_OPS          │ No       │ Фильтр по operationId         │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_EXCLUDE_OPS          │ No       │ Исключение по operationId     │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_MAX_TOOLS            │ No       │ Лимит инструментов (default:  │  │
+│ │                              │          │ 50)                           │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_TIMEOUT              │ No       │ HTTP timeout (default: 30s)   │  │
+│ ├──────────────────────────────┼──────────┼───────────────────────────────┤  │
+│ │ OPENAPI_EXTRA_HEADERS        │ No       │ Доп. заголовки                │  │
+│ │                              │          │ Key:Value,Key2:Value2         │  │
+│ └──────────────────────────────┴──────────┴───────────────────────────────┘  │
+│                                                                              │
+│ Implementation structure (single main.go)                                    │
+│                                                                              │
+│ 1. JSON-RPC boilerplate (~50 lines)                                          │
+│                                                                              │
+│ Копируем паттерн из mcp-database/main.go: structs jsonRPCRequest,            │
+│ jsonRPCResponse, tool, toolCallParams, contentItem, toolResult, helpers      │
+│ textResult/errorResult, main loop с initialize/tools/list/tools/call.        │
+│                                                                              │
+│ 2. Startup: parse spec & generate tools                                      │
+│                                                                              │
+│ main():                                                                      │
+│   specPath = os.Getenv("OPENAPI_SPEC_PATH")  // required                     │
+│   specData = os.ReadFile(specPath)                                           │
+│   doc = libopenapi.NewDocument(specData)                                     │
+│   model = doc.BuildV3Model() // or BuildV2Model() based on version           │
+│   operations = extractOperations(model)  // -> []apiOperation                │
+│   operations = filterOperations(operations)  // by tags/paths/ops            │
+│   generatedTools = generateTools(operations)  // -> map[string]generatedTool │
+│   // start JSON-RPC loop with generatedTools                                 │
+│                                                                              │
+│ 3. Operation extraction                                                      │
+│                                                                              │
+│ Walk model.Paths → for each path + method → normalize into:                  │
+│ type apiOperation struct {                                                   │
+│     OperationID string                                                       │
+│     Method, Path, Summary, Description string                                │
+│     Tags        []string                                                     │
+│     Parameters  []apiParameter   // path, query, header                      │
+│     RequestBody *apiRequestBody  // body schema for POST/PUT/PATCH           │
+│ }                                                                            │
+│ Поддержка v2 и v3 через отдельные extractV2/extractV3 функции.               │
+│                                                                              │
+│ 4. Tool name generation                                                      │
+│                                                                              │
+│ - Если operationId задан: sanitize(operationId) → lowercase, non-alnum → _   │
+│ - Иначе: method_pathToSnake(path) → get_users_by_id_orders                   │
+│ - Дедупликация через суффиксы _2, _3                                         │
+│                                                                              │
+│ 5. Tool InputSchema generation                                               │
+│                                                                              │
+│ Для каждой операции:                                                         │
+│ - Path params → top-level required string properties                         │
+│ - Query params → top-level properties (required if marked)                   │
+│ - Header params → properties с префиксом header_                             │
+│ - Request body → property body с вложенной JSON Schema из спеки (ограничение │
+│  глубины до 3 уровней для $ref)                                              │
+│                                                                              │
+│ 6. Tool execution (tools/call handler)                                       │
+│                                                                              │
+│ handleToolCall(toolName, arguments):                                         │
+│   op = generatedTools[toolName].operation                                    │
+│   1. URL: baseURL + op.Path, подставить path params из arguments             │
+│   2. Query string: из query params в arguments                               │
+│   3. Headers: Content-Type + auth + header params + extra headers            │
+│   4. Body: marshal arguments["body"] в JSON (для POST/PUT/PATCH)             │
+│   5. HTTP request с timeout                                                  │
+│   6. Response: read body (limit 1MB), return "HTTP {status}\n\n{body}"       │
+│      - JSON → pretty-print                                                   │
+│      - status >= 400 → isError: true                                         │
+│                                                                              │
+│ 7. Auth                                                                      │
+│                                                                              │
+│ В applyAuth(req): switch на OPENAPI_AUTH_TYPE:                               │
+│ - bearer → Authorization: Bearer {OPENAPI_AUTH_TOKEN}                        │
+│ - apikey → header или query param по OPENAPI_API_KEY_NAME/OPENAPI_API_KEY_IN │
+│ - basic → Authorization: Basic base64(user:pass)                             │
+│                                                                              │
+│ tasks.yaml usage example                                                     │
+│                                                                              │
+│ mcp_servers:                                                                 │
+│   - name: crm-api                                                            │
+│     command: ./bin/mcp-openapi                                               │
+│     env:                                                                     │
+│       OPENAPI_SPEC_PATH: specs/crm-openapi.yaml                              │
+│       OPENAPI_BASE_URL: https://api.crm.example.com/v2                       │
+│       OPENAPI_AUTH_TYPE: bearer                                              │
+│       OPENAPI_AUTH_TOKEN: ${CRM_API_TOKEN}                                   │
+│       OPENAPI_INCLUDE_TAGS: contacts,deals                                   │
+│                                                                              │
+│ tasks:                                                                       │
+│   - name: sync-crm-leads                                                     │
+│     prompt: "Fetch new leads from CRM and sync to local database."           │
+│     mcp_servers:                                                             │
+│       - crm-api                                                              │
+│       - database                                                             │
+│     allowed_tools:                                                           │
+│       - mcp__crm-api__list_contacts                                          │
+│       - mcp__crm-api__get_contact                                            │
+│       - mcp__database__insert                                                │
+│                                                                              │
+│ Multiple API instances — просто отдельные entries в mcp_servers с разными    │
+│ env.                                                                         │
+│                                                                              │
+│ Design decisions                                                             │
+│                                                                              │
+│ - libopenapi (pb33f) — поддержка v2+v3+v3.1, разрешение $ref, активно        │
+│ поддерживается                                                               │
+│ - Max 50 tools — большие спеки деградируют качество tool selection;          │
+│ фильтрация через теги/пути решает проблему                                   │
+│ - Без OAuth2 flow — bearer token покрывает большинство случаев, пользователь │
+│  получает токен внешне                                                       │
+│ - Без file upload — multipart/binary скипаются (непрактично для LLM)         │
+│ - Response limit 1MB — защита от OOM                                         │
+│ - Schema depth limit 3 — для circular $ref в InputSchema                     │
+│                                                                              │
+│ Verification                                                                 │
+│                                                                              │
+│ 1. make build — бинарник bin/mcp-openapi собирается                          │
+│ 2. Тест с Petstore spec:                                                     │
+│ OPENAPI_SPEC_PATH=specs/petstore.yaml                                        │
+│ OPENAPI_BASE_URL=https://petstore3.swagger.io/api/v3 \                       │
+│   echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ./bin/mcp-openapi  │
+│ 3. Тест вызова инструмента:                                                  │
+│ echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_pe │
+│ t_by_id","arguments":{"petId":"1"}}}' | ./bin/mcp-openapi                    │
+│ 4. Интеграция: добавить в tasks.yaml, запустить задачу через API/UI          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/asdmin/development/AI/Claude/claude-ecosyst
+     em/2026-03-17-204557-implement-the-following-plan.txt
+
+❯ продолжай                                                                     
+
+● Let me first look at an existing MCP server for the pattern, and check the
+  current go.mod.
+
+● Read 2 files (ctrl+o to expand)
+
+● Good, I have the pattern. Now let me create the mcp-openapi server and add the
+   dependency.
+
+● Read 1 file (ctrl+o to expand)
+
+● Write(~/development/AI/Claude/claude-ecosystem/cmd/mcp/mcp-openapi/main.go)
+  ⎿  Wrote 736 lines to ../cmd/mcp/mcp-openapi/main.go
+       1 package main
+       2 
+       3 import (
+       4        "bufio"
+       5        "bytes"
+       6        "encoding/base64"
+       7        "encoding/json"
+       8        "fmt"
+       9        "io"
+      10        "net/http"
+     … +726 lines (ctrl+o to expand)
+
+● Now let me add the libopenapi dependency.
+
+● Bash(go get github.com/pb33f/libopenapi@latest)
+  ⎿  go: downloading github.com/pb33f/libopenapi v0.34.3
+     go: downloading go.yaml.in/yaml/v4 v4.0.0-rc.4
+     go: downloading github.com/pb33f/jsonpath v0.8.1
+     … +9 lines (ctrl+o to expand)
+  ⎿  (timeout 2m)
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Bash(go mod tidy)
+  ⎿  (No output)
+
+● Now let me try to build it.
+
+● Bash(go build ./cmd/mcp/mcp-openapi/ 2>&1)
+  ⎿  Error: Exit code 1
+     # github.com/asdmin/claude-ecosystem/cmd/mcp/mcp-openapi
+     cmd/mcp/mcp-openapi/main.go:125:9: invalid argument: errs (variable of 
+     interface type error) for built-in len
+     cmd/mcp/mcp-openapi/main.go:126:72: cannot index errs (variable of 
+     interface type error)
+     cmd/mcp/mcp-openapi/main.go:235:55: model.Model.Servers.Len undefined (type
+      []*"github.com/pb33f/libopenapi/datamodel/high/v3".Server has no field or 
+     method Len)
+     cmd/mcp/mcp-openapi/main.go:236:32: model.Model.Servers.First undefined 
+     (type []*"github.com/pb33f/libopenapi/datamodel/high/v3".Server has no 
+     field or method First)
+     cmd/mcp/mcp-openapi/main.go:344:29: undefined: v3.Schema
+
+● I need to check the actual libopenapi API. Let me look at the types.
+
+● Explore(Explore libopenapi API types)
+  ⎿  Done (25 tool uses · 59.0k tokens · 1m 11s)
+  (ctrl+o to expand)
+
+● Now I have the correct API. Let me fix the code.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I need to fix the issues. Let me check exactly what the Schema type and
+  Items type look like.
+
+● Searched for 4 patterns, read 1 file (ctrl+o to expand)
+
+● Now I also need to check the Enum field — it uses []*yaml.Node. And I need to
+  check what yaml package. Let me also verify how orderedmap iteration works and
+   what Oldest() returns.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● So the orderedmap uses FromOldest() returning iter.Seq2[K, V], not Oldest()
+  with Next(). Let me check what's available.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I have the full picture. Let me rewrite the file with correct types.
+
+● Write(~/development/AI/Claude/claude-ecosystem/cmd/mcp/mcp-openapi/main.go)
+  ⎿  Added 27 lines, removed 30 lines
+      16    "time"
+      17  
+      18    "github.com/pb33f/libopenapi"
+      19 +  "github.com/pb33f/libopenapi/datamodel/high/base"            
+      20    v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
+      21    "github.com/pb33f/libopenapi/orderedmap"
+      22  )
+     ...
+      37    Error   any    `json:"error,omitempty"`
+      38  }
+      39  
+      39 -type tool struct {                                             
+      40 +type mcpTool struct {                                          
+      41    Name        string         `json:"name"`
+      42    Description string         `json:"description"`
+      43    InputSchema map[string]any `json:"inputSchema"`
+     ...
+      61  // --- API operation model ---
+      62  
+      63  type apiParameter struct {
+      63 -  Name        string `json:"name"`                             
+      64 -  In          string `json:"in"` // path, query, header        
+      65 -  Required    bool   `json:"required"`                         
+      66 -  Description string `json:"description"`                      
+      64 +  Name        string                                           
+      65 +  In          string // path, query, header                    
+      66 +  Required    bool                                             
+      67 +  Description string                                           
+      68    Schema      map[string]any
+      69  }
+      70  
+     ...
+      81  }
+      82  
+      83  type generatedTool struct {
+      83 -  tool      tool                                               
+      84 +  tool      mcpTool                                            
+      85    operation apiOperation
+      86  }
+      87  
+     ...
+      89  
+      90  var (
+      91    generatedTools map[string]generatedTool
+      91 -  toolList       []tool                                        
+      92 +  toolList       []mcpTool                                     
+      93    baseURL        string
+      94    httpClient     *http.Client
+      95    authType       string
+     ...
+      122      os.Exit(1)
+      123    }
+      124  
+      124 -  model, errs := doc.BuildV3Model()                           
+      125 -  if len(errs) > 0 && model == nil {                          
+      126 -    fmt.Fprintf(os.Stderr, "failed to build OpenAPI v3 model: 
+          -%v\n", errs[0])                                               
+      125 +  model, err := doc.BuildV3Model()                            
+      126 +  if err != nil && model == nil {                             
+      127 +    fmt.Fprintf(os.Stderr, "failed to build OpenAPI v3 model: 
+          +%v\n", err)                                                   
+      128      os.Exit(1)
+      129    }
+      130  
+     ...
+      233  // --- Spec parsing ---
+      234  
+      235  func extractBaseURL(model *libopenapi.DocumentModel[v3.Documen
+           t]) string {
+      235 -  if model.Model.Servers != nil && model.Model.Servers.Len() >
+          - 0 {                                                          
+      236 -    first := model.Model.Servers.First()                      
+      237 -    if first != nil {                                         
+      238 -      return first.URL                                        
+      239 -    }                                                         
+      236 +  if len(model.Model.Servers) > 0 {                           
+      237 +    return model.Model.Servers[0].URL                         
+      238    }
+      239    return "http://localhost"
+      240  }
+     ...
+      246      return ops
+      247    }
+      248  
+      251 -  for pair := model.Model.Paths.PathItems.Oldest(); pair != ni
+          -l; pair = pair.Next() {                                       
+      252 -    path := pair.Key                                          
+      253 -    item := pair.Value                                        
+      249 +  for pair := orderedmap.First(model.Model.Paths.PathItems); p
+          +air != nil; pair = pair.Next() {                              
+      250 +    path := pair.Key()                                        
+      251 +    item := pair.Value()                                      
+      252  
+      253      methods := map[string]*v3.Operation{
+      254        "GET":     item.Get,
+     ...
+      329  }
+      330  
+      331  func findJSONContent(content *orderedmap.Map[string, *v3.Media
+           Type]) *v3.MediaType {
+      334 -  for pair := content.Oldest(); pair != nil; pair = pair.Next(
+          -) {                                                           
+      335 -    if strings.Contains(pair.Key, "json") {                   
+      336 -      return pair.Value                                       
+      332 +  for pair := orderedmap.First(content); pair != nil; pair = p
+          +air.Next() {                                                  
+      333 +    if strings.Contains(pair.Key(), "json") {                 
+      334 +      return pair.Value()                                     
+      335      }
+      336    }
+      337    return nil
+     ...
+      339  
+      340  const maxSchemaDepth = 3
+      341  
+      344 -func schemaToMap(schema *v3.Schema, depth int) map[string]any 
+          -{                                                             
+      342 +func schemaToMap(schema *base.Schema, depth int) map[string]an
+          +y {                                                           
+      343    if schema == nil || depth > maxSchemaDepth {
+      344      return map[string]any{"type": "object"}
+      345    }
+     ...
+      361    }
+      362  
+      363    // Object properties
+      366 -  if schema.Properties != nil && schema.Properties.Len() > 0 {
+      364 +  if schema.Properties != nil && orderedmap.Len(schema.Propert
+          +ies) > 0 {                                                    
+      365      props := make(map[string]any)
+      368 -    for pair := schema.Properties.Oldest(); pair != nil; pair 
+          -= pair.Next() {                                               
+      369 -      if pair.Value != nil {                                  
+      370 -        props[pair.Key] = schemaToMap(pair.Value.Schema(), dep
+          -th+1)                                                         
+      366 +    for pair := orderedmap.First(schema.Properties); pair != n
+          +il; pair = pair.Next() {                                      
+      367 +      if pair.Value() != nil {                                
+      368 +        props[pair.Key()] = schemaToMap(pair.Value().Schema(),
+          + depth+1)                                                     
+      369        }
+      370      }
+      371      result["properties"] = props
+     ...
+      376    }
+      377  
+      378    // Array items
+      381 -  if schema.Items != nil && schema.Items.A != nil {           
+      379 +  if schema.Items != nil && schema.Items.IsA() {              
+      380      result["items"] = schemaToMap(schema.Items.A.Schema(), dep
+           th+1)
+      381    }
+      382  
+     ...
+      484  
+      485  // --- Tool schema generation ---
+      486  
+      489 -func buildTool(name string, op apiOperation) tool {           
+      487 +func buildTool(name string, op apiOperation) mcpTool {        
+      488    desc := op.Summary
+      489    if desc == "" {
+      490      desc = op.Description
+     ...
+      492    if desc == "" {
+      493      desc = fmt.Sprintf("%s %s", op.Method, op.Path)
+      494    }
+      497 -  // Truncate long descriptions                               
+      495    if len(desc) > 500 {
+      496      desc = desc[:497] + "..."
+      497    }
+     ...
+      537      inputSchema["required"] = required
+      538    }
+      539  
+      543 -  return tool{                                                
+      540 +  return mcpTool{                                             
+      541      Name:        name,
+      542      Description: desc,
+      543      InputSchema: inputSchema,
+
+● Bash(go build ./cmd/mcp/mcp-openapi/ 2>&1)
+  ⎿  (No output)
+  ⎿  (timeout 2m)
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Build succeeded. Now let me run make build to confirm the binary gets picked
+  up by the Makefile.
+
+● Bash(make build 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Read 1 file (ctrl+o to expand)
+
+● The Makefile loop for dir in cmd/mcp/*/ should pick it up. Let me verify.
+
+● Read 1 file (ctrl+o to expand)
+
+● Binary is built (~17MB). Let me do a quick smoke test with the Petstore spec.
+
+● Bash(mkdir -p /home/asdmin/development/AI/Claude/claude-ecosystem/specs &&
+      curl -sL https://petstore3.swagger.io/api/v3/openapi.json -o
+      /home/asdmin/development/AI/C…)
+  ⎿  Downloaded
+     17106 /home/asdmin/development/AI/Claude/claude-ecosystem/specs/petsto
+     re.json
+
+● Bash(echo '{"jsonrpc":"2.0","id":1,"method":"initialize"}' |
+      OPENAPI_SPEC_PATH=specs/petstore.json
+      OPENAPI_BASE_URL=https://petstore3.swagger.io/api/v3 ./bin/mcp-ope…)
+  ⎿  mcp-openapi: loaded 19 tools from specs/petstore.json (base: https://p
+     etstore3.swagger.io/api/v3)
+     {
+     … +13 lines (ctrl+o to expand)
+
+● Bash(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' |
+      OPENAPI_SPEC_PATH=specs/petstore.json
+      OPENAPI_BASE_URL=https://petstore3.swagger.io/api/v3 ./bin/mcp-ope…)
+  ⎿  {
+         "jsonrpc": "2.0",
+         "id": 1,
+     … +35 lines (ctrl+o to expand)
+
+● Now let me test an actual API call.
+
+● Bash(echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get
+      petbyid","arguments":{"petId":"1"}}}' |
+      OPENAPI_SPEC_PATH=specs/petstore.json OPENAPI_B…)
+  ⎿  {
+         "jsonrpc": "2.0",
+         "id": 2,
+     … +11 lines (ctrl+o to expand)
+
+● Everything works. Let me also test filtering.
+
+● Bash(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' |
+      OPENAPI_SPEC_PATH=specs/petstore.json
+      OPENAPI_BASE_URL=https://petstore3.swagger.io/api/v3 OPENAPI_INCLU…)
+  ⎿  8 tools:
+       updatepet
+       addpet
+     … +6 lines (ctrl+o to expand)
+
+● All working. Let me tidy up and run go mod tidy.
+
+● Bash(go mod tidy 2>&1)
+  ⎿  (No output)
+
+● Clean up the test spec file since it shouldn't be committed.
+
+● Bash(rm -rf /home/asdmin/development/AI/Claude/claude-ecosystem/specs)
+  ⎿  Done
+
+● Done. Here's what was implemented:
+
+  cmd/mcp/mcp-openapi/main.go — New MCP server that:
+  - Parses any OpenAPI v3 spec (JSON/YAML) via libopenapi at startup
+  - Dynamically generates MCP tools for each API endpoint (19 tools from
+  Petstore spec)
+  - Supports filtering by tags (OPENAPI_INCLUDE_TAGS), paths
+  (OPENAPI_INCLUDE_PATHS), operation IDs
+  (OPENAPI_INCLUDE_OPS/OPENAPI_EXCLUDE_OPS)
+  - Handles auth: bearer, API key (header/query), basic
+  - Executes HTTP requests with path/query/header params and JSON body
+  - Limits tools to 50 (configurable), responses to 1MB, schema depth to 3
+  - Pretty-prints JSON responses, marks 4xx/5xx as errors
+  - Follows the exact same JSON-RPC stdio pattern as all other MCP servers
+
+  go.mod/go.sum — Added github.com/pb33f/libopenapi v0.34.3
+
+  The Makefile's for dir in cmd/mcp/*/ loop automatically picks up the new
+  binary. Binary builds to bin/mcp-openapi (~17MB).
+
+✻ Baked for 8m 1s
+
+❯ Как использовать mcp-openapi ?                                                
+
+● Использование mcp-openapi
+
+  1. Добавить в tasks.yaml
+
+  mcp_servers:
+    - name: petstore
+      command: ./bin/mcp-openapi
+      env:
+        OPENAPI_SPEC_PATH: specs/petstore.yaml
+        OPENAPI_BASE_URL: https://petstore3.swagger.io/api/v3
+
+  tasks:
+    - name: check-pets
+      prompt: "Find all available pets and list their names."
+      mcp_servers:
+        - petstore
+      allowed_tools:
+        - mcp__petstore__findpetsbystatus
+        - mcp__petstore__getpetbyid
+
+  2. Несколько API — отдельные инстансы
+
+  mcp_servers:
+    - name: crm-api
+      command: ./bin/mcp-openapi
+      env:
+        OPENAPI_SPEC_PATH: specs/crm.yaml
+        OPENAPI_BASE_URL: https://api.crm.example.com/v2
+        OPENAPI_AUTH_TYPE: bearer
+        OPENAPI_AUTH_TOKEN: ${CRM_TOKEN}
+        OPENAPI_INCLUDE_TAGS: contacts,deals
+
+    - name: billing-api
+      command: ./bin/mcp-openapi
+      env:
+        OPENAPI_SPEC_PATH: specs/billing.yaml
+        OPENAPI_AUTH_TYPE: apikey
+        OPENAPI_API_KEY: ${BILLING_KEY}
+        OPENAPI_API_KEY_NAME: X-Api-Key
+
+  3. Env-переменные
+
+  ┌─────────────────────────┬──────────────┬─────────────────────────────────┐
+  │       Переменная        │ Обязательная │            Описание             │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_SPEC_PATH       │ Да           │ Путь к OpenAPI-спеке            │
+  │                         │              │ (JSON/YAML)                     │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_BASE_URL        │ Нет          │ Переопределяет URL из спеки     │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_AUTH_TYPE       │ Нет          │ bearer, apikey, basic           │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_AUTH_TOKEN      │ Нет          │ Токен для bearer                │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_API_KEY         │ Нет          │ Значение API key                │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_API_KEY_NAME    │ Нет          │ Имя заголовка (default:         │
+  │                         │              │ X-API-Key)                      │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_API_KEY_IN      │ Нет          │ header (default) или query      │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_BASIC_USER/PASS │ Нет          │ Basic auth                      │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_INCLUDE_TAGS    │ Нет          │ Фильтр по тегам                 │
+  │                         │              │ (contacts,deals)                │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_INCLUDE_PATHS   │ Нет          │ Фильтр по префиксам путей       │
+  │                         │              │ (/users,/orders)                │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_INCLUDE_OPS     │ Нет          │ Фильтр по operationId           │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_EXCLUDE_OPS     │ Нет          │ Исключить operationId           │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_MAX_TOOLS       │ Нет          │ Лимит (default: 50)             │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_TIMEOUT         │ Нет          │ HTTP timeout (default: 30s)     │
+  ├─────────────────────────┼──────────────┼─────────────────────────────────┤
+  │ OPENAPI_EXTRA_HEADERS   │ Нет          │ Key:Value,Key2:Value2           │
+  └─────────────────────────┴──────────────┴─────────────────────────────────┘
+
+  4. Ручная проверка
+
+  # Посмотреть список инструментов
+  echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | \
+    OPENAPI_SPEC_PATH=specs/petstore.json \
+    OPENAPI_BASE_URL=https://petstore3.swagger.io/api/v3 \
+    ./bin/mcp-openapi 2>/dev/null | python3 -m json.tool
+
+  # Вызвать инструмент
+  echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"getpetby
+  id","arguments":{"petId":"1"}}}' | \
+    OPENAPI_SPEC_PATH=specs/petstore.json \
+    OPENAPI_BASE_URL=https://petstore3.swagger.io/api/v3 \
+    ./bin/mcp-openapi 2>/dev/null | python3 -m json.tool
+
+  5. Как формируются имена инструментов
+
+  - Если в спеке есть operationId: getPetById → инструмент getpetbyid
+  - Если нет → {method}_{path}, например get_users_id_orders
+
+  В allowed_tools задачи имя будет: mcp__{server_name}__{tool_name}, например
+  mcp__petstore__getpetbyid.
+
+❯ wizard уже умеет добавлять в новые задачи, сабагенты, пайплайны mcp-openapi ? 
+
+● Explore(Find wizard UI components)
+  ⎿  Done (34 tool uses · 72.6k tokens · 59s)
+  (ctrl+o to expand)
+
+● Wizard есть и уже поддерживает mcp_servers, но вопрос — знает ли он конкретно
+  про mcp-openapi и его env-переменные. Проверю prompt.go.
+
+● Read 1 file (ctrl+o to expand)
+
+● Нет. Wizard знает про database, excel, email, telegram, filesystem — но не 
+  знает про mcp-openapi. Проблемы:
+
+  1. Prompt (строки 148-155) — захардкожен список MCP-серверов и их
+  инструментов. mcp-openapi не упомянут.
+  2. Динамические инструменты — у mcp-openapi имена инструментов генерируются из
+   спеки, их нельзя захардкодить.
+
+  Нужно добавить в prompt документацию по mcp-openapi и научить wizard понимать,
+   что инструменты у него динамические. Исправлю.
+
+● Read 1 file (ctrl+o to expand)
+
+● Теперь вижу полную картину. Нужно обновить prompt.go — добавить документацию
+  про mcp-openapi и объяснить, что его инструменты динамические (генерируются из
+   спеки). Applier не нужно менять — он уже валидирует по имени сервера в
+  конфиге.
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/prompt.go)
+  ⎿  Added 19 lines, removed 1 line
+      152  - **email**: mcp__email__send_email, mcp__email__read_inbox, m
+           cp__email__search_emails
+      153  - **telegram**: mcp__telegram__send_message, mcp__telegram__se
+           nd_document
+      154  - **filesystem**: mcp__filesystem__read_file, mcp__filesystem_
+           _write_file, mcp__filesystem__list_directory, mcp__filesystem_
+           _search_files, mcp__filesystem__copy_file
+      155 +- **openapi** (mcp-openapi): DYNAMIC tools — tool names are ge
+          +nerated from the OpenAPI spec at startup. Pattern: mcp__{serve
+          +r_name}__{operationId_lowercase}. Example: if server is named 
+          +"crm-api" and spec has operationId "getContacts", tool name is
+          + mcp__crm-api__getcontacts.                                   
+      156  
+      156 -IMPORTANT: Use ONLY these exact tool names in allowed_tools. D
+          -o NOT invent tool names.                                      
+      157 +## mcp-openapi Server                                         
+      158  
+      159 +mcp-openapi dynamically generates MCP tools from an OpenAPI v2
+          +/v3 specification. Use it to integrate external REST APIs.    
+      160 +                                                              
+      161 +To use mcp-openapi, it must ALREADY be defined in the mcp_serv
+          +ers config. The wizard can reference existing mcp-openapi inst
+          +ances by name, but cannot create new MCP server entries. If th
+          +e user needs an external API and an mcp-openapi instance is av
+          +ailable, reference it and use mcp__{server_name}__{operation} 
+          +pattern for allowed_tools.                                    
+      162 +                                                              
+      163 +Environment variables (configured in mcp_servers, not by wizar
+          +d):                                                           
+      164 +- OPENAPI_SPEC_PATH (required): path to OpenAPI spec file     
+      165 +- OPENAPI_BASE_URL: override base URL from spec               
+      166 +- OPENAPI_AUTH_TYPE: bearer, apikey, basic                    
+      167 +- OPENAPI_AUTH_TOKEN, OPENAPI_API_KEY, OPENAPI_BASIC_USER/PASS
+          +: credentials                                                 
+      168 +- OPENAPI_INCLUDE_TAGS: filter by tags (comma-separated)      
+      169 +- OPENAPI_INCLUDE_PATHS: filter by path prefixes              
+      170 +- OPENAPI_INCLUDE_OPS / OPENAPI_EXCLUDE_OPS: filter by operati
+          +onId                                                          
+      171 +                                                              
+      172 +Since mcp-openapi tools are dynamic, when adding allowed_tools
+          + for an openapi server, use the pattern mcp__{server_name}__{o
+          +perationid_lowercase} based on the spec's operationId values. 
+          +If you don't know exact operationIds, omit allowed_tools to al
+          +low all tools from that server.                               
+      173 +                                                              
+      174 +IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi
+          + pattern) in allowed_tools. Do NOT invent tool names.         
+      175 +                                                              
+      176  ## Permission Modes
+      177  - "plan" — read-only, no file writes or tool execution. Good f
+           or analysis tasks.
+      178  - "dontAsk" — REQUIRED for tasks that use MCP tools (database,
+            excel, telegram, etc.) or agents. Without it, tool calls will
+            be denied.
+
+● Теперь добавлю в секцию "Available MCP Servers" вывод env vars для
+  openapi-серверов, чтобы wizard видел какие спеки/теги подключены.
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/prompt.go)
+  ⎿  Added 9 lines
+      198      sb.WriteString("## Available MCP Servers\n\n")
+      199      for _, mcp := range cfg.MCPServers {
+      200        sb.WriteString(fmt.Sprintf("- `%s`: %s %s\n", mcp.Name, 
+           mcp.Command, strings.Join(mcp.Args, " ")))
+      201 +      // For mcp-openapi servers, show spec path and filters s
+          +o wizard knows what APIs are available                        
+      202 +      if strings.Contains(mcp.Command, "mcp-openapi") {       
+      203 +        for k, v := range mcp.Env {                           
+      204 +          switch k {                                          
+      205 +          case "OPENAPI_SPEC_PATH", "OPENAPI_BASE_URL", "OPENA
+          +PI_INCLUDE_TAGS", "OPENAPI_INCLUDE_PATHS":                    
+      206 +            sb.WriteString(fmt.Sprintf("    %s=%s\n", k, v))  
+      207 +          }                                                   
+      208 +        }                                                     
+      209 +      }                                                       
+      210      }
+      211      sb.WriteString("\n")
+      212    }
+  ⎿  Found 5 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Проверю что всё компилируется.
+
+● Bash(go build ./internal/wizard/ 2>&1)
+  ⎿  (No output)
+  ⎿  Found 5 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Компилируется. Проверю также что config.MCPServerConfig имеет поле Env.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Env — map[string]string. Всё корректно.
+
+  Теперь полный билд для проверки.
+
+● Bash(make build 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Готово. Вот что было добавлено в wizard prompt:
+
+  1. Документация mcp-openapi — описание сервера, его env-переменных, паттерн
+  именования динамических инструментов
+  (mcp__{server_name}__{operationid_lowercase})
+  2. Инструкция для wizard — если не знает exact operationId, опускать
+  allowed_tools (разрешить все инструменты сервера)
+  3. Вывод конфигурации openapi-серверов — в секции "Available MCP Servers" для
+  каждого mcp-openapi инстанса показываются OPENAPI_SPEC_PATH, OPENAPI_BASE_URL,
+   OPENAPI_INCLUDE_TAGS, OPENAPI_INCLUDE_PATHS, чтобы Claude понимал какие API
+  доступны
+
+  Теперь wizard, увидев mcp-openapi сервер в конфиге, сможет корректно назначать
+   его задачам и генерировать allowed_tools по паттерну.
+
+✻ Cogitated for 2m 20s
+
+❯ Теперь wizard, увидев mcp-openapi сервер в конфиге, сможет корректно          
+назначать его задачам и генерировать allowed_tools по                           
+  паттерну.                                                                     
+                                                                                
+wizard должен не увидеть, а добавить в случаее необходимости mcp-openapi сервер 
+ ? Или я не прав?                                                               
+
+● Вы правы. Сейчас wizard может только ссылаться на уже существующие
+  MCP-серверы, но не создавать новые. А для mcp-openapi это критично —
+  пользователь говорит "подключи мне CRM API по этой спеке", и wizard должен:
+
+  1. Добавить новую запись в mcp_servers конфига
+  2. Создать задачу/пайплайн, использующую этот сервер
+
+  Давайте посмотрю, что нужно поменять.
+
+● Read 1 file (ctrl+o to expand)
+
+● Теперь вижу полную картину. Нужно:
+  1. Добавить MCPServerPlan в types
+  2. Добавить mcp_servers в Plan и JSON schema
+  3. Обновить applier — создавать MCP-серверы перед остальными сущностями
+  4. Обновить prompt — объяснить что wizard может создавать mcp-openapi серверы
+  5. Обновить ApplyResult
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/types.go)
+  ⎿  Added 8 lines
+      61    Domain         string   `json:"domain,omitempty"`
+      62  }
+      63  
+      64 +// MCPServerPlan describes an MCP server to be created (current
+         +ly only mcp-openapi).                                          
+      65 +type MCPServerPlan struct {                                    
+      66 +  Name    string            `json:"name"`                      
+      67 +  Command string            `json:"command"`                   
+      68 +  Args    []string          `json:"args,omitempty"`            
+      69 +  Env     map[string]string `json:"env,omitempty"`             
+      70 +}                                                              
+      71 +                                                               
+      72  // PipelinePlan describes a pipeline to be created.
+      73  type PipelinePlan struct {
+      74    Name          string   `json:"name"`
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/types.go)
+  ⎿  Added 5 lines, removed 4 lines
+      11    ID          string         `json:"id"`
+      12    Description string         `json:"description"`
+      13    Summary     string         `json:"summary"`
+      14 -  Domains     []DomainPlan   `json:"domains,omitempty"`        
+      15 -  Agents      []AgentPlan    `json:"agents,omitempty"`         
+      16 -  Tasks       []TaskPlan     `json:"tasks,omitempty"`          
+      17 -  Pipelines   []PipelinePlan `json:"pipelines,omitempty"`      
+      14 +  MCPServers  []MCPServerPlan `json:"mcp_servers,omitempty"`   
+      15 +  Domains     []DomainPlan    `json:"domains,omitempty"`       
+      16 +  Agents      []AgentPlan     `json:"agents,omitempty"`        
+      17 +  Tasks       []TaskPlan      `json:"tasks,omitempty"`         
+      18 +  Pipelines   []PipelinePlan  `json:"pipelines,omitempty"`     
+      19    Status      string         `json:"status"` // "draft", "appli
+          ed", "discarded"
+      20  }
+      21  
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/types.go)
+  ⎿  Added 2 lines, removed 1 line
+      81  
+      82  // ApplyResult holds the outcome of applying a plan.
+      83  type ApplyResult struct {
+      84 -  DomainsCreated   []string `json:"domains_created,omitempty"` 
+      84 +  MCPServersCreated []string `json:"mcp_servers_created,omitemp
+         +ty"`                                                           
+      85 +  DomainsCreated    []string `json:"domains_created,omitempty"`
+      86    AgentsCreated    []string `json:"agents_created,omitempty"`
+      87    TasksCreated     []string `json:"tasks_created,omitempty"`
+      88    PipelinesCreated []string `json:"pipelines_created,omitempty"
+          `
+
+● Now update the JSON schema in prompt.go to include mcp_servers.
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/prompt.go)
+  ⎿  Added 18 lines
+      15        "type": "string",
+      16        "description": "Brief explanation of what this plan will 
+          create and why"
+      17      },
+      18 +    "mcp_servers": {                                           
+      19 +      "type": "array",                                         
+      20 +      "description": "New MCP server entries to add to config. 
+         +Currently only mcp-openapi is supported for creation.",        
+      21 +      "items": {                                               
+      22 +        "type": "object",                                      
+      23 +        "properties": {                                        
+      24 +          "name": { "type": "string", "description": "kebab-cas
+         +e server name (e.g., crm-api, billing-api)" },                 
+      25 +          "command": { "type": "string", "description": "Binary
+         + path, e.g. ./bin/mcp-openapi" },                              
+      26 +          "args": { "type": "array", "items": { "type": "string
+         +" } },                                                         
+      27 +          "env": {                                             
+      28 +            "type": "object",                                  
+      29 +            "description": "Environment variables for the serve
+         +r",                                                            
+      30 +            "additionalProperties": { "type": "string" }       
+      31 +          }                                                    
+      32 +        },                                                     
+      33 +        "required": ["name", "command", "env"]                 
+      34 +      }                                                        
+      35 +    },                                                         
+      36      "domains": {
+      37        "type": "array",
+      38        "items": {
+
+● Now update the applier to create MCP servers before domains.
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/applier.go)
+  ⎿  Added 22 lines, removed 1 line
+      32      return nil, fmt.Errorf("validation failed: %w", err)
+      33    }
+      34  
+      35 -  // 1. Domains                                                
+      35 +  // 1. MCP Servers (must come first so tasks can reference the
+         +m)                                                             
+      36 +  for _, mp := range plan.MCPServers {                         
+      37 +    mcp := config.MCPServerConfig{                             
+      38 +      Name:    mp.Name,                                        
+      39 +      Command: mp.Command,                                     
+      40 +      Args:    mp.Args,                                        
+      41 +      Env:     mp.Env,                                         
+      42 +    }                                                          
+      43 +    a.cfg.MCPServers = append(a.cfg.MCPServers, mcp)           
+      44 +    result.MCPServersCreated = append(result.MCPServersCreated,
+         + mp.Name)                                                      
+      45 +    mcpName := mp.Name                                         
+      46 +    rollbacks = append(rollbacks, func() {                     
+      47 +      for i := len(a.cfg.MCPServers) - 1; i >= 0; i-- {        
+      48 +        if a.cfg.MCPServers[i].Name == mcpName {               
+      49 +          a.cfg.MCPServers = append(a.cfg.MCPServers[:i], a.cfg
+         +.MCPServers[i+1:]...)                                          
+      50 +          break                                                
+      51 +        }                                                      
+      52 +      }                                                        
+      53 +    })                                                         
+      54 +  }                                                            
+      55 +                                                               
+      56 +  // 2. Domains                                                
+      57    for _, dp := range plan.Domains {
+      58      d := config.Domain{
+      59        Name:        dp.Name,
+  ⎿  Found 6 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Update the step numbers in the comments.
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/applier.go)
+  ⎿  Added 1 line, removed 1 line
+      82      })
+      83    }
+      84  
+      85 -  // 2. Agents                                                 
+      85 +  // 3. Agents                                                 
+      86    for _, ap := range plan.Agents {
+      87      agent := &subagent.SubAgent{
+      88        Name:           ap.Name,
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/applier.go)
+  ⎿  Added 1 line, removed 1 line
+      107      })
+      108    }
+      109  
+      110 -  // 3. Tasks                                                 
+      110 +  // 4. Tasks                                                 
+      111    for _, tp := range plan.Tasks {
+      112      t := config.Task{
+      113        Name:           tp.Name,
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/applier.go)
+  ⎿  Added 1 line, removed 1 line
+      138      })
+      139    }
+      140  
+      141 -  // 4. Pipelines                                             
+      141 +  // 5. Pipelines                                             
+      142    for _, pp := range plan.Pipelines {
+      143      steps := make([]config.PipelineStep, len(pp.Steps))
+      144      for i, s := range pp.Steps {
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/applier.go)
+  ⎿  Added 1 line, removed 1 line
+      166      })
+      167    }
+      168  
+      169 -  // 5. Save config                                           
+      169 +  // 6. Save config                                           
+      170    if err := a.cfg.Save(); err != nil {
+      171      a.rollback(rollbacks)
+      172      return nil, fmt.Errorf("saving config: %w", err)
+
+● Now update validation to check for duplicate MCP server names and include
+  plan's MCP servers when validating task references.
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/applier.go)
+  ⎿  Added 12 lines, removed 1 line
+      226      }
+      227    }
+      228  
+      229 -  // Validate MCP server references                           
+      229 +  // Check duplicate MCP server names                         
+      230    mcpNames := make(map[string]bool)
+      231    for _, mcp := range a.cfg.MCPServers {
+      232      mcpNames[mcp.Name] = true
+      233    }
+      234 +  for _, mcp := range plan.MCPServers {                       
+      235 +    if mcpNames[mcp.Name] {                                   
+      236 +      return fmt.Errorf("MCP server %q already exists", mcp.Na
+          +me)                                                           
+      237 +    }                                                         
+      238 +    if mcp.Command == "" {                                    
+      239 +      return fmt.Errorf("MCP server %q has empty command", mcp
+          +.Name)                                                        
+      240 +    }                                                         
+      241 +    mcpNames[mcp.Name] = true                                 
+      242 +  }                                                           
+      243 +                                                              
+      244 +  // Validate MCP server references in tasks (including server
+          +s from this plan)                                             
+      245    for _, t := range plan.Tasks {
+      246      for _, m := range t.MCPServers {
+      247        if !mcpNames[m] {
+
+● Now update the prompt to tell Claude it can create mcp-openapi servers.
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/prompt.go)
+  ⎿  Added 4 lines, removed 1 line
+      176  
+      177  mcp-openapi dynamically generates MCP tools from an OpenAPI v2
+           /v3 specification. Use it to integrate external REST APIs.
+      178  
+      179 -To use mcp-openapi, it must ALREADY be defined in the mcp_serv
+          -ers config. The wizard can reference existing mcp-openapi inst
+          -ances by name, but cannot create new MCP server entries. If th
+          -e user needs an external API and an mcp-openapi instance is av
+          -ailable, reference it and use mcp__{server_name}__{operation} 
+          -pattern for allowed_tools.                                    
+      179 +The wizard CAN create new mcp-openapi server entries in the pl
+          +an's "mcp_servers" array. When the user wants to connect an ex
+          +ternal API, create an mcp-openapi entry with the appropriate e
+          +nv vars. The created server can then be referenced by tasks in
+          + the same plan.                                               
+      180  
+      181 +Example mcp_servers entry in plan:                            
+      182 +{"name": "crm-api", "command": "./bin/mcp-openapi", "env": {"O
+          +PENAPI_SPEC_PATH": "specs/crm.yaml", "OPENAPI_BASE_URL": "http
+          +s://api.crm.example.com/v2", "OPENAPI_AUTH_TYPE": "bearer", "O
+          +PENAPI_AUTH_TOKEN": "${CRM_TOKEN}", "OPENAPI_INCLUDE_TAGS": "c
+          +ontacts,deals"}}                                              
+      183 +                                                              
+      184  Environment variables (configured in mcp_servers, not by wizar
+           d):
+      185  - OPENAPI_SPEC_PATH (required): path to OpenAPI spec file
+      186  - OPENAPI_BASE_URL: override base URL from spec
+
+● Also update rules section to mention MCP server creation.
+
+● Update(~/development/AI/Claude/claude-ecosystem/internal/wizard/prompt.go)
+  ⎿  Added 1 line, removed 1 line
+      201  
+      202  ## Rules
+      203  1. Use kebab-case for all names
+      204 -2. Only reference MCP servers that exist in the current config
+      204 +2. Only reference MCP servers that exist in the current config
+          + OR are created in the same plan's mcp_servers array          
+      205  3. If a task needs agents, create them and reference by name
+      206  4. If tasks share data, create a domain
+      207  5. Keep prompts focused and actionable
+  ⎿  Found 6 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Теперь нужно обновить Wizard.tsx, чтобы UI отображал созданные MCP-серверы в
+  preview и результате.
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(src/components/Wizard.tsx)
+  ⎿  Added 1 line, removed 1 line
+      13    const [plan, setPlan] = useState<WizardPlan | null>(null)
+      14    const [result, setResult] = useState<ApplyResult | null>(null
+          )
+      15    const [expandedSections, setExpandedSections] = useState<Reco
+          rd<string, boolean>>({
+      16 -    domains: true, agents: true, tasks: true, pipelines: true, 
+      16 +    mcp_servers: true, domains: true, agents: true, tasks: true
+         +, pipelines: true,                                             
+      17    })
+      18  
+      19    const toggleSection = (key: string) =>
+
+● Now add MCP servers section in the preview, before Domains.
+
+● Update(src/components/Wizard.tsx)
+  ⎿  Added 23 lines
+      138            </div>
+      139          )}
+      140  
+      141 +        {/* MCP Servers */}                                   
+      142 +        {plan.mcp_servers && plan.mcp_servers.length > 0 && ( 
+      143 +          <CollapsibleSection title={`MCP Servers (${plan.mcp_
+          +servers.length})`} expanded={expandedSections.mcp_servers} onT
+          +oggle={() => toggleSection('mcp_servers')}>                   
+      144 +            {plan.mcp_servers.map((m) => (                    
+      145 +              <div key={m.name} className="p-3 border dark:bor
+          +der-gray-700 rounded-lg mb-2">                                
+      146 +                <div className="flex items-center gap-2">     
+      147 +                  <span className="font-medium text-sm">{m.nam
+          +e}</span>                                                     
+      148 +                  <Badge text={m.command} />                  
+      149 +                </div>                                        
+      150 +                {m.env && Object.keys(m.env).length > 0 && (  
+      151 +                  <div className="mt-2 space-y-0.5">          
+      152 +                    {Object.entries(m.env).map(([k, v]) => (  
+      153 +                      <div key={k} className="text-xs text-gra
+          +y-500">                                                       
+      154 +                        <span className="text-gray-600 dark:te
+          +xt-gray-400">{k}</span>={v}                                   
+      155 +                      </div>                                  
+      156 +                    ))}                                       
+      157 +                  </div>                                      
+      158 +                )}                                            
+      159 +              </div>                                          
+      160 +            ))}                                               
+      161 +          </CollapsibleSection>                               
+      162 +        )}                                                    
+      163 +                                                              
+      164          {/* Domains */}
+      165          {plan.domains && plan.domains.length > 0 && (
+      166            <CollapsibleSection title={`Domains (${plan.domains.
+           length})`} expanded={expandedSections.domains} onToggle={() =>
+            toggleSection('domains')}>
+
+● Add MCP servers to the result display.
+
+● Update(src/components/Wizard.tsx)
+  ⎿  Added 1 line
+      269    // Result state
+      270    if (state === 'result' && result) {
+      271      const all = [
+      272 +      ...(result.mcp_servers_created || []).map((n) => ({ type
+          +: 'MCP Server', name: n })),                                  
+      273        ...(result.domains_created || []).map((n) => ({ type: 'D
+           omain', name: n })),
+      274        ...(result.agents_created || []).map((n) => ({ type: 'Ag
+           ent', name: n })),
+      275        ...(result.tasks_created || []).map((n) => ({ type: 'Tas
+           k', name: n })),
+
+● Now update the TypeScript types.
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(src/types/index.ts)
+  ⎿  Added 8 lines
+       94  }
+       95  
+       96  // Wizard types
+       97 +export interface MCPServerPlan {                              
+       98 +  name: string                                                
+       99 +  command: string                                             
+      100 +  args?: string[]                                             
+      101 +  env?: Record<string, string>                                
+      102 +}                                                             
+      103 +                                                              
+      104  export interface WizardPlan {
+      105    id: string
+      106    description: string
+      107    summary: string
+      108 +  mcp_servers?: MCPServerPlan[]                               
+      109    domains?: DomainPlan[]
+      110    agents?: AgentPlan[]
+      111    tasks?: TaskPlan[]
+
+● Update(src/types/index.ts)
+  ⎿  Added 1 line
+      162  }
+      163  
+      164  export interface ApplyResult {
+      165 +  mcp_servers_created?: string[]                              
+      166    domains_created?: string[]
+      167    agents_created?: string[]
+      168    tasks_created?: string[]
+
+● Now let me verify everything builds.
+
+● Bash(make build 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Go builds clean. Let me also check the frontend compiles.
+
+● Bash(cd /home/asdmin/development/AI/Claude/claude-ecosystem/web && npx tsc
+      --noEmit 2>&1 | head -20)
+  ⎿  (No output)
+
+● Всё компилируется без ошибок. Вот что было сделано:
+
+  types.go — добавлен MCPServerPlan (name, command, args, env) и поле MCPServers
+   в Plan и ApplyResult
+
+  applier.go — MCP-серверы создаются первым шагом (до доменов), чтобы задачи
+  могли на них ссылаться. Валидация проверяет дубликаты имён и учитывает серверы
+   из плана при проверке ссылок из задач.
+
+  prompt.go — JSON schema дополнена секцией mcp_servers. Правило #2 обновлено:
+  wizard может создавать новые mcp-openapi серверы. Добавлен пример записи с env
+   vars.
+
+  Wizard.tsx — в preview добавлена секция "MCP Servers" с отображением команды и
+   env vars. В результатах показываются созданные серверы.
+
+  types/index.ts — добавлены MCPServerPlan и mcp_servers_created в ApplyResult.
+
+✻ Cogitated for 2m 50s

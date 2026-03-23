@@ -1,0 +1,317 @@
+
+ ▐▛███▜▌   Claude Code v2.1.71
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ Plan: Domains System + Leads Deduplication                                   │
+│                                                                              │
+│ Context                                                                      │
+│                                                                              │
+│ Сабагент eaeu-logistics-lead-finder при повторных запусках может находить    │
+│ дублирующихся лидов. Memory (.claude/agent-memory/) ненадёжна для            │
+│ дедупликации: MEMORY.md ограничен 200 строками, LLM может пропустить         │
+│ дубликат. Нужно структурированное хранилище с точной проверкой.              │
+│                                                                              │
+│ claude-ecosystem.db предназначена для системных данных (executions, users) — │
+│  бизнес-данные туда добавлять не следует. Решение: секция domains в          │
+│ tasks.yaml как реестр, связывающий доменные данные с                         │
+│ задачами/агентами/пайплайнами.                                               │
+│                                                                              │
+│ Итоговая структура данных                                                    │
+│                                                                              │
+│ data/                                                                        │
+│ ├── claude-ecosystem.db        # системная БД (не трогаем)                   │
+│ ├── leads/                     # domain: leads                               │
+│ │   ├── leads.db               # дедупликация, статусы, история              │
+│ │   └── DOMAIN.md              # документация домена для AI-агентов          │
+│                                                                              │
+│ tasks.yaml — новая секция domains                                            │
+│                                                                              │
+│ domains:                                                                     │
+│   leads:                                                                     │
+│     description: "B2B logistics leads for EAEU market"                       │
+│     data_dir: data/leads                                                     │
+│     db: leads.db                                                             │
+│     schema: |                                                                │
+│       CREATE TABLE IF NOT EXISTS leads (                                     │
+│         id INTEGER PRIMARY KEY AUTOINCREMENT,                                │
+│         name TEXT NOT NULL,                                                  │
+│         tax_id TEXT,                                                         │
+│         country TEXT,                                                        │
+│         industry TEXT,                                                       │
+│         city TEXT,                                                           │
+│         website TEXT,                                                        │
+│         contact_person TEXT,                                                 │
+│         contact_email TEXT,                                                  │
+│         contact_phone TEXT,                                                  │
+│         source_url TEXT,                                                     │
+│         status TEXT DEFAULT 'new',                                           │
+│         notes TEXT,                                                          │
+│         raw_json TEXT,                                                       │
+│         found_at DATETIME DEFAULT CURRENT_TIMESTAMP,                         │
+│         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP                        │
+│       );                                                                     │
+│       CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tax_id ON leads(tax_id)    │
+│ WHERE tax_id IS NOT NULL;                                                    │
+│       CREATE INDEX IF NOT EXISTS idx_leads_name ON leads(name);              │
+│     domain_doc: DOMAIN.md        # документация домена, инжектируется в      │
+│ system prompt агента                                                         │
+│     tasks: [find-leads, compile-leads-excel, deliver-leads-report]           │
+│     pipelines: [leads-to-ceo]                                                │
+│     agents: [eaeu-logistics-lead-finder, leads-report-compiler]              │
+│     mcp_servers: [database, excel]                                           │
+│                                                                              │
+│ Задачи получают поле domain:                                                 │
+│ tasks:                                                                       │
+│   - name: find-leads                                                         │
+│     domain: leads      # ← связь с доменом                                   │
+│     mcp_servers: [database]                                                  │
+│     allowed_tools: [Agent, WebSearch, WebFetch, mcp__database__check_exists, │
+│  mcp__database__insert, mcp__database__query]                                │
+│                                                                              │
+│ Реализация по файлам                                                         │
+│                                                                              │
+│ 1. internal/config/domain.go — NEW                                           │
+│                                                                              │
+│ Структура Domain:                                                            │
+│ type Domain struct {                                                         │
+│     Name        string   `yaml:"-" json:"name"`                              │
+│     Description string   `yaml:"description,omitempty"`                      │
+│     DataDir     string   `yaml:"data_dir"`                                   │
+│     DB          string   `yaml:"db,omitempty"`                               │
+│     Schema      string   `yaml:"schema,omitempty"`                           │
+│     DomainDoc   string   `yaml:"domain_doc,omitempty"`  // путь к DOMAIN.md  │
+│ относительно DataDir                                                         │
+│     Tasks       []string `yaml:"tasks,omitempty"`                            │
+│     Pipelines   []string `yaml:"pipelines,omitempty"`                        │
+│     Agents      []string `yaml:"agents,omitempty"`                           │
+│     MCPServers  []string `yaml:"mcp_servers,omitempty"`                      │
+│ }                                                                            │
+│                                                                              │
+│ func (d Domain) DBPath() string      // filepath.Join(DataDir, DB)           │
+│ func (d Domain) DomainDocPath() string // filepath.Join(DataDir, DomainDoc)  │
+│                                                                              │
+│ 2. internal/config/config.go                                                 │
+│                                                                              │
+│ - Добавить Domains map[string]Domain в Config                                │
+│ - В Load(): после парсинга — заполнить Domain.Name из ключа map              │
+│                                                                              │
+│ 3. internal/config/task.go                                                   │
+│                                                                              │
+│ - Добавить Domain string в Task                                              │
+│                                                                              │
+│ 4. internal/config/validate.go                                               │
+│                                                                              │
+│ - Если task.Domain != "" — проверить что домен существует в cfg.Domains      │
+│ - Если domain.Tasks ссылается на несуществующую задачу — ошибка              │
+│                                                                              │
+│ 5. internal/config/dotenv.go                                                 │
+│                                                                              │
+│ - В expandConfigEnvVars() — раскрыть ${VAR} в domain.DataDir, domain.DB      │
+│                                                                              │
+│ 6. internal/domain/manager.go — NEW                                          │
+│                                                                              │
+│ type Manager struct {                                                        │
+│     domains map[string]config.Domain                                         │
+│     logger  *slog.Logger                                                     │
+│ }                                                                            │
+│                                                                              │
+│ func New(domains map[string]config.Domain, logger *slog.Logger) *Manager     │
+│ func (m *Manager) Init() error           // mkdir + apply schema             │
+│ func (m *Manager) GetDomain(name string) (config.Domain, bool)               │
+│ func (m *Manager) DomainEnvVars(name string) map[string]string               │
+│                                                                              │
+│ - Init(): для каждого домена — os.MkdirAll(DataDir), если DB не пуст —       │
+│ открыть SQLite, выполнить Schema, закрыть. Если DomainDoc указан но файла    │
+│ нет — создать шаблон DOMAIN.md                                               │
+│ - DomainEnvVars() возвращает DOMAIN_DB_PATH, DOMAIN_DATA_DIR, DOMAIN_NAME,   │
+│ DOMAIN_DOC_PATH                                                              │
+│ - DomainDocContent() читает и возвращает содержимое DOMAIN.md для инжекции в │
+│  system prompt                                                               │
+│                                                                              │
+│ 7. internal/mcpmanager/config.go                                             │
+│                                                                              │
+│ Добавить метод:                                                              │
+│ func (m *Manager) GenerateConfigFileWithEnv(serverNames []string, extraEnv   │
+│ map[string]string) (string, error)                                           │
+│ - Мержит extraEnv в Env каждого сервера при генерации JSON                   │
+│ - Рефакторить GenerateConfigFile() → вызывает                                │
+│ GenerateConfigFileWithEnv(names, nil)                                        │
+│                                                                              │
+│ 8. internal/task/resolve.go                                                  │
+│                                                                              │
+│ - Добавить domainMgr *domain.Manager в параметры ResolveRunOptions()         │
+│ - Если task.Domain != "":                                                    │
+│   - Получить env vars через domainMgr.DomainEnvVars(task.Domain), передать в │
+│  GenerateConfigFileWithEnv()                                                 │
+│   - Получить содержимое DOMAIN.md через                                      │
+│ domainMgr.DomainDocContent(task.Domain), добавить в                          │
+│ RunOptions.AppendSystemPrompt (дописать к существующему, если есть)          │
+│                                                                              │
+│ 9. cmd/mcp/mcp-database/main.go — реализация из стаба                        │
+│                                                                              │
+│ Читает DOMAIN_DB_PATH из env, открывает SQLite. 6 инструментов:              │
+│                                                                              │
+│ ┌────────────────┬─────────────────────────────────────────────────────────┐ │
+│ │      Tool      │                        Описание                         │ │
+│ ├────────────────┼─────────────────────────────────────────────────────────┤ │
+│ │ query          │ SELECT-запросы, результат JSON array. Safety: LIMIT     │ │
+│ │                │ 1000 если нет LIMIT                                     │ │
+│ ├────────────────┼─────────────────────────────────────────────────────────┤ │
+│ │ execute        │ INSERT/UPDATE/DELETE, возвращает rows affected          │ │
+│ ├────────────────┼─────────────────────────────────────────────────────────┤ │
+│ │ list_tables    │ SELECT name FROM sqlite_master WHERE type='table'       │ │
+│ ├────────────────┼─────────────────────────────────────────────────────────┤ │
+│ │ describe_table │ PRAGMA table_info(name)                                 │ │
+│ ├────────────────┼─────────────────────────────────────────────────────────┤ │
+│ │ check_exists   │ SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1 →      │ │
+│ │                │ bool. Для дедупликации                                  │ │
+│ ├────────────────┼─────────────────────────────────────────────────────────┤ │
+│ │ insert         │ Принимает table + JSON object → строит INSERT →         │ │
+│ │                │ возвращает ID                                           │ │
+│ └────────────────┴─────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│ Безопасность: check_exists и insert строят SQL внутри (без инъекций).        │
+│ query/execute — отклонять DROP, ALTER, ATTACH.                               │
+│                                                                              │
+│ 10. cmd/server/main.go — wiring                                              │
+│                                                                              │
+│ domainMgr := domain.New(cfg.Domains, logger)                                 │
+│ if err := domainMgr.Init(); err != nil { ... }                               │
+│ Передать domainMgr в pipeline runner, scheduler, watcher, API handlers.      │
+│                                                                              │
+│ 11. internal/pipeline/ — pipeline.go, sequential.go, parallel.go             │
+│                                                                              │
+│ Добавить domainMgr *domain.Manager в Runner struct и прокинуть в             │
+│ ResolveRunOptions().                                                         │
+│                                                                              │
+│ 12. Остальные вызовы ResolveRunOptions                                       │
+│                                                                              │
+│ Везде где вызывается — добавить параметр domainMgr (API handlers, scheduler, │
+│  watcher).                                                                   │
+│                                                                              │
+│ DOMAIN.md — документация домена для AI                                       │
+│                                                                              │
+│ Файл data/{domain}/DOMAIN.md автоматически инжектируется в system prompt     │
+│ задач этого домена. Агент получает полный контекст без хардкода в промптах.  │
+│                                                                              │
+│ Формат DOMAIN.md (пример для leads)                                          │
+│                                                                              │
+│ # Domain: leads                                                              │
+│                                                                              │
+│ B2B logistics leads для рынка ЕАЭС.                                          │
+│                                                                              │
+│ ## Файлы домена                                                              │
+│                                                                              │
+│ | Файл | Описание |                                                          │
+│ |------|----------|                                                          │
+│ | leads.db | SQLite база — хранение и дедупликация лидов |                   │
+│ | DOMAIN.md | Этот файл — документация домена |                              │
+│                                                                              │
+│ Агент может создавать дополнительные файлы в директории домена               │
+│ (blacklist.yaml, шаблоны писем и т.д.) — опиши их здесь при добавлении.      │
+│                                                                              │
+│ ## Таблицы                                                                   │
+│                                                                              │
+│ ### leads                                                                    │
+│ | Поле | Тип | Описание |                                                    │
+│ |------|-----|----------|                                                    │
+│ | name | TEXT | Название компании (обязательное) |                           │
+│ | tax_id | TEXT | ИНН/УНП (уникальный, основной ключ дедупликации) |         │
+│ | country | TEXT | Страна (BY, RU, KZ, KG, AM) |                             │
+│ | industry | TEXT | Отрасль (pharma, electronics, chemicals, wood,           │
+│ machinery) |                                                                 │
+│ | city | TEXT | Город |                                                      │
+│ | website | TEXT | Веб-сайт |                                                │
+│ | contact_person | TEXT | Контактное лицо |                                  │
+│ | contact_email | TEXT | Email |                                             │
+│ | contact_phone | TEXT | Телефон |                                           │
+│ | source_url | TEXT | URL источника |                                        │
+│ | status | TEXT | Статус: new, contacted, qualified, rejected |              │
+│ | notes | TEXT | Примечания |                                                │
+│ | raw_json | TEXT | Полный профиль в JSON |                                  │
+│                                                                              │
+│ ## Правила дедупликации                                                      │
+│                                                                              │
+│ 1. Перед добавлением лида — ВСЕГДА проверяй через                            │
+│ `mcp__database__check_exists`                                                │
+│ 2. Приоритет проверки: tax_id (точное совпадение) → name (похожее название)  │
+│ 3. Если компания уже есть — пропусти, не добавляй повторно                   │
+│                                                                              │
+│ ## Примеры вызовов инструментов                                              │
+│                                                                              │
+│ Проверка дубля по ИНН:                                                       │
+│   tool: mcp__database__check_exists                                          │
+│   args: {"table": "leads", "column": "tax_id", "value": "190234567"}         │
+│                                                                              │
+│ Проверка по имени:                                                           │
+│   tool: mcp__database__query                                                 │
+│   args: {"sql": "SELECT id, name FROM leads WHERE name LIKE '%Белфарм%'      │
+│ LIMIT 5"}                                                                    │
+│                                                                              │
+│ Добавление нового лида:                                                      │
+│   tool: mcp__database__insert                                                │
+│   args: {"table": "leads", "data": {"name": "...", "tax_id": "...",          │
+│ "country": "BY", ...}}                                                       │
+│                                                                              │
+│ Получение статистики:                                                        │
+│   tool: mcp__database__query                                                 │
+│   args: {"sql": "SELECT country, industry, COUNT(*) as cnt FROM leads GROUP  │
+│ BY country, industry"}                                                       │
+│                                                                              │
+│ Механика инжекции                                                            │
+│                                                                              │
+│ 1. ResolveRunOptions() проверяет task.Domain                                 │
+│ 2. domainMgr.DomainDocContent(domain) читает DOMAIN.md                       │
+│ 3. Содержимое добавляется к append_system_prompt задачи                      │
+│ 4. Claude CLI получает его через флаг --append-system-prompt                 │
+│ 5. Агент видит документацию домена как часть системного промпта              │
+│                                                                              │
+│ Произвольные файлы домена                                                    │
+│                                                                              │
+│ Директория домена (data/{domain}/) не ограничена SQLite и DOMAIN.md. Можно   │
+│ размещать любые файлы, нужные задачам и пайплайнам: YAML-конфиги,            │
+│ JSON-данные, шаблоны, blacklist'ы и т.д. Требование одно — все файлы должны  │
+│ быть описаны в секции "Файлы домена" в DOMAIN.md, чтобы агент знал что       │
+│ доступно и как использовать. Доступ к файлам — через DOMAIN_DATA_DIR env var │
+│  + MCP filesystem (если подключён) или стандартные инструменты Read/Write.   │
+│                                                                              │
+│ Создание DOMAIN.md                                                           │
+│                                                                              │
+│ - При domain.Init() если domain_doc указан, но файла нет — создаётся шаблон  │
+│ - Шаблон генерируется из schema (парсинг CREATE TABLE → таблица с описанием  │
+│ полей) + секция "Файлы домена"                                               │
+│ - Пользователь дополняет шаблон правилами, примерами и описанием             │
+│ дополнительных файлов                                                        │
+│                                                                              │
+│ Обратная совместимость                                                       │
+│                                                                              │
+│ - domains секция опциональна — без неё всё работает как раньше               │
+│ - task.Domain опционален — задачи без домена не затрагиваются                │
+│ - GenerateConfigFile() продолжает работать через делегацию                   │
+│                                                                              │
+│ Backlog                                                                      │
+│                                                                              │
+│ RAG для поиска лидов по похожести — использовать Vector DB (Qdrant/Chroma) + │
+│  embeddings для поиска лидов среди неструктурированных источников (новости,  │
+│ отчёты, форумы) по похожести на существующих клиентов. Проработать отдельно. │
+│                                                                              │
+│ Верификация                                                                  │
+│                                                                              │
+│ 1. make build — компиляция без ошибок                                        │
+│ 2. make test — существующие тесты проходят                                   │
+│ 3. Добавить unit-тесты:                                                      │
+│   - internal/config/ — парсинг domains, валидация ссылок                     │
+│   - internal/domain/ — Init() создаёт директории и схему                     │
+│   - internal/mcpmanager/ — GenerateConfigFileWithEnv() мержит env vars       │
+│   - cmd/mcp/mcp-database/ — check_exists, insert, query                      │
+│ 4. Интеграционный тест: запустить make run-task TASK=find-leads, убедиться   │
+│ что MCP database server получает DOMAIN_DB_PATH, лиды сохраняются в          │
+│ data/leads/leads.db                                                          │
+│ 5. Повторный запуск — check_exists возвращает true для уже найденных         │
+│ компаний                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ⎿  Interrupted · What should Claude do instead?

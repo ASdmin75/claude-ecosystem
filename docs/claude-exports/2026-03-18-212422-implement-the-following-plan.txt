@@ -1,0 +1,139 @@
+ ▐▛███▜▌   Claude Code v2.1.78
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ Анализ: внедрение mcp-go в проект                                            │
+│                                                                              │
+│ Контекст                                                                     │
+│                                                                              │
+│ Проект содержит 13 MCP-серверов (cmd/mcp/mcp-*), каждый из которых вручную   │
+│ реализует JSON-RPC 2.0 stdio протокол. Идентичный boilerplate (~60-80 строк) │
+│  дублируется в каждом сервере: типы jsonRPCRequest/jsonRPCResponse,          │
+│ структура tool, main-loop с bufio.Scanner, обработка                         │
+│ initialize/tools/list/tools/call. Вопрос — стоит ли заменить этот            │
+│ boilerplate на библиотеку mcp-go.                                            │
+│                                                                              │
+│ Вердикт: Да, имеет смысл                                                     │
+│                                                                              │
+│ Аргументы "за"                                                               │
+│                                                                              │
+│ 1. Устранение дублирования — 13 серверов × ~70 строк boilerplate = ~900      │
+│ строк копипасты. mcp-go сводит инициализацию к 3-5 строкам (NewMCPServer +   │
+│ ServeStdio).                                                                 │
+│ 2. Корректность протокола — Ручная реализация не обрабатывает edge cases     │
+│ (notifications без id, notifications/initialized, ping). mcp-go гарантирует  │
+│ полное соответствие спецификации.                                            │
+│ 3. Совместимость с будущими версиями MCP — Текущий код жёстко зашит под      │
+│ 2024-11-05. mcp-go уже поддерживает 2025-11-25 с обратной совместимостью.    │
+│ Обновление протокола — просто go get -u.                                     │
+│ 4. Типобезопасное извлечение аргументов — req.RequireString("name") вместо   │
+│ ручного json.Unmarshal + type assertions через map[string]any.               │
+│ 5. Разблокирует новые возможности — Resources, Prompts, Middleware, async    │
+│ Tasks — всё доступно без написания протокольного кода. Например, middleware  │
+│ для логирования/метрик можно добавить один раз.                              │
+│ 6. Минимальные зависимости — Библиотека тянет всего 5 прямых зависимостей    │
+│ (uuid, jsonschema, cast, testify, uritemplate).                              │
+│                                                                              │
+│ Аргументы "против" (и почему они не критичны)                                │
+│                                                                              │
+│ ┌───────────────────────────┬─────────────────────────────────────────────┐  │
+│ │         Аргумент          │                Контраргумент                │  │
+│ ├───────────────────────────┼─────────────────────────────────────────────┤  │
+│ │ Внешняя зависимость       │ Проект уже использует 12+ внешних           │  │
+│ │                           │ зависимостей                                │  │
+│ ├───────────────────────────┼─────────────────────────────────────────────┤  │
+│ │ Работает и так            │ Работает, но каждый новый сервер —          │  │
+│ │                           │ копипаста boilerplate                       │  │
+│ ├───────────────────────────┼─────────────────────────────────────────────┤  │
+│ │ Усилия на миграцию        │ Механическая замена, ~15 мин на сервер      │  │
+│ ├───────────────────────────┼─────────────────────────────────────────────┤  │
+│ │ API библиотеки может      │ Библиотека стабильна (5k+ stars, активная   │  │
+│ │ измениться                │ поддержка)                                  │  │
+│ └───────────────────────────┴─────────────────────────────────────────────┘  │
+│                                                                              │
+│ План миграции                                                                │
+│                                                                              │
+│ Шаг 1: Добавить зависимость                                                  │
+│                                                                              │
+│ go get github.com/mark3labs/mcp-go                                           │
+│                                                                              │
+│ Шаг 2: Мигрировать один сервер как proof-of-concept                          │
+│                                                                              │
+│ Начать с mcp-filesystem — он простой и хорошо покрывает типичный паттерн.    │
+│                                                                              │
+│ До (~330 строк):                                                             │
+│ // 25 строк типов jsonRPC                                                    │
+│ // 90 строк определений tools                                                │
+│ // main loop с switch/case                                                   │
+│ // handler функции                                                           │
+│                                                                              │
+│ После (~200 строк):                                                          │
+│ func main() {                                                                │
+│     s := server.NewMCPServer("filesystem", "0.1.0")                          │
+│     s.AddTool(mcp.NewTool("read_file",                                       │
+│         mcp.WithDescription("Read file contents"),                           │
+│         mcp.WithString("path", mcp.Required(), mcp.Description("File         │
+│ path")),                                                                     │
+│     ), handleReadFile)                                                       │
+│     // ... остальные tools                                                   │
+│     server.ServeStdio(s)                                                     │
+│ }                                                                            │
+│                                                                              │
+│ func handleReadFile(ctx context.Context, req mcp.CallToolRequest)            │
+│ (*mcp.CallToolResult, error) {                                               │
+│     path, _ := req.RequireString("path")                                     │
+│     data, err := os.ReadFile(path)                                           │
+│     if err != nil {                                                          │
+│         return mcp.NewToolResultError(err.Error()), nil                      │
+│     }                                                                        │
+│     return mcp.NewToolResultText(string(data)), nil                          │
+│ }                                                                            │
+│                                                                              │
+│ Шаг 3: Проверить совместимость                                               │
+│                                                                              │
+│ - Запустить make run-task с задачей, использующей mcp-filesystem             │
+│ - Убедиться, что Claude CLI корректно взаимодействует с обновлённым сервером │
+│                                                                              │
+│ Шаг 4: Мигрировать остальные серверы                                         │
+│                                                                              │
+│ Порядок по сложности:                                                        │
+│ 1. mcp-pdf, mcp-word — простые, read-only                                    │
+│ 2. mcp-email, mcp-telegram — простые, write-only                             │
+│ 3. mcp-excel, mcp-database — средние                                         │
+│ 4. mcp-exportby, mcp-whisper — средние                                       │
+│ 5. mcp-openapi — самый сложный (динамические tools, OAuth2), мигрировать     │
+│ последним                                                                    │
+│                                                                              │
+│ Шаг 5: Удалить дублированный код                                             │
+│                                                                              │
+│ После миграции всех серверов — удалить старые типы                           │
+│ jsonRPCRequest/jsonRPCResponse/tool из каждого файла.                        │
+│                                                                              │
+│ Файлы для изменения                                                          │
+│                                                                              │
+│ - go.mod — добавить зависимость                                              │
+│ - cmd/mcp/mcp-filesystem/main.go                                             │
+│ - cmd/mcp/mcp-pdf/main.go                                                    │
+│ - cmd/mcp/mcp-word/main.go                                                   │
+│ - cmd/mcp/mcp-email/main.go                                                  │
+│ - cmd/mcp/mcp-telegram/main.go                                               │
+│ - cmd/mcp/mcp-excel/main.go                                                  │
+│ - cmd/mcp/mcp-database/main.go                                               │
+│ - cmd/mcp/mcp-exportby/main.go                                               │
+│ - cmd/mcp/mcp-whisper/main.go                                                │
+│ - cmd/mcp/mcp-openapi/main.go                                                │
+│                                                                              │
+│ Верификация                                                                  │
+│                                                                              │
+│ 1. make build — все бинарники собираются                                     │
+│ 2. make test — тесты проходят                                                │
+│ 3. Для каждого мигрированного сервера: запустить задачу через make run-task  │
+│ TASK=<task> и проверить, что Claude CLI корректно вызывает tools             │
+│ 4. Проверить, что internal/mcpmanager корректно запускает/останавливает      │
+│ обновлённые серверы (формат конфига --mcp-config не меняется, т.к. серверы   │
+│ остаются stdio-бинарниками)                                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ⎿  Interrupted · What should Claude do instead?

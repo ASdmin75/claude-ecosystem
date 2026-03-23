@@ -1,0 +1,169 @@
+ ▐▛███▜▌   Claude Code v2.1.76
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ при запуске паплайна через cron автоматически не появляется в Execution       
+History, только после ручного обновления страницы                               
+
+● Let me investigate the SSE event flow for cron-triggered pipeline executions.
+
+● Explore(Find SSE event publishing for pipelines)
+  ⎿  Done (19 tool uses · 58.1k tokens · 42s)
+  (ctrl+o to expand)
+
+● Read 2 files (ctrl+o to expand)
+
+● Now let me check how pipelines are registered in main.go and how the SSE
+  handler works.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Let me check the event bus implementation.
+
+● Read 1 file (ctrl+o to expand)
+
+● Let me check the frontend SSE hook.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I see the issue. The SSE handler uses es.addEventListener(type, ...) where
+   type contains a dot (e.g., pipeline.started). In the SSE protocol,
+  addEventListener listens for the value of the event: field. Let me verify the
+  server sends the event type correctly.
+
+  Looking at sse.go:58:
+  fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Type, data)
+
+  The server sends event: pipeline.started and the client listens with
+  es.addEventListener('pipeline.started', ...). This should work — dots are
+  valid in SSE event names.
+
+  The code path looks correct: scheduler calls RunPipelineByName → publishes
+  pipeline.started and pipeline.completed → SSE handler forwards to clients →
+  React Query invalidates.
+
+  Let me check if there's a task execution record issue — tasks scheduled by
+  cron might not create execution records at all.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Let me check the execution history page and its query key.
+
+● Searched for 3 patterns, read 1 file (ctrl+o to expand)
+
+● Let me look at how the API handler triggers pipeline runs (the manual trigger
+  path that presumably works).
+
+● Searched for 3 patterns, read 1 file (ctrl+o to expand)
+
+● I found the issue. The problem is in the useSSE hook: when the SSE connection
+  drops (common when the browser tab is in the background waiting for cron) and
+  reconnects, it doesn't invalidate queries. Events published during the
+  disconnection gap are lost forever since there's no replay mechanism.
+
+  The fix is to invalidate queries on reconnection (onopen) and when the tab
+  becomes visible again.
+
+● Update(web/src/hooks/useSSE.ts)
+  ⎿  Added 24 lines, removed 4 lines
+      13    const esRef = useRef<EventSource | null>(null)
+      14    const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(
+          undefined)
+      15    const reconnectDelay = useRef(1000)
+      16 +  const wasConnected = useRef(false)                           
+      17  
+      18 +  const invalidateAll = useCallback(() => {                    
+      19 +    queryClient.invalidateQueries({ queryKey: ['executions'] })
+      20 +    queryClient.invalidateQueries({ queryKey: ['dashboard'] }) 
+      21 +  }, [queryClient])                                            
+      22 +                                                               
+      23    const connect = useCallback(() => {
+      24      const token = localStorage.getItem('token')
+      25      if (!token) return
+     ...
+      47          const evt: SSEEvent = { type, data }
+      48  
+      49          // Invalidate relevant queries on any event
+      44 -        queryClient.invalidateQueries({ queryKey: ['executions'
+         -] })                                                           
+      45 -        queryClient.invalidateQueries({ queryKey: ['dashboard']
+         - })                                                            
+      50 +        invalidateAll()                                        
+      51  
+      52          if (data.execution_id) {
+      53            queryClient.invalidateQueries({ queryKey: ['execution
+          ', data.execution_id] })
+     ...
+      58      }
+      59  
+      60      es.onopen = () => {
+      61 +      // On reconnect, refresh data to catch events missed duri
+         +ng disconnection                                               
+      62 +      if (wasConnected.current) {                              
+      63 +        invalidateAll()                                        
+      64 +      }                                                        
+      65 +      wasConnected.current = true                              
+      66        reconnectDelay.current = 1000
+      67      }
+      68  
+     ...
+      75        }, reconnectDelay.current)
+      76        reconnectDelay.current = Math.min(reconnectDelay.current 
+          * 2, 30000)
+      77      }
+      68 -  }, [queryClient, onEvent])                                   
+      78 +  }, [queryClient, onEvent, invalidateAll])                    
+      79  
+      80    useEffect(() => {
+      81      connect()
+      82 +                                                               
+      83 +    // Refresh data when tab becomes visible (SSE events may ha
+         +ve been missed)                                                
+      84 +    const onVisible = () => {                                  
+      85 +      if (document.visibilityState === 'visible') {            
+      86 +        invalidateAll()                                        
+      87 +      }                                                        
+      88 +    }                                                          
+      89 +    document.addEventListener('visibilitychange', onVisible)   
+      90 +                                                               
+      91      return () => {
+      92        esRef.current?.close()
+      93        if (reconnectTimer.current) clearTimeout(reconnectTimer.c
+          urrent)
+      94 +      document.removeEventListener('visibilitychange', onVisibl
+         +e)                                                             
+      95      }
+      76 -  }, [connect])                                                
+      96 +  }, [connect, invalidateAll])                                 
+      97  }
+
+● Now let me rebuild the UI to apply the fix.
+
+● Bash(make build-ui 2>&1)
+  ⎿  cd web && npm install && npm run build
+
+     up to date, audited 196 packages in 929ms
+     … +20 lines (ctrl+o to expand)
+  ⎿  (timeout 1m)
+
+● Fix applied. Here's what was wrong:
+
+  Root cause: When a pipeline runs via cron, the browser tab is typically in the
+   background. Browsers throttle/suspend background tabs, causing the SSE
+  (EventSource) connection to drop. Events published during the disconnection
+  (like pipeline.started, pipeline.completed) are lost because the event bus has
+   no replay mechanism. When the user returns to the tab, the connection
+  reconnects but the old onopen handler only reset the backoff delay — it never
+  refreshed the data.
+
+  Changes in useSSE.ts:
+  1. Invalidate queries on SSE reconnect — when the connection drops and
+  re-establishes (onopen after a prior connection), all execution/dashboard
+  queries are refetched to catch missed events
+  2. Invalidate queries on tab visibility change — when the user switches back
+  to the tab, queries are refetched immediately via visibilitychange listener
+
+✻ Crunched for 4m 33s

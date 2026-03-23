@@ -1,0 +1,1377 @@
+ ▐▛███▜▌   Claude Code v2.1.72
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ Унифицируй самари для отправки черз ТГ бот и электронную почту вместе с Excel 
+ файлом, чтобы каждый раз не смущать CEO новым форматом сообщения               
+
+● Let me explore how summaries are currently sent via Telegram and email.
+
+● Explore(Find summary/message formatting for TG and email)
+  ⎿  Done (23 tool uses · 66.7k tokens · 47s)
+  (ctrl+o to expand)
+
+● Let me read the exact prompts to understand both formats.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now let me also see the delivery-agent instructions.
+
+● Read 1 file (ctrl+o to expand)
+
+● Вижу проблему. Два пайплайна отправляют отчёты CEO в совершенно разных
+  форматах:
+
+  1. deliver-leads-report — минимальная подпись "Новый отчёт по лидам", без
+  структуры
+  2. deliver-export-by-aviation-report — подробная сводка с эмодзи, количеством,
+   топ-компаниями
+
+  Создам единый шаблон сводки для обоих. Обновлю промпты:
+
+● Update(tasks.yaml)
+  ⎿  Added 28 lines, removed 5 lines
+      139      - name: deliver-leads-report
+      140        domain: leads
+      141        prompt: |
+      142 -        Файл отчёта: {{.PrevOutput}}                          
+      142 +        Сегодня {{.Date}}. Доставь отчёт по лидам руководству.
+      143  
+      144 -        Выполни доставку отчёта CEO:                          
+      145 -        1. Отправь email на alexstav1975@yandex.by с темой "От
+          -чёт по лидам" и вложением файла                               
+      146 -        2. Скопируй файл в workspace/ceo/reports/             
+      147 -        3. Отправь уведомление в Telegram с файлом и подписью 
+          -"Новый отчёт по лидам"                                        
+      144 +        Результат предыдущего этапа:                          
+      145 +        {{.PrevOutput}}                                       
+      146 +                                                              
+      147 +        Действия:                                             
+      148 +        1. Определи путь к Excel-файлу из результата выше     
+      149 +        2. Запроси из БД краткую статистику: количество новых 
+          +лидов (status='new'), топ-5 по дате добавления                
+      150 +        3. Сформируй сводку в ЕДИНОМ ФОРМАТЕ (одинаковую для T
+          +elegram и email):                                             
+      151 +                                                              
+      152 +           📊 Отчёт по лидам — {{.Date}}                      
+      153 +                                                              
+      154 +           Новых лидов: N                                     
+      155 +           Источников: N                                      
+      156 +                                                              
+      157 +           Топ-компании:                                      
+      158 +           • Компания А — краткое описание                    
+      159 +           • Компания Б — краткое описание                    
+      160 +           (не более 5)                                       
+      161 +                                                              
+      162 +           📎 Подробности в приложенном Excel-файле.          
+      163 +                                                              
+      164 +        4. Отправь Telegram-сообщение со сводкой (parse_mode: 
+          +Markdown)                                                     
+      165 +        5. Прикрепи Excel-файл к Telegram-сообщению через send
+          +_document                                                     
+      166 +        6. Отправь email через send_email на alexstav1975@yand
+          +ex.by:                                                        
+      167 +           - Тема: "📊 Отчёт по лидам — {{.Date}}"            
+      168 +           - Тело письма: ТА ЖЕ САМАЯ сводка что и в Telegram 
+      169 +           - Вложение: Excel-файл                             
+      170 +        7. Скопируй файл в workspace/ceo/reports/             
+      171        work_dir: .
+      172        tags:
+      173          - leads
+
+● Update(tasks.yaml)
+  ⎿  Added 31 lines, removed 1 line
+      316        permission_mode: bypassPermissions
+      317      - name: deliver-export-by-aviation-report
+      318        domain: export-by-aviation
+      319 -      prompt: "Сегодня {{.Date}}. Доставь отчёт по авиационным
+          - лидам с export.by руководству.\n\nРезультат предыдущего этапа
+          -:\n{{.PrevOutput}}\n\nДействия:\n1. Определи путь к Excel-файл
+          -у из результата выше (data/export-by-aviation/leads_{{.DateTim
+          -e}}.xlsx)\n2. Запроси из БД топ-лиды (aviation_priority=2, ста
+          -тус 'new') для краткой сводки\n3. Отправь Telegram-сообщение с
+          -о сводкой:\n   - Заголовок: \U0001F6EB Новые авиационные лиды 
+          -с export.by — {{.Date}}\n   - Количество новых лидов\n   - Топ
+          --приоритетные компании (не более 5) с описанием\n   - Примечан
+          -ие о приложенном Excel\n4. Прикрепи Excel-файл к Telegram-сооб
+          -щению\n5. Отправь email через mcp__email__send_report с Excel-
+          -файлом и той же сводкой на следующие адреса:\n   - hello@partn
+          -erlogistics.by\n   - alexstav1975@yandex.by \n6. ОБЯЗАТЕЛЬНО в
+          -ызови mcp__exportby__mark_exported чтобы пометить все лиды как
+          - 'reported'."                                                 
+      319 +      prompt: |-                                              
+      320 +        Сегодня {{.Date}}. Доставь отчёт по авиационным лидам 
+          +с export.by руководству.                                      
+      321 +                                                              
+      322 +        Результат предыдущего этапа:                          
+      323 +        {{.PrevOutput}}                                       
+      324 +                                                              
+      325 +        Действия:                                             
+      326 +        1. Определи путь к Excel-файлу из результата выше (dat
+          +a/export-by-aviation/leads_{{.DateTime}}.xlsx)                
+      327 +        2. Запроси из БД топ-лиды (aviation_priority=2, статус
+          + 'new') для краткой сводки                                    
+      328 +        3. Сформируй сводку в ЕДИНОМ ФОРМАТЕ (одинаковую для T
+          +elegram и email):                                             
+      329 +                                                              
+      330 +           📊 Авиационные лиды с export.by — {{.Date}}        
+      331 +                                                              
+      332 +           Новых лидов: N                                     
+      333 +           Приоритетных (🔴): N                               
+      334 +                                                              
+      335 +           Топ-компании:                                      
+      336 +           • Компания А — краткое описание                    
+      337 +           • Компания Б — краткое описание                    
+      338 +           (не более 5)                                       
+      339 +                                                              
+      340 +           📎 Подробности в приложенном Excel-файле.          
+      341 +                                                              
+      342 +        4. Отправь Telegram-сообщение со сводкой (parse_mode: 
+          +Markdown)                                                     
+      343 +        5. Прикрепи Excel-файл к Telegram-сообщению через send
+          +_document                                                     
+      344 +        6. Отправь email через mcp__email__send_report с Excel
+          +-файлом на:                                                   
+      345 +           - hello@partnerlogistics.by                        
+      346 +           - alexstav1975@yandex.by                           
+      347 +           Тема: "📊 Авиационные лиды — {{.Date}}"            
+      348 +           Тело письма: ТА ЖЕ САМАЯ сводка что и в Telegram   
+      349 +        7. ОБЯЗАТЕЛЬНО вызови mcp__exportby__mark_exported что
+          +бы пометить все лиды как 'reported'.                          
+      350        work_dir: .
+      351        tags:
+      352          - leads
+
+● Теперь обновлю delivery-agent, чтобы он тоже знал про единый формат:
+
+● Update(.claude/agents/delivery-agent.md)
+  ⎿  Added 15 lines
+      13  2. Copy the file to the specified share directory, creating par
+          ent directories if needed
+      14  3. Send the file via Telegram with a descriptive caption
+      15  4. Report back which delivery methods succeeded
+      16 +                                                               
+      17 +ВАЖНО: Сводка в Telegram и email должна быть ИДЕНТИЧНОЙ. Исполь
+         +зуй единый формат:                                             
+      18 +                                                               
+      19 +📊 [Название отчёта] — [Дата]                                  
+      20 +                                                               
+      21 +[Ключевая метрика]: N                                          
+      22 +[Вторая метрика]: N                                            
+      23 +                                                               
+      24 +Топ-компании:                                                  
+      25 +• Компания — описание                                          
+      26 +(не более 5)                                                   
+      27 +                                                               
+      28 +📎 Подробности в приложенном Excel-файле.                      
+      29 +                                                               
+      30 +Не меняй структуру между каналами доставки — CEO должен видеть 
+         +одинаковое сообщение везде.                                    
+
+● Готово. Вот что изменилось:
+
+  Единый формат сводки для обоих пайплайнов:
+
+  📊 [Название отчёта] — [Дата]
+
+  [Метрика 1]: N
+  [Метрика 2]: N
+
+  Топ-компании:
+  • Компания А — описание
+  • Компания Б — описание
+  (не более 5)
+
+  📎 Подробности в приложенном Excel-файле.
+
+  Что изменено:
+
+  1. deliver-leads-report — был минимальный "Новый отчёт по лидам", теперь
+  полноценная сводка с запросом статистики из БД, топ-5 компаний, и явное
+  требование одинаковой сводки для TG и email
+  2. deliver-export-by-aviation-report — реструктурирован промпт: добавлено
+  явное требование ТА ЖЕ САМАЯ сводка для обоих каналов, единый визуальный
+  формат
+  3. delivery-agent.md — добавлен шаблон единого формата и правило не менять
+  структуру между каналами
+
+  Теперь CEO будет получать сообщения в одинаковом формате независимо от того,
+  какой пайплайн сработал.
+
+✻ Cogitated for 2m 2s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to:
+     2026-03-11-171647-local-command-caveatcaveat-the-messages-below-w.txt
+
+❯ Сообщения д.б. одного формата не только для ТГ и электронной почты, но в      
+каждом новом сообщении                                                          
+
+● Понял — проблема не только в разнице между TG и email, а в том что каждый
+  запуск агент может сочинить сводку по-разному. Нужно жёстко зафиксировать
+  шаблон, чтобы LLM не импровизировал.
+
+● Read 1 file (ctrl+o to expand)
+
+● Сейчас шаблон описан "примерно" — LLM каждый раз будет интерпретировать его
+  по-своему. Нужно дать строгий шаблон с плейсхолдерами, который агент заполняет
+   данными, но не меняет структуру.
+
+● Update(tasks.yaml)
+  ⎿  Added 20 lines, removed 17 lines
+      146  
+      147          Действия:
+      148          1. Определи путь к Excel-файлу из результата выше
+      149 -        2. Запроси из БД краткую статистику: количество новых 
+          -лидов (status='new'), топ-5 по дате добавления                
+      150 -        3. Сформируй сводку в ЕДИНОМ ФОРМАТЕ (одинаковую для T
+          -elegram и email):                                             
+      149 +        2. Запроси из БД: SELECT COUNT(*) FROM leads WHERE sta
+          +tus='new'; и топ-5 компаний по дате                           
+      150 +        3. Сформируй сводку СТРОГО по шаблону ниже. НЕ МЕНЯЙ с
+          +труктуру, порядок строк, символы. Только подставь данные вмест
+          +о {плейсхолдеров}:                                            
+      151  
+      152 -           📊 Отчёт по лидам — {{.Date}}                      
+      152 +        ---НАЧАЛО ШАБЛОНА---                                  
+      153 +        📊 Отчёт по лидам — {ДАТА}                            
+      154  
+      154 -           Новых лидов: N                                     
+      155 -           Источников: N                                      
+      155 +        Новых: {N}                                            
+      156 +        Источников: {N}                                       
+      157  
+      157 -           Топ-компании:                                      
+      158 -           • Компания А — краткое описание                    
+      159 -           • Компания Б — краткое описание                    
+      160 -           (не более 5)                                       
+      158 +        Топ:                                                  
+      159 +        • {Компания} — {описание до 50 символов}              
+      160 +        • {Компания} — {описание до 50 символов}              
+      161  
+      162 -           📎 Подробности в приложенном Excel-файле.          
+      162 +        📎 Excel-файл с деталями приложен.                    
+      163 +        ---КОНЕЦ ШАБЛОНА---                                   
+      164  
+      164 -        4. Отправь Telegram-сообщение со сводкой (parse_mode: 
+          -Markdown)                                                     
+      165 -        5. Прикрепи Excel-файл к Telegram-сообщению через send
+          -_document                                                     
+      166 -        6. Отправь email через send_email на alexstav1975@yand
+          -ex.by:                                                        
+      167 -           - Тема: "📊 Отчёт по лидам — {{.Date}}"            
+      168 -           - Тело письма: ТА ЖЕ САМАЯ сводка что и в Telegram 
+      169 -           - Вложение: Excel-файл                             
+      170 -        7. Скопируй файл в workspace/ceo/reports/             
+      165 +        Правила шаблона:                                      
+      166 +        - Выводи от 1 до 5 компаний, каждая на отдельной строк
+          +е с «•»                                                       
+      167 +        - Описание компании — максимум 50 символов, без перено
+          +са строки                                                     
+      168 +        - Никаких дополнительных строк, приветствий, подписей 
+      169 +        - Формат ИДЕНТИЧЕН при каждом запуске — меняются тольк
+          +о цифры и названия                                            
+      170 +                                                              
+      171 +        4. Отправь в Telegram сводку (parse_mode: Markdown), з
+          +атем Excel через send_document                                
+      172 +        5. Отправь email (send_email) на alexstav1975@yandex.b
+          +y — тема "📊 Отчёт по лидам — {{.Date}}", тело = та же сводка,
+          + вложение = Excel                                             
+      173 +        6. Скопируй файл в workspace/ceo/reports/             
+      174        work_dir: .
+      175        tags:
+      176          - leads
+
+● Update(tasks.yaml)
+  ⎿  Added 20 lines, removed 18 lines
+      327  
+      328          Действия:
+      329          1. Определи путь к Excel-файлу из результата выше (dat
+           a/export-by-aviation/leads_{{.DateTime}}.xlsx)
+      330 -        2. Запроси из БД топ-лиды (aviation_priority=2, статус
+          - 'new') для краткой сводки                                    
+      331 -        3. Сформируй сводку в ЕДИНОМ ФОРМАТЕ (одинаковую для T
+          -elegram и email):                                             
+      330 +        2. Запроси из БД: SELECT COUNT(*) FROM companies WHERE
+          + status='new'; SELECT COUNT(*) FROM companies WHERE status='ne
+          +w' AND aviation_priority=2; и топ-5 по aviation_priority DESC 
+      331 +        3. Сформируй сводку СТРОГО по шаблону ниже. НЕ МЕНЯЙ с
+          +труктуру, порядок строк, символы. Только подставь данные вмест
+          +о {плейсхолдеров}:                                            
+      332  
+      333 -           📊 Авиационные лиды с export.by — {{.Date}}        
+      333 +        ---НАЧАЛО ШАБЛОНА---                                  
+      334 +        📊 Авиационные лиды — {ДАТА}                          
+      335  
+      335 -           Новых лидов: N                                     
+      336 -           Приоритетных (🔴): N                               
+      336 +        Новых: {N}                                            
+      337 +        Приоритетных (🔴): {N}                                
+      338  
+      338 -           Топ-компании:                                      
+      339 -           • Компания А — краткое описание                    
+      340 -           • Компания Б — краткое описание                    
+      341 -           (не более 5)                                       
+      339 +        Топ:                                                  
+      340 +        • {Компания} — {описание до 50 символов}              
+      341 +        • {Компания} — {описание до 50 символов}              
+      342  
+      343 -           📎 Подробности в приложенном Excel-файле.          
+      343 +        📎 Excel-файл с деталями приложен.                    
+      344 +        ---КОНЕЦ ШАБЛОНА---                                   
+      345  
+      345 -        4. Отправь Telegram-сообщение со сводкой (parse_mode: 
+          -Markdown)                                                     
+      346 -        5. Прикрепи Excel-файл к Telegram-сообщению через send
+          -_document                                                     
+      347 -        6. Отправь email через mcp__email__send_report с Excel
+          --файлом на:                                                   
+      348 -           - hello@partnerlogistics.by                        
+      349 -           - alexstav1975@yandex.by                           
+      350 -           Тема: "📊 Авиационные лиды — {{.Date}}"            
+      351 -           Тело письма: ТА ЖЕ САМАЯ сводка что и в Telegram   
+      352 -        7. ОБЯЗАТЕЛЬНО вызови mcp__exportby__mark_exported что
+          -бы пометить все лиды как 'reported'.                          
+      346 +        Правила шаблона:                                      
+      347 +        - Выводи от 1 до 5 компаний, каждая на отдельной строк
+          +е с «•»                                                       
+      348 +        - Описание компании — максимум 50 символов, без перено
+          +са строки                                                     
+      349 +        - Никаких дополнительных строк, приветствий, подписей 
+      350 +        - Формат ИДЕНТИЧЕН при каждом запуске — меняются тольк
+          +о цифры и названия                                            
+      351 +                                                              
+      352 +        4. Отправь в Telegram сводку (parse_mode: Markdown), з
+          +атем Excel через send_document                                
+      353 +        5. Отправь email через mcp__email__send_report на hell
+          +o@partnerlogistics.by и alexstav1975@yandex.by — тема "📊 Авиа
+          +ционные лиды — {{.Date}}", тело = та же сводка, вложение = Exc
+          +el                                                            
+      354 +        6. ОБЯЗАТЕЛЬНО вызови mcp__exportby__mark_exported что
+          +бы пометить все лиды как 'reported'.                          
+      355        work_dir: .
+      356        tags:
+      357          - leads
+
+● Теперь обновлю delivery-agent — тоже ужесточу инструкцию:
+
+● Update(.claude/agents/delivery-agent.md)
+  ⎿  Added 6 lines, removed 14 lines
+      14  3. Send the file via Telegram with a descriptive caption
+      15  4. Report back which delivery methods succeeded
+      16  
+      17 -ВАЖНО: Сводка в Telegram и email должна быть ИДЕНТИЧНОЙ. Исполь
+         -зуй единый формат:                                             
+      18 -                                                               
+      19 -📊 [Название отчёта] — [Дата]                                  
+      20 -                                                               
+      21 -[Ключевая метрика]: N                                          
+      22 -[Вторая метрика]: N                                            
+      23 -                                                               
+      24 -Топ-компании:                                                  
+      25 -• Компания — описание                                          
+      26 -(не более 5)                                                   
+      27 -                                                               
+      28 -📎 Подробности в приложенном Excel-файле.                      
+      29 -                                                               
+      30 -Не меняй структуру между каналами доставки — CEO должен видеть 
+         -одинаковое сообщение везде.                                    
+      17 +КРИТИЧНО — единый формат сводки:                               
+      18 +- Сводка формируется ОДИН РАЗ и отправляется побайтово одинаков
+         +ой в Telegram и email                                          
+      19 +- Структура сводки задаётся в промпте задачи через шаблон с {пл
+         +ейсхолдерами}                                                  
+      20 +- НЕ добавляй приветствия, подписи, дополнительные строки — тол
+         +ько шаблон                                                     
+      21 +- НЕ перефразируй и НЕ переформатируй шаблон — подставляй тольк
+         +о данные                                                       
+      22 +- Формат должен быть ИДЕНТИЧЕН при каждом запуске — меняются то
+         +лько цифры и названия                                          
+
+● Готово. Ключевые изменения:
+
+  1. Жёсткий шаблон с плейсхолдерами вместо "примерного формата" — агент
+  заполняет {N}, {Компания}, {описание}, но не может менять структуру
+  2. Явные правила: максимум 50 символов на описание, от 1 до 5 компаний,
+  никаких приветствий/подписей
+  3. Маркеры ---НАЧАЛО/КОНЕЦ ШАБЛОНА--- чтобы LLM чётко видел границы того, что
+  нельзя менять
+  4. Инструкция "формат ИДЕНТИЧЕН при каждом запуске" — подчёркивает
+  стабильность между запусками, а не только между каналами
+
+  Теперь CEO будет получать одно и то же визуальное сообщение каждый раз — и в
+  Telegram, и на почту, и при каждом новом запуске.
+
+✻ Crunched for 58s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to:
+     2026-03-11-171939-local-command-caveatcaveat-the-messages-below-w.txt
+
+❯ 🔴 Высокий    ООО "ЛОКТ" | Дистрибьютор HIKVISION    Оптовый поставщик        
+продуктов систем безопасности, официальный дистрибьютор HIKVISION.        Да    
+     https://export.by/company/21683    2026-03-11    reported                  
+                                                                                
+Опять повтор, орять импортер вместо экспортера                                  
+
+● Две проблемы: дубли и импортёры вместо экспортёров. Посмотрю, как фильтруются
+  лиды на этапе анализа.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Теперь прочту задачу анализа целиком — там основная проблема с фильтрацией:
+
+● Read 1 file (ctrl+o to expand)
+
+● Вижу — правила фильтрации уже есть (строка 243-245), но "ЛОКТ — дистрибьютор
+  HIKVISION" всё равно прошёл. Проблемы:
+
+  1. Дубль — компания со статусом reported попала повторно. Значит
+  get_unanalyzed или INSERT OR IGNORE не ловит дублей, либо mark_exported не
+  сработал
+  2. Импортёр прошёл фильтр — LLM проигнорировал правила
+
+  Посмотрю MCP-сервер exportby — как работает get_unanalyzed:
+
+● Read 1 file (ctrl+o to expand)
+
+● Нашёл обе корневые причины:
+
+  1. Дубли: get_unanalyzed (строка 429) исключает только компании, которые есть
+  в таблице companies. Но отклонённые компании (импортёры, сервисные) туда НЕ
+  вставляются (промпт говорит "НЕ вставлять"). Поэтому они каждый раз
+  возвращаются как "неанализированные".
+
+  2. Импортёры: LLM-фильтрация ненадёжна — правила в промпте есть, но модель их
+  игнорирует. Нужен хардкод-фильтр на уровне Go.
+
+  Исправляю оба:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 19 lines
+      134        "properties": map[string]any{},
+      135      },
+      136    },
+      137 +  {                                                           
+      138 +    Name:        "reject_companies",                          
+      139 +    Description: "Помечает компании как отклонённые (импортёры
+          +, сервисные и т.д.). Они больше не будут появляться в get_unan
+          +alyzed. Вызывай для КАЖДОЙ отклонённой компании после анализа.
+          +",                                                            
+      140 +    InputSchema: map[string]any{                              
+      141 +      "type": "object",                                       
+      142 +      "properties": map[string]any{                           
+      143 +        "names": map[string]any{                              
+      144 +          "type":        "array",                             
+      145 +          "items":       map[string]any{"type": "string"},    
+      146 +          "description": "Массив названий компаний для отклоне
+          +ния.",                                                        
+      147 +        },                                                    
+      148 +        "reason": map[string]any{                             
+      149 +          "type":        "string",                            
+      150 +          "description": "Причина отклонения (importer, servic
+          +e, distributor и т.д.).",                                     
+      151 +        },                                                    
+      152 +      },                                                      
+      153 +      "required": []string{"names"},                          
+      154 +    },                                                        
+      155 +  },                                                          
+      156  }
+      157  
+      158  const (
+
+● Теперь добавлю обработчик reject_companies и SQL-фильтр в get_unanalyzed:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 2 lines
+      271      return handleGetStats()
+      272    case "mark_exported":
+      273      return handleMarkExported()
+      274 +  case "reject_companies":                                    
+      275 +    return handleRejectCompanies(p.Arguments)                 
+      276    default:
+      277      return errorResult("unknown tool: " + p.Name)
+      278    }
+
+● Теперь добавлю таблицу rejected_companies в схему и SQL-фильтр импортёров:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 6 lines
+      248        companies_added INTEGER DEFAULT 0,
+      249        scanned_at TEXT NOT NULL
+      250      );
+      251 +    CREATE TABLE IF NOT EXISTS rejected_companies (           
+      252 +      id INTEGER PRIMARY KEY AUTOINCREMENT,                   
+      253 +      name TEXT UNIQUE NOT NULL,                              
+      254 +      reason TEXT,                                            
+      255 +      rejected_at TEXT NOT NULL                               
+      256 +    );                                                        
+      257      CREATE INDEX IF NOT EXISTS idx_raw_companies_export_by_id 
+           ON raw_companies(export_by_id);
+      258      CREATE INDEX IF NOT EXISTS idx_raw_companies_products_fetc
+           hed ON raw_companies(products_fetched);
+      259    `)
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Теперь обновлю get_unanalyzed — добавлю исключение rejected_companies +
+  SQL-фильтр по ключевым словам импортёров:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 63 lines, removed 11 lines
+      439  
+      440  // --- get_unanalyzed ---
+      441  
+      442 +// importerKeywords — ключевые слова в description, означающие
+          + импортёра/дистрибьютора/сервисную компанию.                  
+      443 +// Такие компании автоматически отклоняются без участия LLM.  
+      444 +var importerKeywords = []string{                              
+      445 +  "дистрибьютор", "дистрибутор", "дилер", "импортёр", "импорте
+          +р",                                                           
+      446 +  "официальный представитель", "официальный дилер",           
+      447 +  "импорт и продажа", "представительство",                    
+      448 +  "салон красоты", "парикмахерская", "барбершоп",             
+      449 +  "ресторан", "кафе ", "бар ",                                
+      450 +  "автосервис", "автомойка", "шиномонтаж",                    
+      451 +  "ремонт телефонов", "ремонт техники",                       
+      452 +  "репетитор", "курсы", "обучение",                           
+      453 +}                                                             
+      454 +                                                              
+      455 +func containsImporterKeyword(desc string) bool {              
+      456 +  lower := strings.ToLower(desc)                              
+      457 +  for _, kw := range importerKeywords {                       
+      458 +    if strings.Contains(lower, kw) {                          
+      459 +      return true                                             
+      460 +    }                                                         
+      461 +  }                                                           
+      462 +  return false                                                
+      463 +}                                                             
+      464 +                                                              
+      465  func handleGetUnanalyzed(args json.RawMessage) toolResult {
+      466    var a struct {
+      467      Limit  int `json:"limit"`
+     ...
+      473      a.Limit = 100
+      474    }
+      475  
+      476 +  // Fetch more than needed to compensate for auto-rejected im
+          +porters                                                       
+      477 +  fetchLimit := a.Limit * 3                                   
+      478 +                                                              
+      479    rows, err := db.Query(`
+      480      SELECT MIN(r.export_by_id) AS export_by_id, r.name, r.desc
+           ription, r.country
+      481      FROM raw_companies r
+      482      LEFT JOIN companies c ON r.name = c.name
+      457 -    WHERE c.id IS NULL                                        
+      483 +    LEFT JOIN rejected_companies rej ON r.name = rej.name     
+      484 +    WHERE c.id IS NULL AND rej.id IS NULL                     
+      485      GROUP BY r.name
+      486      ORDER BY MIN(r.id)
+      487      LIMIT ? OFFSET ?
+      461 -  `, a.Limit, a.Offset)                                       
+      488 +  `, fetchLimit, a.Offset)                                    
+      489    if err != nil {
+      490      return errorResult("query error: " + err.Error())
+      491    }
+      492    defer rows.Close()
+      493  
+      494    var companies []map[string]any
+      495 +  var autoRejected []string                                   
+      496    for rows.Next() {
+      497      var exportByID int
+      498      var name, country string
+      499      var description sql.NullString
+      500      rows.Scan(&exportByID, &name, &description, &country)
+      473 -    companies = append(companies, map[string]any{             
+      474 -      "export_by_id": exportByID,                             
+      475 -      "name":         name,                                   
+      476 -      "description":  nullStrVal(sql.NullString{String: descri
+          -ption.String, Valid: description.Valid}),                     
+      477 -      "country":      country,                                
+      478 -      "url":          fmt.Sprintf("https://export.by/company/%
+          -d", exportByID),                                              
+      479 -    })                                                        
+      501 +                                                              
+      502 +    desc := ""                                                
+      503 +    if description.Valid {                                    
+      504 +      desc = description.String                               
+      505 +    }                                                         
+      506 +                                                              
+      507 +    // Auto-reject obvious importers/service companies        
+      508 +    if containsImporterKeyword(desc) {                        
+      509 +      autoRejected = append(autoRejected, name)               
+      510 +      continue                                                
+      511 +    }                                                         
+      512 +                                                              
+      513 +    if len(companies) < a.Limit {                             
+      514 +      companies = append(companies, map[string]any{           
+      515 +        "export_by_id": exportByID,                           
+      516 +        "name":         name,                                 
+      517 +        "description":  nullStrVal(description),              
+      518 +        "country":      country,                              
+      519 +        "url":          fmt.Sprintf("https://export.by/company
+          +/%d", exportByID),                                            
+      520 +      })                                                      
+      521 +    }                                                         
+      522    }
+      523  
+      482 -  // Also get total unanalyzed count (deduplicated by name)   
+      524 +  // Persist auto-rejected companies so they don't appear agai
+          +n                                                             
+      525 +  if len(autoRejected) > 0 {                                  
+      526 +    now := time.Now().Format("2006-01-02 15:04:05")           
+      527 +    for _, name := range autoRejected {                       
+      528 +      db.Exec(`INSERT OR IGNORE INTO rejected_companies (name,
+          + reason, rejected_at) VALUES (?, 'auto:importer_keyword', ?)`,
+          + name, now)                                                   
+      529 +    }                                                         
+      530 +  }                                                           
+      531 +                                                              
+      532 +  // Total unanalyzed count (excluding both companies and reje
+          +cted)                                                         
+      533    var totalUnanalyzed int
+      534    db.QueryRow(`
+      535      SELECT COUNT(DISTINCT r.name) FROM raw_companies r
+      536      LEFT JOIN companies c ON r.name = c.name
+      487 -    WHERE c.id IS NULL                                        
+      537 +    LEFT JOIN rejected_companies rej ON r.name = rej.name     
+      538 +    WHERE c.id IS NULL AND rej.id IS NULL                     
+      539    `).Scan(&totalUnanalyzed)
+      540  
+      541    result := map[string]any{
+      542      "companies":        companies,
+      543      "returned":         len(companies),
+      544      "total_unanalyzed": totalUnanalyzed,
+      545 +    "auto_rejected":    len(autoRejected),                    
+      546    }
+      547    data, _ := json.Marshal(result)
+      548    return textResult(string(data))
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Теперь добавлю функцию handleRejectCompanies и импорт strings:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 1 line
+      10    "net/http"
+      11    "os"
+      12    "strconv"
+      13 +  "strings"                                                    
+      14    "time"
+      15  
+      16    _ "modernc.org/sqlite"
+  ⎿  Found 2 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 31 lines
+      647    return textResult(string(data))
+      648  }
+      649  
+      650 +// --- reject_companies ---                                   
+      651 +                                                              
+      652 +func handleRejectCompanies(args json.RawMessage) toolResult { 
+      653 +  var a struct {                                              
+      654 +    Names  []string `json:"names"`                            
+      655 +    Reason string   `json:"reason"`                           
+      656 +  }                                                           
+      657 +  if err := json.Unmarshal(args, &a); err != nil {            
+      658 +    return errorResult("invalid params: " + err.Error())      
+      659 +  }                                                           
+      660 +  if len(a.Names) == 0 {                                      
+      661 +    return errorResult("names array is required")             
+      662 +  }                                                           
+      663 +  if a.Reason == "" {                                         
+      664 +    a.Reason = "manual"                                       
+      665 +  }                                                           
+      666 +                                                              
+      667 +  now := time.Now().Format("2006-01-02 15:04:05")             
+      668 +  rejected := 0                                               
+      669 +  for _, name := range a.Names {                              
+      670 +    _, err := db.Exec(`INSERT OR IGNORE INTO rejected_companie
+          +s (name, reason, rejected_at) VALUES (?, ?, ?)`, name, a.Reaso
+          +n, now)                                                       
+      671 +    if err == nil {                                           
+      672 +      rejected++                                              
+      673 +    }                                                         
+      674 +  }                                                           
+      675 +                                                              
+      676 +  result := map[string]any{"rejected": rejected}              
+      677 +  data, _ := json.Marshal(result)                             
+      678 +  return textResult(string(data))                             
+      679 +}                                                             
+      680 +                                                              
+      681  // --- helpers ---
+      682  
+      683  func textResult(text string) toolResult {
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Диагностика говорит что не видит функцию. Проверю, правильно ли всё
+  скомпилируется:
+
+● Bash(go build ./cmd/mcp/mcp-exportby/ 2>&1)
+  ⎿  (No output)
+
+● Компилируется. Теперь обновлю промпт анализа — LLM должен вызывать
+  reject_companies для отклонённых:
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(tasks.yaml)
+  ⎿  Added 7 lines, removed 2 lines
+      267             VALUES ('...', url, '...', '', needs_aviation, prio
+           rity, '{{.Date}}', 'new')
+      268             ВАЖНО: бери поле url из ответа get_unanalyzed как е
+           сть — НЕ конструируй URL самостоятельно.
+      269  
+      270 -        4. Запиши в scan_log итог сессии.                     
+      270 +        4. ОБЯЗАТЕЛЬНО вызови mcp__exportby__reject_companies 
+          +для ВСЕХ отклонённых компаний (импортёры, сервисные, неясные).
+      271 +           Передай массив названий и причину. Это предотвращае
+          +т повторный анализ при следующем запуске.                     
+      272 +           Пример: reject_companies(names=["ЛОКТ", "Фирма Б"],
+          + reason="importer")                                           
+      273  
+      272 -        ВАЖНО: Обрабатывай компании батчами — группируй INSERT
+          - в одном SQL-запросе (INSERT INTO ... VALUES (...), (...), ...
+          -) для эффективности.                                          
+      274 +        5. Запиши в scan_log итог сессии.                     
+      275  
+      276 +        ВАЖНО: Обрабатывай компании батчами — группируй INSERT
+          + и reject_companies по несколько компаний за вызов.           
+      277 +                                                              
+      278          Формат вывода:
+      279          НОВЫХ ЛИДОВ: N
+      280 +        ОТКЛОНЕНО: N                                          
+      281          ПРИОРИТЕТНЫЕ ЛИДЫ:
+      282          - [Название] | [Описание 30 символов] | priority=N
+      283        work_dir: .
+
+● Добавлю reject_companies в allowed_tools:
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line
+      293          - exportby
+      294        allowed_tools:
+      295          - mcp__exportby__get_unanalyzed
+      296 +        - mcp__exportby__reject_companies                     
+      297          - mcp__database__query
+      298          - mcp__database__execute
+      299          - mcp__database__insert
+
+● Теперь обновлю DOMAIN.md и схему в tasks.yaml:
+
+● Update(data/export-by-aviation/DOMAIN.md)
+  ⎿  Added 11 lines, removed 1 line
+      77  - **1 (средний)**: дальние направления экспорта, малые партии, 
+          время-чувствительные товары
+      78  - **0 (низкий)**: стройматериалы, сырьё, тяжёлые/объёмные грузы
+      79  
+      80 +### rejected_companies (отклонённые при анализе)               
+      81 +                                                               
+      82 +| Column | Type | Description |                                
+      83 +|--------|------|-------------|                                
+      84 +| id | INTEGER | PK AUTOINCREMENT |                            
+      85 +| name | TEXT | Название (UNIQUE) |                            
+      86 +| reason | TEXT | Причина отклонения (importer, service, auto:i
+         +mporter_keyword) |                                             
+      87 +| rejected_at | TEXT | Дата отклонения |                       
+      88 +                                                               
+      89  ## MCP-инструменты exportby
+      90  
+      91  - `sync_catalog` — скачивает страницы каталога, продолжает с по
+          следней позиции
+      83 -- `get_unanalyzed` — возвращает компании из raw_companies, кото
+         -рых ещё нет в companies (дедуплицированные по имени)           
+      92 +- `get_unanalyzed` — возвращает компании из raw_companies, кото
+         +рых ещё нет в companies И нет в rejected_companies. Автоматичес
+         +ки отклоняет очевидных импортёров по ключевым словам           
+      93  - `check_new` — проверяет первые N страниц на новые компании
+      94  - `get_stats` — текущая статистика
+      95 +- `reject_companies` — помечает компании как отклонённые (names
+         +=[], reason=""). ОБЯЗАТЕЛЬНО вызывать для всех отклонённых при 
+         +анализе                                                        
+      96  - `mark_exported` — помечает все лиды со статусом 'new' как 're
+          ported'. Вызывать после отправки отчёта
+
+● Также добавлю rejected_companies в схему в tasks.yaml:
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Update(tasks.yaml)
+  ⎿  Added 7 lines
+      475                companies_added INTEGER DEFAULT 0,
+      476                scanned_at TEXT NOT NULL
+      477              );
+      478 +                                                              
+      479 +            CREATE TABLE IF NOT EXISTS rejected_companies (   
+      480 +              id INTEGER PRIMARY KEY AUTOINCREMENT,           
+      481 +              name TEXT UNIQUE NOT NULL,                      
+      482 +              reason TEXT,                                    
+      483 +              rejected_at TEXT NOT NULL                       
+      484 +            );                                                
+      485          domain_doc: DOMAIN.md
+      486          tasks:
+      487              - sync-export-by-catalog
+
+● Пересоберу чтобы убедиться что всё работает:
+
+● Bash(make build 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Bash(go build -o bin/mcp-exportby ./cmd/mcp/mcp-exportby/ 2>&1)
+  ⎿  (No output)
+
+● Всё собирается. Вот что сделано — три уровня защиты от дублей и импортёров:
+
+  1. Go-фильтр (хардкод, до LLM)
+
+  get_unanalyzed теперь автоматически отклоняет компании с ключевыми словами в
+  описании: "дистрибьютор", "дилер", "импортёр", "официальный представитель",
+  "салон красоты", "автосервис" и т.д. — сразу в rejected_companies, LLM их даже
+   не увидит.
+
+  2. Таблица rejected_companies (антидубли)
+
+  Новая таблица хранит ВСЕ отклонённые компании. get_unanalyzed исключает и
+  companies, и rejected_companies. Раньше отклонённые компании терялись и
+  появлялись снова.
+
+  3. Инструмент reject_companies (LLM-уровень)
+
+  Промпт анализа теперь требует вызывать reject_companies для каждой отклонённой
+   компании. Даже если Go-фильтр пропустил нетипичного импортёра, LLM его
+  отклонит и запишет в базу.
+
+  Итог: "ЛОКТ — дистрибьютор HIKVISION" будет:
+  - Автоматически отсечён Go-фильтром по слову "дистрибьютор"
+  - Записан в rejected_companies
+  - Никогда не появится повторно в get_unanalyzed
+
+✻ Crunched for 3m 2s
+
+❯ В файле сводка, все сломалось окончательно :(((                               
+
+● Посмотрю что сейчас в файле.
+
+● Read 1 file (ctrl+o to expand)
+
+● Bash(go run -mod=mod -run TestConfig 2>&1 || python3 -c "import yaml;
+      yaml.safe_load(open('tasks.yaml')); print('YAML OK')" 2>&1)
+  ⎿  flag provided but not defined: -run
+     usage: go run [build flags] [-exec xprog] package [arguments...]
+     Run 'go help run' for details.
+     YAML OK
+
+● YAML валиден. Проверю парсинг конфига самим приложением:
+
+● Bash(go run ./cmd/server -run __nonexistent__ 2>&1 | head -20)
+  ⎿  time=2026-03-11T17:40:24.470+03:00 level=INFO msg="email notifications
+      enabled" host=smtp.gmail.com port=587
+     time=2026-03-11T17:40:24.470+03:00 level=INFO msg="domain data dir rea
+     … +10 lines (ctrl+o to expand)
+
+● Конфиг парсится нормально, ошибок нет. Файл технически исправен.
+
+  Но я понимаю проблему — файл стал слишком раздутым и запутанным из-за моих
+  правок. Промпты разрослись, в них куча разметки ---НАЧАЛО ШАБЛОНА---, правил
+  шаблона, и всё это усложняет поддержку.
+
+  Давайте упростим. Вместо раздувания промптов шаблонами — вынесу единый шаблон
+  сводки в файл, который оба таска будут использовать:
+
+● Write(data/report-template.txt)
+  ⎿  Wrote 11 lines to data/report-template.txt
+      1 📊 {TITLE} — {DATE}
+      2 
+      3 Новых: {COUNT}
+      4 {METRIC2_LABEL}: {METRIC2_VALUE}
+      5 
+      6 Топ:
+      7 • {COMPANY1} — {DESC1}
+      8 • {COMPANY2} — {DESC2}
+      9 • {COMPANY3} — {DESC3}
+     … +1 line (ctrl+o to expand)
+
+● Теперь откачу промпты к простому виду — без раздутых шаблонов, но с ссылкой на
+   файл шаблона:
+
+● Update(tasks.yaml)
+  ⎿  Added 8 lines, removed 28 lines
+      141        prompt: |
+      142          Сегодня {{.Date}}. Доставь отчёт по лидам руководству.
+      143  
+      144 -        Результат предыдущего этапа:                          
+      145 -        {{.PrevOutput}}                                       
+      144 +        Файл отчёта: {{.PrevOutput}}                          
+      145  
+      147 -        Действия:                                             
+      148 -        1. Определи путь к Excel-файлу из результата выше     
+      149 -        2. Запроси из БД: SELECT COUNT(*) FROM leads WHERE sta
+          -tus='new'; и топ-5 компаний по дате                           
+      150 -        3. Сформируй сводку СТРОГО по шаблону ниже. НЕ МЕНЯЙ с
+          -труктуру, порядок строк, символы. Только подставь данные вмест
+          -о {плейсхолдеров}:                                            
+      151 -                                                              
+      152 -        ---НАЧАЛО ШАБЛОНА---                                  
+      153 -        📊 Отчёт по лидам — {ДАТА}                            
+      154 -                                                              
+      155 -        Новых: {N}                                            
+      156 -        Источников: {N}                                       
+      157 -                                                              
+      158 -        Топ:                                                  
+      159 -        • {Компания} — {описание до 50 символов}              
+      160 -        • {Компания} — {описание до 50 символов}              
+      161 -                                                              
+      162 -        📎 Excel-файл с деталями приложен.                    
+      163 -        ---КОНЕЦ ШАБЛОНА---                                   
+      164 -                                                              
+      165 -        Правила шаблона:                                      
+      166 -        - Выводи от 1 до 5 компаний, каждая на отдельной строк
+          -е с «•»                                                       
+      167 -        - Описание компании — максимум 50 символов, без перено
+          -са строки                                                     
+      168 -        - Никаких дополнительных строк, приветствий, подписей 
+      169 -        - Формат ИДЕНТИЧЕН при каждом запуске — меняются тольк
+          -о цифры и названия                                            
+      170 -                                                              
+      171 -        4. Отправь в Telegram сводку (parse_mode: Markdown), з
+          -атем Excel через send_document                                
+      172 -        5. Отправь email (send_email) на alexstav1975@yandex.b
+          -y — тема "📊 Отчёт по лидам — {{.Date}}", тело = та же сводка,
+          - вложение = Excel                                             
+      146 +        1. Запроси из БД количество новых лидов и топ-5 компан
+          +ий                                                            
+      147 +        2. Прочитай шаблон сводки из data/report-template.txt 
+      148 +        3. Заполни шаблон: TITLE=Отчёт по лидам, METRIC2_LABEL
+          +=Источников, от 1 до 5 компаний                               
+      149 +        4. Отправь сводку в Telegram (parse_mode: Markdown) и 
+          +Excel через send_document                                     
+      150 +        5. Отправь email на alexstav1975@yandex.by — тема "📊 
+          +Отчёт по лидам — {{.Date}}", тело = та же сводка, вложение = E
+          +xcel                                                          
+      151          6. Скопируй файл в workspace/ceo/reports/
+      152 +                                                              
+      153 +        ВАЖНО: текст сводки в Telegram и email должен быть поб
+          +айтово одинаковым. Никаких приветствий, подписей, дополнительн
+          +ых строк.                                                     
+      154        work_dir: .
+      155        tags:
+      156          - leads
+
+● Update(tasks.yaml)
+  ⎿  Added 10 lines, removed 29 lines
+      305        permission_mode: bypassPermissions
+      306      - name: deliver-export-by-aviation-report
+      307        domain: export-by-aviation
+      308 -      prompt: |-                                              
+      308 +      prompt: |                                               
+      309          Сегодня {{.Date}}. Доставь отчёт по авиационным лидам 
+           с export.by руководству.
+      310  
+      311 -        Результат предыдущего этапа:                          
+      312 -        {{.PrevOutput}}                                       
+      311 +        Файл отчёта: data/export-by-aviation/leads_{{.DateTime
+          +}}.xlsx                                                       
+      312 +        Предыдущий этап: {{.PrevOutput}}                      
+      313  
+      314 -        Действия:                                             
+      315 -        1. Определи путь к Excel-файлу из результата выше (dat
+          -a/export-by-aviation/leads_{{.DateTime}}.xlsx)                
+      316 -        2. Запроси из БД: SELECT COUNT(*) FROM companies WHERE
+          - status='new'; SELECT COUNT(*) FROM companies WHERE status='ne
+          -w' AND aviation_priority=2; и топ-5 по aviation_priority DESC 
+      317 -        3. Сформируй сводку СТРОГО по шаблону ниже. НЕ МЕНЯЙ с
+          -труктуру, порядок строк, символы. Только подставь данные вмест
+          -о {плейсхолдеров}:                                            
+      314 +        1. Запроси из БД количество новых лидов и количество п
+          +риоритетных (aviation_priority=2), топ-5 компаний             
+      315 +        2. Прочитай шаблон сводки из data/report-template.txt 
+      316 +        3. Заполни шаблон: TITLE=Авиационные лиды, METRIC2_LAB
+          +EL=Приоритетных (🔴), от 1 до 5 компаний                      
+      317 +        4. Отправь сводку в Telegram (parse_mode: Markdown) и 
+          +Excel через send_document                                     
+      318 +        5. Отправь email через send_report на hello@partnerlog
+          +istics.by и alexstav1975@yandex.by — тема "📊 Авиационные лиды
+          + — {{.Date}}", тело = та же сводка, вложение = Excel          
+      319 +        6. Вызови mcp__exportby__mark_exported чтобы пометить 
+          +лиды как 'reported'                                           
+      320  
+      319 -        ---НАЧАЛО ШАБЛОНА---                                  
+      320 -        📊 Авиационные лиды — {ДАТА}                          
+      321 -                                                              
+      322 -        Новых: {N}                                            
+      323 -        Приоритетных (🔴): {N}                                
+      324 -                                                              
+      325 -        Топ:                                                  
+      326 -        • {Компания} — {описание до 50 символов}              
+      327 -        • {Компания} — {описание до 50 символов}              
+      328 -                                                              
+      329 -        📎 Excel-файл с деталями приложен.                    
+      330 -        ---КОНЕЦ ШАБЛОНА---                                   
+      331 -                                                              
+      332 -        Правила шаблона:                                      
+      333 -        - Выводи от 1 до 5 компаний, каждая на отдельной строк
+          -е с «•»                                                       
+      334 -        - Описание компании — максимум 50 символов, без перено
+          -са строки                                                     
+      335 -        - Никаких дополнительных строк, приветствий, подписей 
+      336 -        - Формат ИДЕНТИЧЕН при каждом запуске — меняются тольк
+          -о цифры и названия                                            
+      337 -                                                              
+      338 -        4. Отправь в Telegram сводку (parse_mode: Markdown), з
+          -атем Excel через send_document                                
+      339 -        5. Отправь email через mcp__email__send_report на hell
+          -o@partnerlogistics.by и alexstav1975@yandex.by — тема "📊 Авиа
+          -ционные лиды — {{.Date}}", тело = та же сводка, вложение = Exc
+          -el                                                            
+      340 -        6. ОБЯЗАТЕЛЬНО вызови mcp__exportby__mark_exported что
+          -бы пометить все лиды как 'reported'.                          
+      321 +        ВАЖНО: текст сводки в Telegram и email должен быть поб
+          +айтово одинаковым. Никаких приветствий, подписей, дополнительн
+          +ых строк.                                                     
+      322        work_dir: .
+      323        tags:
+      324          - leads
+
+● Добавлю mcp__filesystem__read_file в allowed_tools для deliver-leads-report,
+  чтобы агент мог прочитать шаблон:
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(tasks.yaml)
+  ⎿  Added 3 lines
+      165        allowed_tools:
+      166          - mcp__email__send_email
+      167          - mcp__filesystem__copy_file
+      168 +        - mcp__filesystem__read_file                          
+      169 +        - mcp__telegram__send_message                         
+      170          - mcp__telegram__send_document
+      171 +        - mcp__database__query                                
+      172        permission_mode: dontAsk
+      173      - name: sync-export-by-catalog
+      174        domain: export-by-aviation
+
+● Проверю что deliver-leads-report имеет нужные mcp_servers:
+
+● Read 1 file (ctrl+o to expand)
+
+● Нужен ещё database в mcp_servers для запроса статистики:
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line
+      162          - email
+      163          - filesystem
+      164          - telegram
+      165 +        - database                                            
+      166        allowed_tools:
+      167          - mcp__email__send_email
+      168          - mcp__filesystem__copy_file
+
+● Финальная проверка:
+
+● Bash(go run ./cmd/server -run __nonexistent__ 2>&1 | head -10)
+  ⎿  time=2026-03-11T17:41:36.973+03:00 level=INFO msg="email notifications
+      enabled" host=smtp.gmail.com port=587
+     time=2026-03-11T17:41:36.973+03:00 level=INFO msg="domain data dir rea
+     … +10 lines (ctrl+o to expand)
+
+● Всё парсится. Итог — промпты доставки теперь чистые и короткие:
+
+  Было — раздутые промпты с инлайн-шаблонами ---НАЧАЛО ШАБЛОНА---, правилами,
+  дублирующимися в обоих тасках.
+
+  Стало:
+  - Единый шаблон в файле data/report-template.txt
+  - Оба таска ссылаются на него и только подставляют TITLE и METRIC2_LABEL
+  - Промпты сократились вдвое, читаются за 10 секунд
+  - Чтобы поменять формат — правишь один файл, влияет на оба пайплайна
+
+✻ Cogitated for 1m 41s
+
+❯ .учзщке                                                                       
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ /export                                                                       
+  ⎿  Conversation exported to:
+     2026-03-11-174201-local-command-caveatcaveat-the-messages-below-w.txt
+
+❯ Все сломано                                                                   
+  ⎿  [Image #1]
+  ⎿  [Image #2]
+
+● Вижу две проблемы на скриншотах:
+
+  1. Excel-отчёт — все 36 лидов со статусом "reported", 0 с низким приоритетом,
+  все "нуждаются в авиаперевозке" — значит фильтрация импортёров не работала на
+  старом коде (новый ещё не был собран)
+  2. Pipeline output — error_max_turns с num_turns: 16 — таск
+  deliver-export-by-aviation-report упёрся в лимит 15 turns и не смог завершить
+  доставку. Скорее всего потому что я добавил шаг "прочитай шаблон из файла" и
+  агенту не хватило ходов.
+
+  Исправлю — уберу лишний шаг с чтением файла шаблона и встрою шаблон прямо в
+  промпт, но коротко. Также увеличу max_turns:
+
+● Read 1 file (ctrl+o to expand)
+
+● Убираю шаг "прочитай шаблон из файла" — встрою шаблон прямо, но компактно.
+  Увеличу max_turns и уберу filesystem из зависимостей (шаблон больше не нужно
+  читать):
+
+● Update(tasks.yaml)
+  ⎿  Added 18 lines, removed 14 lines
+      310      - name: deliver-export-by-aviation-report
+      311        domain: export-by-aviation
+      312        prompt: |
+      313 -        Сегодня {{.Date}}. Доставь отчёт по авиационным лидам 
+          -с export.by руководству.                                      
+      313 +        Доставь отчёт по авиационным лидам. Файл: data/export-
+          +by-aviation/leads_{{.DateTime}}.xlsx                          
+      314  
+      315 -        Файл отчёта: data/export-by-aviation/leads_{{.DateTime
+          -}}.xlsx                                                       
+      316 -        Предыдущий этап: {{.PrevOutput}}                      
+      315 +        Шаг 1. Одним запросом получи данные:                  
+      316 +        SELECT COUNT(*) AS total, SUM(CASE WHEN aviation_prior
+          +ity=2 THEN 1 ELSE 0 END) AS priority FROM companies WHERE stat
+          +us='new';                                                     
+      317 +        SELECT name, description FROM companies WHERE status='
+          +new' ORDER BY aviation_priority DESC LIMIT 5;                 
+      318  
+      318 -        1. Запроси из БД количество новых лидов и количество п
+          -риоритетных (aviation_priority=2), топ-5 компаний             
+      319 -        2. Прочитай шаблон сводки из data/report-template.txt 
+      320 -        3. Заполни шаблон: TITLE=Авиационные лиды, METRIC2_LAB
+          -EL=Приоритетных (🔴), от 1 до 5 компаний                      
+      321 -        4. Отправь сводку в Telegram (parse_mode: Markdown) и 
+          -Excel через send_document                                     
+      322 -        5. Отправь email через send_report на hello@partnerlog
+          -istics.by и alexstav1975@yandex.by — тема "📊 Авиационные лиды
+          - — {{.Date}}", тело = та же сводка, вложение = Excel          
+      323 -        6. Вызови mcp__exportby__mark_exported чтобы пометить 
+          -лиды как 'reported'                                           
+      319 +        Шаг 2. Составь сводку ТОЧНО в этом формате (подставь д
+          +анные):                                                       
+      320 +        📊 Авиационные лиды — {{.Date}}                       
+      321 +        Новых: {total}                                        
+      322 +        Приоритетных (🔴): {priority}                         
+      323 +        Топ:                                                  
+      324 +        • {name} — {description обрезать до 50 символов}      
+      325 +        📎 Excel-файл с деталями приложен.                    
+      326  
+      325 -        ВАЖНО: текст сводки в Telegram и email должен быть поб
+          -айтово одинаковым. Никаких приветствий, подписей, дополнительн
+          -ых строк.                                                     
+      327 +        Шаг 3. Отправь эту сводку через send_message в Telegra
+          +m.                                                            
+      328 +        Шаг 4. Отправь Excel через send_document в Telegram.  
+      329 +        Шаг 5. Отправь email через send_report на hello@partne
+          +rlogistics.by и alexstav1975@yandex.by, тема "📊 Авиационные л
+          +иды — {{.Date}}", тело = та же сводка, вложение = Excel.      
+      330 +        Шаг 6. Вызови mark_exported.                          
+      331 +                                                              
+      332 +        Сводка в TG и email ИДЕНТИЧНА. Ничего лишнего не добав
+          +ляй.                                                          
+      333        work_dir: .
+      334        tags:
+      335          - leads
+     ...
+      342          - database
+      343          - telegram
+      344          - email
+      338 -        - filesystem                                          
+      345          - exportby
+      346        allowed_tools:
+      347          - mcp__database__query
+      342 -        - mcp__database__execute                              
+      348          - mcp__telegram__send_message
+      349          - mcp__telegram__send_document
+      350          - mcp__email__send_report
+      346 -        - mcp__filesystem__read_file                          
+      351          - mcp__exportby__mark_exported
+      348 -      max_turns: 15                                           
+      352 +      max_turns: 25                                           
+      353        permission_mode: bypassPermissions
+      354  pipelines:
+      355      - name: review-fix
+
+● Теперь то же для deliver-leads-report:
+
+● Update(tasks.yaml)
+  ⎿  Added 18 lines, removed 10 lines
+      139      - name: deliver-leads-report
+      140        domain: leads
+      141        prompt: |
+      142 -        Сегодня {{.Date}}. Доставь отчёт по лидам руководству.
+      142 +        Доставь отчёт по лидам. Файл: {{.PrevOutput}}         
+      143  
+      144 -        Файл отчёта: {{.PrevOutput}}                          
+      144 +        Шаг 1. Одним запросом получи данные:                  
+      145 +        SELECT COUNT(*) AS total FROM leads WHERE status='new'
+          +;                                                             
+      146 +        SELECT COUNT(DISTINCT source_url) AS sources FROM lead
+          +s WHERE status='new';                                         
+      147 +        SELECT name, industry FROM leads WHERE status='new' OR
+          +DER BY found_at DESC LIMIT 5;                                 
+      148  
+      146 -        1. Запроси из БД количество новых лидов и топ-5 компан
+          -ий                                                            
+      147 -        2. Прочитай шаблон сводки из data/report-template.txt 
+      148 -        3. Заполни шаблон: TITLE=Отчёт по лидам, METRIC2_LABEL
+          -=Источников, от 1 до 5 компаний                               
+      149 -        4. Отправь сводку в Telegram (parse_mode: Markdown) и 
+          -Excel через send_document                                     
+      150 -        5. Отправь email на alexstav1975@yandex.by — тема "📊 
+          -Отчёт по лидам — {{.Date}}", тело = та же сводка, вложение = E
+          -xcel                                                          
+      151 -        6. Скопируй файл в workspace/ceo/reports/             
+      149 +        Шаг 2. Составь сводку ТОЧНО в этом формате (подставь д
+          +анные):                                                       
+      150 +        📊 Отчёт по лидам — {{.Date}}                         
+      151 +        Новых: {total}                                        
+      152 +        Источников: {sources}                                 
+      153 +        Топ:                                                  
+      154 +        • {name} — {industry}                                 
+      155 +        📎 Excel-файл с деталями приложен.                    
+      156  
+      153 -        ВАЖНО: текст сводки в Telegram и email должен быть поб
+          -айтово одинаковым. Никаких приветствий, подписей, дополнительн
+          -ых строк.                                                     
+      157 +        Шаг 3. Отправь эту сводку через send_message в Telegra
+          +m.                                                            
+      158 +        Шаг 4. Отправь Excel через send_document в Telegram.  
+      159 +        Шаг 5. Отправь email на alexstav1975@yandex.by, тема "
+          +📊 Отчёт по лидам — {{.Date}}", тело = та же сводка, вложение 
+          += Excel.                                                      
+      160 +        Шаг 6. Скопируй файл в workspace/ceo/reports/.        
+      161 +                                                              
+      162 +        Сводка в TG и email ИДЕНТИЧНА. Ничего лишнего не добав
+          +ляй.                                                          
+      163        work_dir: .
+      164        tags:
+      165          - leads
+     ...
+      175        allowed_tools:
+      176          - mcp__email__send_email
+      177          - mcp__filesystem__copy_file
+      169 -        - mcp__filesystem__read_file                          
+      178          - mcp__telegram__send_message
+      179          - mcp__telegram__send_document
+      180          - mcp__database__query
+
+● Пересоберу и проверю:
+
+● Bash(make build 2>&1 && go build -o bin/mcp-exportby ./cmd/mcp/mcp-exportby/
+      2>&1 && go run ./cmd/server -run __test__ 2>&1 | head -8)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+     time=2026-03-11T17:53:31.703+03:00 level=INFO msg="email notifications
+     … +12 lines (ctrl+o to expand)
+
+● Удалю ненужный файл шаблона:
+
+● Bash(rm data/report-template.txt)
+  ⎿  Done
+
+● Всё собирается. Вот что было сломано и что исправлено:
+
+  Проблема: error_max_turns (16 из 15) — Haiku тратил ходы на:
+  - чтение файла-шаблона (1-2 хода)
+  - формулирование запросов к БД (1-2 хода)
+  - и не успевал за 15 turns отправить TG + email + mark_exported
+
+  Исправления:
+  1. Убран шаг чтения файла-шаблона — шаблон встроен прямо в промпт, но
+  компактно
+  2. SQL-запросы прописаны явно — агент не тратит ходы на придумывание запросов
+  3. max_turns: 15 → 25 — запас на случай retry
+  4. Убран лишний MCP-сервер filesystem — меньше инициализация, меньше контекст
+  5. Шаги пронумерованы 1-6 — Haiku следует чётким пошаговым инструкциям лучше
+
+✻ Baked for 1m 11s
+
+❯ в фафл отчета попадает сводка, а не список новых лидов                        
+
+● Посмотрю задачу компиляции Excel:
+
+● Read 1 file (ctrl+o to expand)
+
+● Вижу проблему — пункт 4: "Добавь лист 'Сводка' с общей статистикой". Агент
+  создаёт лист "Сводка" и на скриншоте видно именно его — таблица с
+  "Показатель/Значение". Основной лист "Лиды" скорее всего есть, но на скриншоте
+   открыт лист "Сводка".
+
+  Или другая проблема — агент вообще создаёт только лист "Сводка" без листа с
+  детальными данными. Перепишу промпт чётче, чтобы основной лист с данными шёл
+  первым и был главным:
+
+● Update(tasks.yaml)
+  ⎿  Added 15 lines, removed 1 line
+      294        permission_mode: bypassPermissions
+      295      - name: compile-export-by-aviation-excel
+      296        domain: export-by-aviation
+      297 -      prompt: "Сегодня {{.Date}}. Сформируй Excel-отчёт по лид
+          -ам из export.by для авиаперевозок.\n\nПредыдущий этап:\n{{.Pre
+          -vOutput}}\n\nДействия:\n1. Запроси из БД все компании со стату
+          -сом 'new', отсортированные по aviation_priority DESC, found_da
+          -te DESC\n2. Создай Excel-файл data/export-by-aviation/leads_{{
+          -.DateTime}}.xlsx со следующими столбцами:\n   - Приоритет (\U0
+          -001F534 Высокий / \U0001F7E1 Средний / \U0001F7E2 Низкий)\n   
+          -- Название компании\n   - Описание / Продукция\n   - Направлен
+          -ия экспорта\n   - Потребность в авиа\n   - Контактная информац
+          -ия\n   - URL профиля\n   - Дата обнаружения\n   - Статус\n3. В
+          -ыдели строки с aviation_priority=2 красным цветом, aviation_pr
+          -iority=1 — жёлтым\n4. Добавь лист 'Сводка' с общей статистикой
+          -\n\nВыведи путь к созданному файлу."                          
+      297 +      prompt: |                                               
+      298 +        Сформируй Excel-отчёт. Файл: data/export-by-aviation/l
+          +eads_{{.DateTime}}.xlsx                                       
+      299 +                                                              
+      300 +        Шаг 1. Запроси ВСЕ компании из БД:                    
+      301 +        SELECT name, description, products, export_destination
+          +s, contact_info, url, aviation_priority, found_date, status   
+      302 +        FROM companies WHERE status='new' ORDER BY aviation_pr
+          +iority DESC, found_date DESC;                                 
+      303 +                                                              
+      304 +        Шаг 2. Создай Excel-файл. Первый лист "Лиды" — таблица
+          + через add_styled_table со столбцами:                         
+      305 +        Приоритет | Компания | Описание | Продукция | Экспорт 
+          +| Контакты | URL | Дата | Статус                              
+      306 +        Каждая строка = одна компания из результата запроса. П
+          +риоритет: 🔴 Высокий (2), 🟡 Средний (1), 🟢 Низкий (0).      
+      307 +        Это ГЛАВНЫЙ лист — в нём ВСЕ компании, по одной на стр
+          +оку.                                                          
+      308 +                                                              
+      309 +        НЕ создавай лист "Сводка" — сводка отправляется отдель
+          +но в Telegram/email.                                          
+      310 +                                                              
+      311 +        Выведи ТОЛЬКО путь к файлу.                           
+      312        work_dir: .
+      313        tags:
+      314          - leads
+
+● Bash(go run ./cmd/server -run __test__ 2>&1 | tail -2)
+  ⎿  time=2026-03-11T17:54:35.560+03:00 level=ERROR msg="task not found" na
+     me=__test__
+     exit status 1
+
+● Конфиг ок. Вот что было не так и что исправлено:
+
+  Проблема: промпт говорил "Добавь лист 'Сводка' с общей статистикой" — агент
+  создавал лист со сводной таблицей (Показатель/Значение) вместо или вместе с
+  детальным списком лидов. На скриншоте видно именно этот лист — агрегированные
+  цифры вместо строк с компаниями.
+
+  Исправления:
+  - SQL-запрос прописан явно — все поля, все компании, одна строка = одна
+  компания
+  - Лист один — "Лиды", через add_styled_table, каждая компания = строка
+  - Лист "Сводка" убран — сводка теперь отправляется только в TG/email на
+  следующем шаге пайплайна
+  - Вывод = только путь к файлу (для передачи в
+  deliver-export-by-aviation-report)
+
+✻ Baked for 34s

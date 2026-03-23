@@ -1,0 +1,193 @@
+ ▐▛███▜▌   Claude Code v2.1.72
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ Не обновляются статусы полсе завершения                                       
+  ⎿  [Image #3]
+
+● Вижу проблему: в списке задача показывается как "running" со кнопкой "Stop",
+  но в детальной панели справа уже "completed". Список не обновляется при
+  завершении.
+
+  Давайте посмотрю код SSE и обновления списка выполнений.
+
+● Explore(Find SSE update logic for executions)
+  ⎿  Done (17 tool uses · 55.0k tokens · 37s)
+  (ctrl+o to expand)
+
+● Давайте посмотрю ключевые файлы подробнее.
+
+● Read 2 files (ctrl+o to expand)
+
+● Now let me check the backend side - how pipeline completion events are
+  published.
+
+● Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Let me check the pipeline completion events to see if execution_id is
+  included.
+
+● Read 1 file (ctrl+o to expand)
+
+● Let me check how useSSE is called - the onEvent callback stability is
+  critical.
+
+● Read 1 file (ctrl+o to expand)
+
+● Let me check the useToast hook stability.
+
+● Read 1 file (ctrl+o to expand)
+
+● Let me check how the UI triggers pipeline runs.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Let me check the runPipeline internal method to see task execution flow.
+
+● Read 1 file (ctrl+o to expand)
+
+● Let me check if the task runner emits events during pipeline execution.
+
+● Read 1 file (ctrl+o to expand)
+
+● Let me check the event bus implementation.
+
+● Read 1 file (ctrl+o to expand)
+
+● Let me check the executions list API and store.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Let me check if there's any HTTP caching on the API responses.
+
+● Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Let me check the API client's fetch configuration.
+
+● Read 1 file (ctrl+o to expand)
+
+● I found the issue. There are two problems:
+
+  1. No Cache-Control header on API responses - the browser may cache the
+  /executions?limit=50 GET response, so when TanStack Query refetches after SSE
+  invalidation, it gets stale data from browser cache
+  2. Detail panel Stop button uses stale selected state - it checks
+  selected.status === 'running' even when detailQuery.data shows "completed"
+
+  Let me fix both.
+
+● Update(internal/api/helpers.go)
+  ⎿  Added 1 line
+       9  // writeJSON marshals data as JSON and writes it to the respons
+          e with the given status code.
+      10  func writeJSON(w http.ResponseWriter, status int, data interfac
+          e{}) {
+      11    w.Header().Set("Content-Type", "application/json")
+      12 +  w.Header().Set("Cache-Control", "no-store")                  
+      13    w.WriteHeader(status)
+      14    if data != nil {
+      15      if err := json.NewEncoder(w).Encode(data); err != nil {
+
+● Now fix the detail panel Stop button to use detailQuery.data status:
+
+● Update(web/src/components/ExecutionHistory.tsx)
+  ⎿  Added 1 line, removed 1 line
+      132                    <p className="text-xs text-gray-400 dark:tex
+           t-gray-500 mt-1">ID: {selected.id}</p>
+      133                  </div>
+      134                  <div className="flex items-center gap-2">
+      135 -                  {(selected.status === 'running' || detailQue
+          -ry.data?.status === 'running') && (                           
+      135 +                  {(detailQuery.data?.status ?? selected.statu
+          +s) === 'running' && (                                         
+      136                      <button
+      137                        onClick={() => cancelMutation.mutate(sel
+           ected.id)}
+      138                        disabled={cancelMutation.isPending}
+  ⎿  Found 2 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now add refetchInterval as a polling fallback when there are running
+  executions, and also add cache: 'no-store' to the fetch client:
+
+● Update(web/src/api/client.ts)
+  ⎿  Added 1 line, removed 1 line
+      10      ...(options?.headers as Record<string, string> || {}),
+      11    }
+      12  
+      13 -  const res = await fetch(`${BASE}${path}`, { ...options, heade
+         -rs })                                                          
+      13 +  const res = await fetch(`${BASE}${path}`, { ...options, heade
+         +rs, cache: 'no-store' })                                       
+      14  
+      15    if (res.status === 401) {
+      16      localStorage.removeItem('token')
+
+● Now add a polling fallback for the executions list when there are running
+  items:
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(web/src/components/ExecutionHistory.tsx)
+  ⎿  Added 3 lines
+      18    const { data: executions, isLoading } = useQuery({
+      19      queryKey: ['executions'],
+      20      queryFn: () => api.listExecutions({ limit: '50' }),
+      21 +    // Poll every 5s when there are running executions (fallbac
+         +k for missed SSE events)                                       
+      22 +    refetchInterval: (query) =>                                
+      23 +      query.state.data?.some((e) => e.status === 'running') ? 5
+         +000 : false,                                                   
+      24    })
+      25  
+      26    // Sync selected state with fresh query data so status update
+          s in real-time
+
+● Also add polling for the detail query when the execution is running:
+
+● Update(web/src/components/ExecutionHistory.tsx)
+  ⎿  Added 2 lines
+      37      queryKey: ['execution', selected?.id],
+      38      queryFn: () => api.getExecution(selected!.id),
+      39      enabled: !!selected,
+      40 +    refetchInterval: (query) =>                                
+      41 +      query.state.data?.status === 'running' ? 3000 : false,   
+      42    })
+      43  
+      44    const cancelMutation = useMutation({
+
+● Now let's build and verify:
+
+● Bash(make build-ui 2>&1 | tail -5)
+  ⎿  dist/assets/index-tLtpDoN4.css   45.17 kB │ gzip:   7.24 kB
+     dist/assets/index-AV8Jx8NV.js   479.61 kB │ gzip: 144.79 kB
+     ✓ built in 2.85s
+     … +2 lines (ctrl+o to expand)
+  ⎿  (timeout 1m)
+
+● Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+● Все собралось. Вот что было исправлено:
+
+  Корень проблемы: API-ответы не имели заголовка Cache-Control, и браузер мог
+  кешировать GET-ответы /executions?limit=50. При SSE-инвалидации TanStack Query
+   делал refetch, но получал закешированные данные.
+
+  Исправления:
+
+  1. internal/api/helpers.go — добавлен Cache-Control: no-store на все JSON API
+  ответы, чтобы браузер не кешировал
+  2. web/src/api/client.ts — добавлен cache: 'no-store' в fetch() на стороне
+  клиента (двойная защита)
+  3. web/src/components/ExecutionHistory.tsx — добавлен refetchInterval как
+  fallback-поллинг:
+    - Список: каждые 5 секунд, пока есть running executions
+    - Детали: каждые 3 секунды для running execution
+  4. Кнопка Stop в деталях — исправлено условие: теперь приоритет у
+  detailQuery.data?.status (свежие данные) вместо selected.status (может быть
+  устаревшим)
+
+✻ Crunched for 5m 18s

@@ -1,0 +1,46 @@
+ ▐▛███▜▌   Claude Code v2.1.73
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ Почему сервис claude-ecosystem.service запускаемый с @.env видит прокси, в    
+которой выполнен @set-proxy.sh НЕ c sudo - нет ?                                
+  ⎿  Read .env (36 lines)
+  ⎿  Read set-proxy.sh (12 lines)
+  ⎿  API Error: 401 
+     {"type":"error","error":{"type":"authentication_error","message":"OAuth 
+     token has expired. Please obtain a new token or refresh your existing 
+     token."},"request_id":"req_011CYws4rorGEm5tNnJHQqzh"} · Please run /login
+
+❯ /login                                                                        
+  ⎿  Login successful
+
+❯ Почему сервис claude-ecosystem.service запускаемый с @.env видит прокси, в    
+которой выполнен @set-proxy.sh НЕ c sudo - нет ?                                
+  ⎿  Read .env (36 lines)
+  ⎿  Read set-proxy.sh (12 lines)
+
+● Explore(Find systemd service file)
+  ⎿  Done (6 tool uses · 28.7k tokens · 23s)
+  (ctrl+o to expand)
+
+● Дело в двух разных механизмах:
+
+  Systemd сервис (EnvironmentFile=-.env) — systemd читает файл .env напрямую и
+  устанавливает все переменные (включая HTTP_PROXY, HTTPS_PROXY и т.д.) в
+  окружение процесса. Формат KEY=value — это именно то, что systemd ожидает.
+  Поэтому сервис видит прокси.
+
+  set-proxy.sh без sudo — этот скрипт использует export, что устанавливает
+  переменные только в текущей shell-сессии и её дочерних процессах. Но:
+
+  1. Если вы запускаете ./set-proxy.sh (не source), он выполняется в подоболочке
+   — переменные умирают вместе с ней и не попадают в родительский shell.
+  2. Правильный способ — source set-proxy.sh (или . set-proxy.sh), тогда
+  переменные установятся в текущем шелле.
+  3. Даже при source — переменные действуют только для текущей терминальной
+  сессии. Systemd сервис запускается отдельно от вашего терминала и не наследует
+   окружение шелла.
+
+  Итого: systemd загружает .env файл самостоятельно при старте сервиса — ему не
+  нужен set-proxy.sh. А set-proxy.sh нужен только для ручной работы в терминале
+  (через source), и он никак не влияет на systemd-сервис.

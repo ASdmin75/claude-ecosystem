@@ -1,0 +1,784 @@
+ ▐▛███▜▌   Claude Code v2.1.81
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ При выполнении 4log-order-monitor получаем                                    
+{"type":"result","subtype":"error_max_turns","duration_ms":30885,"duration_api_ 
+ms":30181,"is_error":false,"num_turns":11,"stop_reason":"tool_use","session_id" 
+:"1d926666-0bff-4ea2-b17d-0b58caeb6815","total_cost_usd":0.08730999999999998,"u 
+sage":{"input_tokens":72,"cache_creation_input_tokens":30078,"cache_read_input_ 
+tokens":360255,"output_tokens":2723,"server_tool_use":{"web_search_requests":0, 
+"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_ 
+1h_input_tokens":30078,"ephemeral_5m_input_tokens":0},"inference_geo":"","itera 
+tions":[],"speed":"standard"},"modelUsage":{"claude-haiku-4-5-20251001":{"input 
+Tokens":72,"outputTokens":2723,"cacheReadInputTokens":360255,"cacheCreationInpu 
+tTokens":30078,"webSearchRequests":0,"costUSD":0.08730999999999998,"contextWind 
+ow":200000,"maxOutputTokens":32000}},"permission_denials":[{"tool_name":"mcp__d 
+atabase__list_tables","tool_use_id":"toolu_01Fu91tAcG31q18s3g4v5esg","tool_inpu 
+t":{}}],"fast_mode_state":"off","uuid":"65d5f914-369b-4d5a-8022-d1a1ad08c098"," 
+errors":[]}                                                                     
+Хотя calaude -p .... еще выполняются                                            
+
+● Две проблемы видны в выводе:
+
+  1. permission_denials — mcp__database__list_tables заблокирован, Claude
+  крутится в цикле пытаясь вызвать его, и упирается в max_turns: 11
+  2. max_turns слишком низкий — 11 итераций недостаточно если первые тратятся на
+   denied tools
+
+  Давайте посмотрим конфигурацию этой задачи.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Теперь посмотрю задачи 4log-fetch-active-orders и 4log-notify-order-changes, а
+   также как формируются allowed_tools.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Вижу проблему. В ошибке: permission_denials для mcp__database__list_tables, но
+   в allowed_tools задачи 4log-notify-order-changes этого инструмента нет —
+  только query и execute. Haiku пытается вызвать list_tables, получает отказ, и
+  крутится в цикле до max_turns.
+
+  Давайте посмотрю полный промпт задачи.
+
+  Read 1 file (ctrl+o to expand)
+
+● Проблема ясна. Haiku видит MCP-сервер database и первым делом пытается вызвать
+   list_tables чтобы "осмотреться", но этот инструмент не в allowed_tools. С
+  permission_mode: dontAsk вызов блокируется молча, и модель крутится в цикле.
+
+  Решение — добавить mcp__database__list_tables в allowed_tools задачи
+  4log-notify-order-changes. Haiku нужно увидеть таблицы чтобы понять структуру
+  БД, даже если промпт содержит конкретные SQL запросы.
+
+● Update(tasks.yaml)
+  ⎿  Added 2 lines, removed 1 line
+      878          - mcp__telegram__send_message
+      879          - mcp__database__query
+      880          - mcp__database__execute
+      881 -      max_turns: 10                                           
+      881 +        - mcp__database__list_tables                          
+      882 +      max_turns: 15                                           
+      883        permission_mode: dontAsk
+      884  pipelines:
+      885      - name: review-fix
+
+● Два изменения:
+
+  1. Добавил mcp__database__list_tables в allowed_tools — Haiku хочет осмотреть
+  таблицы перед выполнением SQL, и без этого разрешения он просто крутится в
+  цикле отказов.
+  2. Поднял max_turns с 10 до 15 — даже с разрешённым list_tables, 10 может быть
+   впритык для haiku, учитывая цепочку: list_tables → query → compose message →
+  send telegram → execute update.
+
+  Что касается "ещё выполняются claude -p" — это нормальное поведение: каждый
+  шаг пайплайна запускает отдельный claude -p. Первый шаг
+  (4log-fetch-active-orders, sonnet, max_turns: 50) мог отработать нормально, а
+  второй (4log-notify-order-changes, haiku) упал на denied tool.
+
+✻ Cogitated for 47s
+
+❯ Наверно нужно изменить wizard таким образом, чтобы он корректно устанавливал  
+права доступа при создании task, pipeline, sub-agent                            
+
+● Давайте разберёмся, как wizard формирует allowed_tools.
+
+● Explore(Find wizard code for task creation)
+  ⎿  Done (15 tool uses · 59.0k tokens · 46s)
+  (ctrl+o to expand)
+
+● Хорошо, теперь вижу полную картину. Проблема в двух местах:
+
+  1. Промпт wizard'а — перечисляет tool names, но не акцентирует что нужно
+  включать ВСЕ инструменты сервера (включая утилитные типа list_tables)
+  2. Валидация в applier — проверяет только наличие хотя бы одного инструмента
+  на сервер, но не полноту
+
+  Давайте прочитаю ключевые файлы.
+
+  Read 2 files (ctrl+o to expand)
+
+● Теперь вижу полную картину. Нужны два исправления:
+
+  1. applier.go — автоматически добавлять базовые "discovery" инструменты
+  сервера когда задача использует этот сервер
+  2. prompt.go — усилить инструкцию про обязательные инструменты
+
+  Это надёжнее чем полагаться только на промпт — код гарантирует что базовые
+  инструменты всегда будут.
+
+● Update(internal/wizard/applier.go)
+  ⎿  Added 11 lines
+      12    "github.com/asdmin/claude-ecosystem/internal/subagent"
+      13  )
+      14  
+      15 +// mcpBaseTools defines tools that are always needed when a tas
+         +k uses a given                                                 
+      16 +// MCP server. Models (especially smaller ones like Haiku) ofte
+         +n call these                                                   
+      17 +// "discovery" tools first to understand the available schema/s
+         +tructure.                                                      
+      18 +// Without them in allowed_tools the call is denied and the mod
+         +el loops                                                       
+      19 +// until max_turns.                                            
+      20 +var mcpBaseTools = map[string][]string{                        
+      21 +  "database":   {"mcp__database__list_tables", "mcp__database__
+         +describe_table"},                                              
+      22 +  "filesystem": {"mcp__filesystem__list_directory"},           
+      23 +  "excel":      {"mcp__excel__read_spreadsheet"},              
+      24 +}                                                              
+      25 +                                                               
+      26  // Applier creates all entities from a plan in dependency order
+          .
+      27  type Applier struct {
+      28    cfg         *config.Config
+
+● Now add the auto-injection logic in the task creation section, right before
+  tasks are added to config:
+
+● Update(internal/wizard/applier.go)
+  ⎿  Added 2 lines, removed 1 line
+      126  
+      127    // 4. Tasks
+      128    for _, tp := range plan.Tasks {
+      129 +    allowedTools := ensureBaseTools(tp.MCPServers, tp.AllowedT
+          +ools)                                                         
+      130      t := config.Task{
+      131        Name:           tp.Name,
+      132        Prompt:         tp.Prompt,
+     ...
+      137        Timeout:        tp.Timeout,
+      138        Agents:         tp.Agents,
+      139        MCPServers:     tp.MCPServers,
+      139 -      AllowedTools:   tp.AllowedTools,                        
+      140 +      AllowedTools:   allowedTools,                           
+      141        MaxTurns:       tp.MaxTurns,
+      142        MaxBudgetUSD:   tp.MaxBudgetUSD,
+      143        PermissionMode: tp.PermissionMode,
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now add the ensureBaseTools function at the end of the file:
+
+● Update(internal/wizard/applier.go)
+  ⎿  Added 38 lines
+      379    }
+      380  }
+      381  
+      382 +// ensureBaseTools injects mandatory "discovery" tools for eac
+          +h MCP server                                                  
+      383 +// that the task uses. If allowed_tools is empty (allow-all), 
+          +nothing is added.                                             
+      384 +func ensureBaseTools(mcpServers, allowedTools []string) []stri
+          +ng {                                                          
+      385 +  if len(mcpServers) == 0 || len(allowedTools) == 0 {         
+      386 +    return allowedTools                                       
+      387 +  }                                                           
+      388 +  existing := make(map[string]bool, len(allowedTools))        
+      389 +  for _, t := range allowedTools {                            
+      390 +    existing[t] = true                                        
+      391 +  }                                                           
+      392 +  result := append([]string(nil), allowedTools...)            
+      393 +  for _, server := range mcpServers {                         
+      394 +    base, ok := mcpBaseTools[server]                          
+      395 +    if !ok {                                                  
+      396 +      continue                                                
+      397 +    }                                                         
+      398 +    // Only inject if the task already has at least one tool f
+          +rom this server                                               
+      399 +    prefix := "mcp__" + server + "__"                         
+      400 +    hasServerTool := false                                    
+      401 +    for _, t := range allowedTools {                          
+      402 +      if strings.HasPrefix(t, prefix) {                       
+      403 +        hasServerTool = true                                  
+      404 +        break                                                 
+      405 +      }                                                       
+      406 +    }                                                         
+      407 +    if !hasServerTool {                                       
+      408 +      continue                                                
+      409 +    }                                                         
+      410 +    for _, bt := range base {                                 
+      411 +      if !existing[bt] {                                      
+      412 +        result = append(result, bt)                           
+      413 +        existing[bt] = true                                   
+      414 +      }                                                       
+      415 +    }                                                         
+      416 +  }                                                           
+      417 +  return result                                               
+      418 +}                                                             
+      419 +                                                              
+      420  // rollback executes rollback functions in reverse order.
+      421  func (a *Applier) rollback(fns []func()) {
+      422    for i := len(fns) - 1; i >= 0; i-- {
+
+● Now update the prompt to also mention base tools explicitly:
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 4 lines, removed 1 line
+      246  8. For pipelines, ensure all referenced task names exist in th
+           e tasks array
+      247  9. Generate a clear summary explaining the plan
+      248  10. When using agents in allowed_tools, include "Agent" in the
+            list
+      249 -11. For tasks with MCP tools, list ALL MCP tools the task migh
+          -t need in allowed_tools                                       
+      249 +11. For tasks with MCP tools, list ALL MCP tools the task migh
+          +t need in allowed_tools. ALWAYS include discovery/utility tool
+          +s for each server — these are essential for the model to under
+          +stand the data structure:                                     
+      250 +   - database: ALWAYS include mcp__database__list_tables and m
+          +cp__database__describe_table (models call these first to under
+          +stand the schema before running queries)                      
+      251 +   - filesystem: ALWAYS include mcp__filesystem__list_director
+          +y                                                             
+      252 +   - excel: ALWAYS include mcp__excel__read_spreadsheet when w
+          +riting spreadsheets                                           
+      253  12. When the user asks to create something "like" or "similar 
+           to" an existing entity, use the full details provided below to
+            clone and adapt it. Preserve structural patterns (MCP servers
+           , agents, domain setup) unless the user explicitly requests ch
+           anges.
+      254  13. CRITICAL — stop_signal safety: if a pipeline has a stop_si
+           gnal, ONLY the LAST step's prompt may instruct Claude to outpu
+           t that signal. Non-final step prompts must NEVER mention or ou
+           tput the stop_signal text, because the pipeline engine checks 
+           for it after EVERY step and will skip remaining steps if found
+            early. If the pipeline has max_iterations: 1 and no iterative
+            review loop, prefer omitting stop_signal entirely.
+      255  14. Pipeline data flow: in sequential pipelines, {{.PrevOutput
+           }} carries the text output from the previous step. Each step M
+           UST output all data that the next step needs (IDs, counts, fil
+           e paths, summaries). NEVER instruct a step to "return only the
+            file path" — this strips context that later steps depend on. 
+           Delivery/report steps should extract all needed data from {{.P
+           revOutput}} text, NOT by reading binary files (xlsx, pdf, etc.
+           ) which filesystem tools cannot parse. Binary files should onl
+           y be referenced by path for sending (e.g., telegram send_docum
+           ent).
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Now let's build and test:
+
+● Bash(go build ./internal/wizard/)  ⎿  (No output)
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Компилируется. Запустим тесты:
+
+● Bash(go test ./internal/wizard/ -v -count=1 2>&1 | head -80)
+  ⎿  === RUN   TestGenerateSetupDoc_Basic
+     --- PASS: TestGenerateSetupDoc_Basic (0.00s)
+     === RUN   TestGenerateSetupDoc_MCPEnvVars
+     … +17 lines (ctrl+o to expand)
+
+● Тесты проходят. Давайте также проверим полную сборку:
+
+● Bash(make build 2>&1 | tail -5)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Всё собирается. Вот что сделано:
+
+  Изменения
+
+  1. internal/wizard/applier.go — автоинъекция базовых инструментов
+  - Добавлена карта mcpBaseTools с обязательными "discovery" инструментами для
+  каждого MCP-сервера:
+    - database → list_tables, describe_table
+    - filesystem → list_directory
+    - excel → read_spreadsheet
+  - Функция ensureBaseTools() автоматически добавляет эти инструменты при
+  создании задачи, если задача уже использует хотя бы один инструмент этого
+  сервера
+  - Работает только когда allowed_tools не пустой (пустой = allow-all, инъекция
+  не нужна)
+
+  2. internal/wizard/prompt.go — усиленная инструкция
+  - Rule 11 теперь явно перечисляет обязательные discovery-инструменты для
+  каждого сервера с объяснением зачем они нужны
+
+  3. tasks.yaml — фикс текущей задачи
+  - 4log-notify-order-changes: добавлен mcp__database__list_tables, max_turns
+  увеличен до 15
+
+  Теперь даже если wizard (Claude) забудет включить list_tables, applier
+  автоматически добавит его. Двойная защита: промпт + код.
+
+✻ Worked for 2m 24s
+
+❯ Что насчет Permision Mode ? Wizard выдает их корректно для новых task,        
+sub-agent ? При их создании wizard анализирует необходимый минимум Permision    
+Mode ?                                                                          
+  ⎿  [Image #1]
+  ⎿  [Image #2]
+
+● Хороший вопрос. Посмотрим как wizard сейчас обрабатывает permission_mode и
+  какие варианты вообще поддерживает claude -p.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Вижу несколько проблем с permission_mode в wizard:
+
+  Проблемы
+
+  1. Промпт перечисляет только 3 режима (line 142): "plan", "default", "full" —
+  "dontAsk" вообще не в списке, хотя Rule 7 требует именно его
+  2. Applier не авто-фиксит: если wizard забудет permission_mode, applier
+  валидирует только явно неправильные значения, но пустое поле пропускает —
+  задача создаётся с дефолтным mode и MCP-вызовы блокируются
+  3. Sub-agents не валидируются: applier проверяет permission_mode только для
+  tasks, но sub-agents с MCP tools тоже нуждаются в "dontAsk"
+  4. Промпт для sub-agents просто говорит "permission_mode: agent's permission
+  level" без какого-либо guidance
+
+  Исправляю:
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 1 line, removed 1 line
+      139  - allowed_tools: explicit tool allowlist. When using agents, i
+           nclude "Agent" in this list
+      140  - max_turns: limit on conversation turns (default unlimited)
+      141  - max_budget_usd: spending limit per execution
+      142 -- permission_mode: "plan" (read-only), "default", or "full"   
+      142 +- permission_mode: "dontAsk" (REQUIRED for tasks with MCP tool
+          +s or agents — allows all tool calls without prompting), "plan"
+          + (read-only, no file writes or tool execution), "default" (int
+          +eractive, NOT for automation), or "full" (all permissions)    
+      143  - domain: name of a domain this task operates on
+      144  - tags: categorization labels
+      145  
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 1 line, removed 1 line
+      149  - description: what this agent does (shown to Claude when choo
+           sing agents)
+      150  - tools: list of tools this agent can use
+      151  - model: optional model override
+      152 -- permission_mode: agent's permission level                   
+      152 +- permission_mode: "dontAsk" (REQUIRED when agent uses MCP too
+          +ls like database, excel, etc.), "plan" (read-only), or "defaul
+          +t"                                                            
+      153  - instructions: markdown body with detailed instructions
+      154  - scope: "project" (default) or "user"
+      155  
+
+● Now update the Permission Modes section to be more complete:
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 3 lines, removed 2 lines
+      231  IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi
+            pattern) in allowed_tools. Do NOT invent tool names.
+      232  
+      233  ## Permission Modes
+      234 -- "plan" — read-only, no file writes or tool execution. Good f
+          -or analysis tasks.                                            
+      235 -- "dontAsk" — REQUIRED for tasks that use MCP tools (database,
+          - excel, telegram, etc.) or agents. Without it, tool calls will
+          - be denied.                                                   
+      234 +- "dontAsk" — REQUIRED for tasks AND sub-agents that use MCP t
+          +ools (database, excel, telegram, etc.) or agents. Without it, 
+          +tool calls will be denied and the model will loop until max_tu
+          +rns.                                                          
+      235 +- "plan" — read-only, no file writes or tool execution. Good f
+          +or pure analysis tasks that only read code.                   
+      236  - "default" — interactive confirmation. NOT suitable for autom
+           ated tasks.
+      237 +- "full" — all permissions including file system writes. Use w
+          +hen task needs to write files directly (not via MCP).         
+      238  
+      239  ## Rules
+      240  1. Use kebab-case for all names
+
+● Now update the applier to auto-fix empty permission_mode and validate
+  sub-agents:
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Update(internal/wizard/applier.go)
+  ⎿  Added 41 lines, removed 2 lines
+      308      }
+      309    }
+      310  
+      311 -  // Validate tool/permission consistency for tasks           
+      312 -  for _, t := range plan.Tasks {                              
+      311 +  // Validate and auto-fix tool/permission consistency for tas
+          +ks                                                            
+      312 +  for i := range plan.Tasks {                                 
+      313 +    t := &plan.Tasks[i]                                       
+      314      needsDontAsk := len(t.MCPServers) > 0 || len(t.Agents) > 0
+      315 +                                                              
+      316      if needsDontAsk && t.PermissionMode != "" && t.PermissionM
+           ode != "dontAsk" {
+      317        return nil, fmt.Errorf(
+      318          "task %q uses MCP servers or agents but permission_mod
+           e is %q (must be \"dontAsk\" for automated tool use)",
+     ...
+      320        )
+      321      }
+      322  
+      323 +    // Auto-set permission_mode to "dontAsk" when task uses MC
+          +P tools or agents                                             
+      324 +    if needsDontAsk && t.PermissionMode == "" {               
+      325 +      t.PermissionMode = "dontAsk"                            
+      326 +      warnings = append(warnings, fmt.Sprintf(                
+      327 +        "task %q: auto-set permission_mode to \"dontAsk\" (req
+          +uired for MCP tools/agents)",                                 
+      328 +        t.Name,                                               
+      329 +      ))                                                      
+      330 +    }                                                         
+      331 +                                                              
+      332      if len(t.Agents) > 0 && len(t.AllowedTools) > 0 {
+      333        hasAgent := false
+      334        for _, tool := range t.AllowedTools {
+     ...
+      365      }
+      366    }
+      367  
+      368 +  // Validate and auto-fix permission consistency for sub-agen
+          +ts                                                            
+      369 +  for i := range plan.Agents {                                
+      370 +    ag := &plan.Agents[i]                                     
+      371 +    hasMCPTools := false                                      
+      372 +    for _, tool := range ag.Tools {                           
+      373 +      if strings.HasPrefix(tool, "mcp__") {                   
+      374 +        hasMCPTools = true                                    
+      375 +        break                                                 
+      376 +      }                                                       
+      377 +    }                                                         
+      378 +                                                              
+      379 +    if hasMCPTools && ag.PermissionMode != "" && ag.Permission
+          +Mode != "dontAsk" {                                           
+      380 +      return nil, fmt.Errorf(                                 
+      381 +        "agent %q uses MCP tools but permission_mode is %q (mu
+          +st be \"dontAsk\" for automated tool use)",                   
+      382 +        ag.Name, ag.PermissionMode,                           
+      383 +      )                                                       
+      384 +    }                                                         
+      385 +                                                              
+      386 +    // Auto-set permission_mode to "dontAsk" when agent uses M
+          +CP tools                                                      
+      387 +    if hasMCPTools && ag.PermissionMode == "" {               
+      388 +      ag.PermissionMode = "dontAsk"                           
+      389 +      warnings = append(warnings, fmt.Sprintf(                
+      390 +        "agent %q: auto-set permission_mode to \"dontAsk\" (re
+          +quired for MCP tools)",                                       
+      391 +        ag.Name,                                              
+      392 +      ))                                                      
+      393 +    }                                                         
+      394 +  }                                                           
+      395 +                                                              
+      396    return warnings, nil
+      397  }
+      398  
+
+● Bash(go build ./internal/wizard/ && go test ./internal/wizard/ -count=1)
+  ⎿  ok         github.com/asdmin/claude-ecosystem/internal/wizard      0.006s
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Bash(make build 2>&1 | tail -5)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Всё собирается и тесты проходят. Вот что исправлено:
+
+  Изменения в permission_mode
+
+  prompt.go — 3 исправления:
+  1. Описание поля permission_mode для tasks — теперь "dontAsk" идёт первым с
+  пометкой REQUIRED
+  2. Описание permission_mode для sub-agents — теперь явно указано когда нужен
+  "dontAsk"
+  3. Секция "Permission Modes" — полный список из 4 режимов с "dontAsk" на
+  первом месте
+
+  applier.go — 2 исправления:
+  1. Авто-фикс для tasks — если permission_mode пустой, а задача использует
+  MCP/agents → автоматически ставится "dontAsk" + warning
+  2. Валидация + авто-фикс для sub-agents — аналогичная проверка: если агент
+  имеет MCP-tools (mcp__*), а permission_mode неправильный → ошибка; пустой →
+  авто-фикс на "dontAsk"
+
+  Теперь wizard защищён на двух уровнях:
+  - Промпт ясно говорит Claude какой режим ставить
+  - Applier автоматически исправляет если Claude забудет, и выдаёт warning в
+  результате
+
+✻ Worked for 1m 35s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/asdmin/development/AI/Claude/claude-ecosyst
+     em/2026-03-23-081845-4log-order-monitor.txt
+
+❯ При использовании mcp-openapi использовать dontAsk по умолчанию опасно, т.к.  
+могут быть внесены некорректные измения в информационную систему, API которой   
+запрашивается. Или я не прав?                                                   
+
+● Вы абсолютно правы. dontAsk для openapi-сервера означает что Claude может
+  вызывать любые endpoints без подтверждения — включая POST/PUT/DELETE которые
+  меняют данные в CRM, удаляют записи, создают заказы и т.д.
+
+  Текущая логика wizard слишком грубая: MCP servers → dontAsk. Но нужно
+  различать:
+
+  ┌──────────────────────┬─────────┬────────────────────────────────────────┐
+  │        Сервер        │  Риск   │           Правильный подход            │
+  ├──────────────────────┼─────────┼────────────────────────────────────────┤
+  │ database (локальная  │ Низкий  │ dontAsk — данные локальные             │
+  │ SQLite)              │         │                                        │
+  ├──────────────────────┼─────────┼────────────────────────────────────────┤
+  │ excel, filesystem    │ Низкий  │ dontAsk — локальные файлы              │
+  ├──────────────────────┼─────────┼────────────────────────────────────────┤
+  │ telegram             │ Средний │ dontAsk — но отправка сообщений        │
+  │                      │         │ необратима                             │
+  ├──────────────────────┼─────────┼────────────────────────────────────────┤
+  │ openapi (внешний     │ Высокий │ Нужен allowed_tools как whitelist, а   │
+  │ API)                 │         │ не полный dontAsk                      │
+  └──────────────────────┴─────────┴────────────────────────────────────────┘
+
+  Проблема в том, что dontAsk — это про permission mode для всех инструментов
+  задачи. А allowed_tools — это уже whitelist конкретных инструментов. С openapi
+   правильная стратегия: dontAsk + строгий allowed_tools с только нужными
+  endpoints.
+
+  Давайте посмотрю как это сейчас работает и что можно улучшить.
+  Read 1 file (ctrl+o to expand)
+
+● Теперь посмотрю applier — как нужно изменить auto-fix логику для openapi:
+
+  Read 1 file (ctrl+o to expand)
+
+● Теперь нужно определить какие MCP-серверы являются openapi. Посмотрю как это
+  можно определить:
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Теперь вижу полную картину. Ключевой момент: dontAsk технически необходим для
+  любого MCP-вызова из claude -p, иначе Claude просто не может вызвать
+  инструмент. Но для openapi-серверов нужна дополнительная защита через 
+  allowed_tools — это whitelist конкретных endpoints.
+
+  Проблема не в dontAsk (без него MCP-инструменты вообще не работают), а в том,
+  что wizard может создать задачу с openapi-сервером без allowed_tools — и тогда
+   Claude получит доступ ко всем endpoints, включая деструктивные.
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 7 lines, removed 1 line
+      226  
+      227  When using OAuth2, the MCP server handles authentication trans
+           parently — Claude does NOT need to call auth endpoints or pass
+            tokens manually. Do NOT include auth endpoints in the OpenAPI
+            spec when using OAuth2. Auth is added to every request automa
+           tically.
+      228  
+      229 -Since mcp-openapi tools are dynamic, when adding allowed_tools
+          - for an openapi server, use the pattern mcp__{server_name}__{o
+          -perationid_lowercase} based on the spec's operationId values. 
+          -If you don't know exact operationIds, omit allowed_tools to al
+          -low all tools from that server.                               
+      229 +Since mcp-openapi tools are dynamic, when adding allowed_tools
+          + for an openapi server, use the pattern mcp__{server_name}__{o
+          +perationid_lowercase} based on the spec's operationId values. 
+      230  
+      231 +CRITICAL — openapi safety: Tasks using openapi servers connect
+          + to EXTERNAL systems (CRMs, ERPs, APIs). Unlike local MCP serv
+          +ers (database, excel, filesystem), openapi calls can modify pr
+          +oduction data irreversibly. Therefore:                        
+      232 +- ALWAYS specify explicit allowed_tools for openapi servers — 
+          +list only the endpoints the task actually needs               
+      233 +- NEVER omit allowed_tools for tasks with openapi servers — th
+          +is would give Claude unrestricted access to all API endpoints 
+          +including destructive ones (DELETE, PUT, POST that create/modi
+          +fy records)                                                   
+      234 +- Prefer read-only endpoints (GET/list) unless the task explic
+          +itly needs to write data                                      
+      235 +- If the user's description is ambiguous about which endpoints
+          + are needed, include only read/list endpoints and add a warnin
+          +g                                                             
+      236 +                                                              
+      237  IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi
+            pattern) in allowed_tools. Do NOT invent tool names.
+      238  
+      239  ## Permission Modes
+
+● Now update the Permission Modes section to clarify the relationship between
+  dontAsk and allowed_tools:
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 3 lines, removed 1 line
+      237  IMPORTANT: Use ONLY these exact tool names (or the mcp-openapi
+            pattern) in allowed_tools. Do NOT invent tool names.
+      238  
+      239  ## Permission Modes
+      240 -- "dontAsk" — REQUIRED for tasks AND sub-agents that use MCP t
+          -ools (database, excel, telegram, etc.) or agents. Without it, 
+          -tool calls will be denied and the model will loop until max_tu
+          -rns.                                                          
+      240 +- "dontAsk" — REQUIRED for tasks AND sub-agents that use MCP t
+          +ools (database, excel, telegram, etc.) or agents. Without it, 
+          +tool calls will be denied and the model will loop until max_tu
+          +rns. NOTE: dontAsk allows calling ANY tool in allowed_tools wi
+          +thout confirmation, so use allowed_tools as the safety whiteli
+          +st — especially for openapi servers that access external syste
+          +ms.                                                           
+      241  - "plan" — read-only, no file writes or tool execution. Good f
+           or pure analysis tasks that only read code.
+      242  - "default" — interactive confirmation. NOT suitable for autom
+           ated tasks.
+      243  - "full" — all permissions including file system writes. Use w
+           hen task needs to write files directly (not via MCP).
+      244  
+      245 +Safety model: permission_mode controls WHETHER tools can be ca
+          +lled. allowed_tools controls WHICH tools can be called. For ex
+          +ternal APIs (openapi), always combine "dontAsk" + strict allow
+          +ed_tools whitelist.                                           
+      246 +                                                              
+      247  ## Rules
+      248  1. Use kebab-case for all names
+      249  2. Only reference MCP servers that exist in the current config
+            OR are created in the same plan's mcp_servers array
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now add validation in the applier — require allowed_tools for tasks with
+  openapi servers:
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● I need to determine which MCP servers are openapi-based. The applier has
+  access to a.cfg.MCPServers (existing) and plan.MCPServers (new). Let me add a
+  helper and the validation:
+
+● Update(internal/wizard/applier.go)
+  ⎿  Added 16 lines
+      23    "excel":      {"mcp__excel__read_spreadsheet"},
+      24  }
+      25  
+      26 +// isOpenAPIServer checks whether a named MCP server is openapi
+         +-based by                                                      
+      27 +// inspecting existing config and planned servers for "mcp-open
+         +api" in the command.                                           
+      28 +func isOpenAPIServer(name string, cfg *config.Config, plan *Pla
+         +n) bool {                                                      
+      29 +  for _, m := range cfg.MCPServers {                           
+      30 +    if m.Name == name && strings.Contains(m.Command, "mcp-opena
+         +pi") {                                                         
+      31 +      return true                                              
+      32 +    }                                                          
+      33 +  }                                                            
+      34 +  for _, m := range plan.MCPServers {                          
+      35 +    if m.Name == name && strings.Contains(m.Command, "mcp-opena
+         +pi") {                                                         
+      36 +      return true                                              
+      37 +    }                                                          
+      38 +  }                                                            
+      39 +  return false                                                 
+      40 +}                                                              
+      41 +                                                               
+      42  // Applier creates all entities from a plan in dependency order
+          .
+      43  type Applier struct {
+      44    cfg         *config.Config
+
+● Now add the openapi validation in the validate method, after the MCP server
+  tools prefix check:
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Found 2 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Update(internal/wizard/applier.go)
+  ⎿  Added 22 lines, removed 9 lines
+      361        }
+      362      }
+      363  
+      364 -    if len(t.MCPServers) > 0 && len(t.AllowedTools) > 0 {     
+      364 +    if len(t.MCPServers) > 0 {                                
+      365        for _, server := range t.MCPServers {
+      366          prefix := "mcp__" + server + "__"
+      367 -        found := false                                        
+      368 -        for _, tool := range t.AllowedTools {                 
+      369 -          if strings.HasPrefix(tool, prefix) {                
+      370 -            found = true                                      
+      371 -            break                                             
+      367 +                                                              
+      368 +        if len(t.AllowedTools) > 0 {                          
+      369 +          found := false                                      
+      370 +          for _, tool := range t.AllowedTools {               
+      371 +            if strings.HasPrefix(tool, prefix) {              
+      372 +              found = true                                    
+      373 +              break                                           
+      374 +            }                                                 
+      375            }
+      376 +          if !found {                                         
+      377 +            warnings = append(warnings, fmt.Sprintf(          
+      378 +              "task %q references MCP server %q but allowed_to
+          +ols has no tools with prefix %q",                             
+      379 +              t.Name, server, prefix,                         
+      380 +            ))                                                
+      381 +          }                                                   
+      382          }
+      374 -        if !found {                                           
+      383 +                                                              
+      384 +        // Require explicit allowed_tools for openapi servers 
+          +(external API safety)                                         
+      385 +        if isOpenAPIServer(server, a.cfg, plan) && len(t.Allow
+          +edTools) == 0 {                                               
+      386            warnings = append(warnings, fmt.Sprintf(
+      376 -            "task %q references MCP server %q but allowed_tool
+          -s has no tools with prefix %q",                               
+      377 -            t.Name, server, prefix,                           
+      387 +            "task %q uses openapi server %q without allowed_to
+          +ols — "+                                                      
+      388 +              "Claude will have unrestricted access to ALL API
+          + endpoints including destructive ones; "+                     
+      389 +              "specify explicit allowed_tools to whitelist onl
+          +y needed endpoints",                                          
+      390 +            t.Name, server,                                   
+      391            ))
+      392          }
+      393        }
+
+● Bash(go build ./internal/wizard/ && go test ./internal/wizard/ -count=1)
+  ⎿  ok         github.com/asdmin/claude-ecosystem/internal/wizard      0.007s
+
+● Bash(make build 2>&1 | tail -3)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Всё работает. Вот итог изменений:
+
+  Модель безопасности: permission_mode + allowed_tools
+
+  Вы правы, что dontAsk для openapi опасен. Но без dontAsk MCP-вызовы вообще не 
+  работают в claude -p — это техническое ограничение. Поэтому безопасность
+  обеспечивается двумя уровнями:
+
+  ┌─────────────────────┬───────────────────────────┬───────────────────────┐
+  │       Уровень       │     Что контролирует      │      Для openapi      │
+  ├─────────────────────┼───────────────────────────┼───────────────────────┤
+  │ permission_mode:    │ WHETHER — могут ли        │                       │
+  │ dontAsk             │ вызываться инструменты    │ Обязателен технически │
+  │                     │ вообще                    │                       │
+  ├─────────────────────┼───────────────────────────┼───────────────────────┤
+  │ allowed_tools       │ WHICH — какие конкретно   │ Это и есть защита —   │
+  │                     │ инструменты доступны      │ whitelist endpoints   │
+  └─────────────────────┴───────────────────────────┴───────────────────────┘
+
+  Что добавлено
+
+  prompt.go:
+  - Секция "openapi safety" — CRITICAL правило: всегда указывать allowed_tools
+  для openapi-серверов, предпочитать read-only endpoints
+  - Секция "Permission Modes" — объясняет связь между dontAsk и allowed_tools
+  как двухуровневую модель безопасности
+
+  applier.go:
+  - isOpenAPIServer() — определяет openapi-сервер по mcp-openapi в command
+  - Валидация: если задача использует openapi-сервер без allowed_tools → warning
+   о том что Claude получит доступ ко всем endpoints
+
+  То есть wizard теперь:
+  1. Промпт инструктирует Claude всегда указывать allowed_tools для openapi
+  2. Applier ловит случай если Claude этого не сделал и выдаёт warning при apply
+
+✻ Baked for 2m 7s

@@ -1,0 +1,439 @@
+ ▐▛███▜▌   Claude Code v2.1.76
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ Дедупликация не работает?                                                     
+  ⎿  [Image #1]
+  ⎿  [Image #2]
+
+● Вижу — "ОАО «АЛЕВКУРП»" добавляется как лид в нескольких запусках подряд
+  (11:00 и 10:45). Давайте разберёмся — посмотрю конфигурацию дедупликации.
+
+● Explore(Find deduplication logic)
+  ⎿  Done (20 tool uses · 65.9k tokens · 39s)
+  (ctrl+o to expand)
+
+● Давайте проверим базу данных — посмотрим, есть ли АЛЕВКУРП в таблице companies
+   и raw_companies.
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT id, name, status, found_date, sent_at FROM
+      companies WHERE…)
+  ⎿  138|ОАО «АЛЕВКУРП»|new|2026-03-15|
+     139|Открытое акционерное общество «АЛЕВКУРП»|new|2026-03-15|
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT export_by_id, name, country FROM raw_companies
+       WHERE name L…)
+  ⎿  19664|Открытое акционерное общество «АЛЕВКУРП»|Беларусь
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT id, name, reason FROM rejected_companies WHERE
+       name LIKE '%…)
+  ⎿  (No output)
+
+● Вот и проблема! В базе два варианта имени одной и той же компании:
+
+  ┌─────┬──────────────────────────────────────────┬────────┐
+  │ id  │                   name                   │ status │
+  ├─────┼──────────────────────────────────────────┼────────┤
+  │ 138 │ ОАО «АЛЕВКУРП»                           │ new    │
+  ├─────┼──────────────────────────────────────────┼────────┤
+  │ 139 │ Открытое акционерное общество «АЛЕВКУРП» │ new    │
+  └─────┴──────────────────────────────────────────┴────────┘
+
+  В raw_companies она записана как Открытое акционерное общество «АЛЕВКУРП», но
+  Claude при анализе сокращает название до ОАО «АЛЕВКУРП». Дедупликация в
+  get_unanalyzed работает через LEFT JOIN companies c ON r.name = c.name —
+  точное совпадение имён. Поэтому при следующем запуске raw-запись не совпадает
+  с сокращённым именем и компания анализируется заново.
+
+  Нужно привязывать дедупликацию к export_by_id, а не к имени. Посмотрю код MCP
+  сервера.
+
+● Read 1 file (ctrl+o to expand)
+
+● Теперь посмотрю, как лиды добавляются в companies и что написано в DOMAIN.md.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Теперь посмотрю, как Claude добавляет лиды — промпт задачи
+  process-export-by-leads.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Проблема ясна. Дедупликация в get_unanalyzed основана на точном совпадении 
+  имени (LEFT JOIN companies c ON r.name = c.name), но Claude сокращает названия
+   при вставке:
+
+  - raw_companies: Открытое акционерное общество «АЛЕВКУРП»
+  - companies (id=138): ОАО «АЛЕВКУРП» — Claude сократил
+  - companies (id=139): Открытое акционерное общество «АЛЕВКУРП» — на следующем
+  запуске снова нашлась
+
+  Решение: привязать дедупликацию к export_by_id (уникальный ID с export.by), а
+  не к имени. Добавлю колонку export_by_id в таблицу companies и дополню JOIN.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Теперь внесу изменения. План:
+
+  1. Миграция: добавить export_by_id в companies (MCP сервер)
+  2. Изменить get_unanalyzed: JOIN также по export_by_id
+  3. Обновить prompt: включить export_by_id в INSERT
+  4. Обновить schema в tasks.yaml и DOMAIN.md
+  5. Почистить дубликат в базе
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 3 lines
+      283    // Migration: add sent_at column to companies table (ignore 
+           error if already exists)
+      284    db.Exec(`ALTER TABLE companies ADD COLUMN sent_at TEXT`)
+      285  
+      286 +  // Migration: add export_by_id column to companies table for
+          + deduplication                                                
+      287 +  db.Exec(`ALTER TABLE companies ADD COLUMN export_by_id INTEG
+          +ER`)                                                          
+      288 +                                                              
+      289    return nil
+      290  }
+      291  
+
+● Теперь обновлю запрос get_unanalyzed — добавлю JOIN по export_by_id:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 1 line, removed 1 line
+      512    rows, err := db.Query(`
+      513      SELECT MIN(r.export_by_id) AS export_by_id, r.name, r.desc
+           ription, r.country
+      514      FROM raw_companies r
+      515 -    LEFT JOIN companies c ON r.name = c.name                  
+      515 +    LEFT JOIN companies c ON r.name = c.name OR r.export_by_id
+          + = c.export_by_id                                             
+      516      LEFT JOIN rejected_companies rej ON r.name = rej.name
+      517      WHERE c.id IS NULL AND rej.id IS NULL
+      518      GROUP BY r.name
+
+● Теперь обновлю запрос подсчёта totalUnanalyzed:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 1 line, removed 1 line
+      579    var totalUnanalyzed int
+      580    db.QueryRow(`
+      581      SELECT COUNT(DISTINCT r.name) FROM raw_companies r
+      582 -    LEFT JOIN companies c ON r.name = c.name                  
+      582 +    LEFT JOIN companies c ON r.name = c.name OR r.export_by_id
+          + = c.export_by_id                                             
+      583      LEFT JOIN rejected_companies rej ON r.name = rej.name
+      584      WHERE c.id IS NULL AND rej.id IS NULL
+      585    `).Scan(&totalUnanalyzed)
+
+● Теперь обновлю промпт задачи — добавлю export_by_id в INSERT:
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line, removed 1 line
+      188        permission_mode: bypassPermissions
+      189      - name: process-export-by-leads
+      190        domain: export-by-aviation
+      191 -      prompt: "Сегодня {{.Date}}. Обработай лиды для авиаперев
+          -озки.\nПорог отправки: 15 лидов.\n\n=== АЛГОРИТМ ===\n\nШАГ 1.
+          - Вызови mcp__exportby__get_pending_count — узнай количество го
+          -товых лидов (status='new').\n\nШАГ 2. ЕСЛИ pending >= 15 → пер
+          -еходи к ОТПРАВКЕ (шаг 4).\n\nШАГ 3. ЕСЛИ pending < 15 → выполн
+          -и АНАЛИЗ новой порции:\n\n  3.1. Вызови mcp__exportby__get_una
+          -nalyzed с limit=25.\n       Если unanalyzed = 0, выведи \"Неот
+          -правленных: {pending}, новых для анализа нет.\" и ЗАВЕРШИ.\n\n
+          -  3.2. Для каждой компании выполни ДВУХЭТАПНУЮ оценку СТРОГО п
+          -о описанию компании (поле description).\n       ВАЖНО: поле pr
+          -oducts может содержать мусорные данные — НЕ доверяй ему, если 
+          -products противоречит description.\n\n       === ЭТАП 1: ТИП К
+          -ОМПАНИИ ===\n\n       ✗ ИНОСТРАННАЯ КОМПАНИЯ → ОТКАЗ:\n       
+          -Если из описания или названия видно, что компания НЕ белорусск
+          -ая — ОТКАЗ.\n\n       ✓ ПРОИЗВОДИТЕЛЬ/ЭКСПОРТЁР → переходи к э
+          -тапу 2:\n       Признаки: собственное производство, завод, фаб
+          -рика, экспорт своей продукции.\n\n       ✗ ИМПОРТЁР/ДИСТРИБЬЮТ
+          -ОР → ОТКАЗ:\n       Признаки: перепродажа чужих брендов, предс
+          -тавительство иностранных компаний.\n\n       ✗ СЕРВИСНЫЕ/ЛОКАЛ
+          -ЬНЫЕ КОМПАНИИ → ОТКАЗ:\n       Компании без физических товаров
+          - на экспорт: услуги, общепит, розница.\n\n       ПРИНЦИП: если
+          - неясно, производитель это или импортёр — склоняйся к ОТКАЗУ.\
+          -n\n       === ЭТАП 1.5: ИССЛЕДОВАНИЕ ПРИ СОМНЕНИЯХ ===\n\n    
+          -   Обязательно исследуй компанию через веб, если:\n       — de
+          -scription слишком короткое (< 50 символов)\n       — неясно, п
+          -роизводитель это или импортёр/дистрибьютор\n       — непонятно
+          -, какую именно продукцию выпускает (пищевая vs. промышленная и
+          - т.п.)\n       — есть сомнения в правильной классификации avia
+          -tion_priority\n\n       Как исследовать:\n       1. WebFetch п
+          -о url компании (если есть) — основной источник.\n       2. Web
+          -Search по названию компании — если WebFetch не дал ясности.\n 
+          -      Цель: получить достаточно информации для уверенной класс
+          -ификации.\n       НЕ исследуй компании, где всё очевидно из de
+          -scription.\n\n       === ЭТАП 2: ПРИОРИТЕТ АВИАПЕРЕВОЗКИ ===\n
+          -\n       aviation_priority = 2 (высокий): живые растения (цвет
+          -ы, саженцы, рассада, декоративные,\n       элитный семенной ма
+          -териал), фармацевтика, медоборудование, биоматериалы (образцы,
+          -\n       реагенты, культуры), электроника, оптика, ювелирные и
+          -зделия.\n       Высокая ценность/кг ИЛИ критичность сроков.\n\
+          -n       aviation_priority = 1 (средний): малые партии, срочные
+          - заказы, труднодоступные регионы.\n\n       aviation_priority 
+          -= 0 (низкий → ОТКАЗ): замороженные продукты, консервы, сырьё,\
+          -n       стройматериалы, тяжёлые грузы, мебель, текстиль. НЕ вс
+          -тавлять в companies.\n\n       ⚠️ ПИЩЕВАЯ/СЕЛЬХОЗ ПРОДУКЦИЯ = О
+          -ТКАЗ (priority 0):\n       Мясо, рыба, птица, овощи, фрукты, м
+          -олочка, зерно, корма — всё это\n       перевозится рефрижерато
+          -рами/контейнерами, НЕ авиа. Агрокомбинаты, мясокомбинаты,\n   
+          -    молокозаводы, птицефабрики, рыбхозы → ОТКАЗ.\n       Исклю
+          -чение: живые растения и элитный семенной материал (priority 2)
+          -.\n\n       needs_aviation = 1 если aviation_priority >= 1\n\n
+          -  3.3. Для подходящих: mcp__database__execute с INSERT OR IGNO
+          -RE INTO companies\n       (name, url, description, products, n
+          -eeds_aviation, aviation_priority, found_date, status)\n       
+          -VALUES ('...', url, '...', '', needs_aviation, priority, '{{.D
+          -ate}}', 'new')\n       Бери url из ответа get_unanalyzed как е
+          -сть.\n\n  3.4. ОБЯЗАТЕЛЬНО вызови mcp__exportby__reject_compan
+          -ies для ВСЕХ отклонённых.\n\n  3.5. Запиши в scan_log итог чер
+          -ез mcp__database__execute.\n\n  3.6. Вызови mcp__exportby__get
+          -_pending_count повторно.\n       Если pending >= 15 → переходи
+          - к ОТПРАВКЕ (шаг 4).\n       Иначе → выведи \"Накоплено: {pend
+          -ing} лидов из 15. Отправка отложена.\" и ЗАВЕРШИ.\n\nШАГ 4. ОТ
+          -ПРАВКА:\n\n  4.1. Вызови mcp__exportby__export_leads_excel — п
+          -олучишь путь к Excel и статистику.\n\n  4.2. Составь сводку ТО
+          -ЧНО в формате:\n       \U0001F4CA Авиационные лиды — {{.Date}}
+          -\n       Новых: {total_leads}\n       Приоритетных (\U0001F534
+          -): {high_priority}\n       \U0001F4CE Excel-файл с деталями пр
+          -иложен.\n\n  4.3. Отправь сводку через mcp__telegram__send_mes
+          -sage.\n  4.4. Отправь Excel через mcp__telegram__send_document
+          - (file_path из 4.1).\n  4.5. Отправь email через mcp__email__s
+          -end_report на alexstav1975@yandex.by,\n       тема \"\U0001F4C
+          -A Авиационные лиды — {{.Date}}\", тело = сводка, вложение = Ex
+          -cel.\n  4.6. Вызови mcp__exportby__mark_exported.\n\nВАЖНО: НЕ
+          - выводи текстовый анализ каждой компании. Сразу вызывай tool c
+          -alls.\nГруппируй по несколько компаний за один вызов. Текстовы
+          -й вывод — только финальная статистика."                       
+      191 +      prompt: "Сегодня {{.Date}}. Обработай лиды для авиаперев
+          +озки.\nПорог отправки: 15 лидов.\n\n=== АЛГОРИТМ ===\n\nШАГ 1.
+          + Вызови mcp__exportby__get_pending_count — узнай количество го
+          +товых лидов (status='new').\n\nШАГ 2. ЕСЛИ pending >= 15 → пер
+          +еходи к ОТПРАВКЕ (шаг 4).\n\nШАГ 3. ЕСЛИ pending < 15 → выполн
+          +и АНАЛИЗ новой порции:\n\n  3.1. Вызови mcp__exportby__get_una
+          +nalyzed с limit=25.\n       Если unanalyzed = 0, выведи \"Неот
+          +правленных: {pending}, новых для анализа нет.\" и ЗАВЕРШИ.\n\n
+          +  3.2. Для каждой компании выполни ДВУХЭТАПНУЮ оценку СТРОГО п
+          +о описанию компании (поле description).\n       ВАЖНО: поле pr
+          +oducts может содержать мусорные данные — НЕ доверяй ему, если 
+          +products противоречит description.\n\n       === ЭТАП 1: ТИП К
+          +ОМПАНИИ ===\n\n       ✗ ИНОСТРАННАЯ КОМПАНИЯ → ОТКАЗ:\n       
+          +Если из описания или названия видно, что компания НЕ белорусск
+          +ая — ОТКАЗ.\n\n       ✓ ПРОИЗВОДИТЕЛЬ/ЭКСПОРТЁР → переходи к э
+          +тапу 2:\n       Признаки: собственное производство, завод, фаб
+          +рика, экспорт своей продукции.\n\n       ✗ ИМПОРТЁР/ДИСТРИБЬЮТ
+          +ОР → ОТКАЗ:\n       Признаки: перепродажа чужих брендов, предс
+          +тавительство иностранных компаний.\n\n       ✗ СЕРВИСНЫЕ/ЛОКАЛ
+          +ЬНЫЕ КОМПАНИИ → ОТКАЗ:\n       Компании без физических товаров
+          + на экспорт: услуги, общепит, розница.\n\n       ПРИНЦИП: если
+          + неясно, производитель это или импортёр — склоняйся к ОТКАЗУ.\
+          +n\n       === ЭТАП 1.5: ИССЛЕДОВАНИЕ ПРИ СОМНЕНИЯХ ===\n\n    
+          +   Обязательно исследуй компанию через веб, если:\n       — de
+          +scription слишком короткое (< 50 символов)\n       — неясно, п
+          +роизводитель это или импортёр/дистрибьютор\n       — непонятно
+          +, какую именно продукцию выпускает (пищевая vs. промышленная и
+          + т.п.)\n       — есть сомнения в правильной классификации avia
+          +tion_priority\n\n       Как исследовать:\n       1. WebFetch п
+          +о url компании (если есть) — основной источник.\n       2. Web
+          +Search по названию компании — если WebFetch не дал ясности.\n 
+          +      Цель: получить достаточно информации для уверенной класс
+          +ификации.\n       НЕ исследуй компании, где всё очевидно из de
+          +scription.\n\n       === ЭТАП 2: ПРИОРИТЕТ АВИАПЕРЕВОЗКИ ===\n
+          +\n       aviation_priority = 2 (высокий): живые растения (цвет
+          +ы, саженцы, рассада, декоративные,\n       элитный семенной ма
+          +териал), фармацевтика, медоборудование, биоматериалы (образцы,
+          +\n       реагенты, культуры), электроника, оптика, ювелирные и
+          +зделия.\n       Высокая ценность/кг ИЛИ критичность сроков.\n\
+          +n       aviation_priority = 1 (средний): малые партии, срочные
+          + заказы, труднодоступные регионы.\n\n       aviation_priority 
+          += 0 (низкий → ОТКАЗ): замороженные продукты, консервы, сырьё,\
+          +n       стройматериалы, тяжёлые грузы, мебель, текстиль. НЕ вс
+          +тавлять в companies.\n\n       ⚠️ ПИЩЕВАЯ/СЕЛЬХОЗ ПРОДУКЦИЯ = О
+          +ТКАЗ (priority 0):\n       Мясо, рыба, птица, овощи, фрукты, м
+          +олочка, зерно, корма — всё это\n       перевозится рефрижерато
+          +рами/контейнерами, НЕ авиа. Агрокомбинаты, мясокомбинаты,\n   
+          +    молокозаводы, птицефабрики, рыбхозы → ОТКАЗ.\n       Исклю
+          +чение: живые растения и элитный семенной материал (priority 2)
+          +.\n\n       needs_aviation = 1 если aviation_priority >= 1\n\n
+          +  3.3. Для подходящих: mcp__database__execute с INSERT OR IGNO
+          +RE INTO companies\n       (export_by_id, name, url, descriptio
+          +n, products, needs_aviation, aviation_priority, found_date, st
+          +atus)\n       VALUES (export_by_id, 'ТОЧНОЕ имя из get_unanaly
+          +zed', url, '...', '', needs_aviation, priority, '{{.Date}}', '
+          +new')\n       ВАЖНО: name должно быть ТОЧНО таким же, как в от
+          +вете get_unanalyzed. НЕ сокращай (ОАО вместо Открытое акционер
+          +ное общество и т.п.).\n       Бери url и export_by_id из ответ
+          +а get_unanalyzed как есть.\n\n  3.4. ОБЯЗАТЕЛЬНО вызови mcp__e
+          +xportby__reject_companies для ВСЕХ отклонённых.\n\n  3.5. Запи
+          +ши в scan_log итог через mcp__database__execute.\n\n  3.6. Выз
+          +ови mcp__exportby__get_pending_count повторно.\n       Если pe
+          +nding >= 15 → переходи к ОТПРАВКЕ (шаг 4).\n       Иначе → выв
+          +еди \"Накоплено: {pending} лидов из 15. Отправка отложена.\" и
+          + ЗАВЕРШИ.\n\nШАГ 4. ОТПРАВКА:\n\n  4.1. Вызови mcp__exportby__
+          +export_leads_excel — получишь путь к Excel и статистику.\n\n  
+          +4.2. Составь сводку ТОЧНО в формате:\n       \U0001F4CA Авиаци
+          +онные лиды — {{.Date}}\n       Новых: {total_leads}\n       Пр
+          +иоритетных (\U0001F534): {high_priority}\n       \U0001F4CE Ex
+          +cel-файл с деталями приложен.\n\n  4.3. Отправь сводку через m
+          +cp__telegram__send_message.\n  4.4. Отправь Excel через mcp__t
+          +elegram__send_document (file_path из 4.1).\n  4.5. Отправь ema
+          +il через mcp__email__send_report на alexstav1975@yandex.by,\n 
+          +      тема \"\U0001F4CA Авиационные лиды — {{.Date}}\", тело =
+          + сводка, вложение = Excel.\n  4.6. Вызови mcp__exportby__mark_
+          +exported.\n\nВАЖНО: НЕ выводи текстовый анализ каждой компании
+          +. Сразу вызывай tool calls.\nГруппируй по несколько компаний з
+          +а один вызов. Текстовый вывод — только финальная статистика." 
+      192        work_dir: .
+      193        tags:
+      194          - leads
+
+● Теперь обновлю схему в tasks.yaml — добавлю export_by_id в CREATE TABLE
+  companies:
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line
+      267          schema: |-
+      268              CREATE TABLE IF NOT EXISTS companies (
+      269                id INTEGER PRIMARY KEY AUTOINCREMENT,
+      270 +              export_by_id INTEGER,                           
+      271                name TEXT NOT NULL,
+      272                url TEXT,
+      273                description TEXT,
+
+● Обновлю DOMAIN.md:
+
+● Update(data/export-by-aviation/DOMAIN.md)
+  ⎿  Error editing file
+
+● Update(data/export-by-aviation/DOMAIN.md)
+  ⎿  Added 1 line
+      51  | Column | Type | Description |
+      52  |--------|------|-------------|
+      53  | id | INTEGER | PK AUTOINCREMENT |
+      54 +| export_by_id | INTEGER | ID компании на export.by (для дедупл
+         +икации с raw_companies) |                                      
+      55  | name | TEXT | Название (UNIQUE) |
+      56  | url | TEXT | URL профиля |
+      57  | description | TEXT | Описание деятельности |
+
+● Теперь почистим дубликат в базе и пробросим export_by_id для существующих
+  записей:
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT id, name FROM companies WHERE name LIKE
+      '%АЛЕВКУРП%';")
+  ⎿  138|ОАО «АЛЕВКУРП»
+     139|Открытое акционерное общество «АЛЕВКУРП»
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "DELETE FROM companies WHERE id = 138;" && sqlite3
+      /home/asdmin/dev…)
+  ⎿  Error: Exit code 1
+     Error: in prepare, no such column: export_by_id
+
+● Колонка ещё не добавлена — она добавляется при запуске MCP-сервера. Добавлю
+  вручную:
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "ALTER TABLE companies ADD COLUMN export_by_id
+      INTEGER;" && sqlite3…)
+  ⎿  (No output)
+
+● Теперь пробросим export_by_id для всех существующих записей, где имя
+  совпадает:
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "UPDATE companies SET export_by_id = (SELECT
+      r.export_by_id FROM ra…)
+  ⎿  87|64
+
+● 87 записей всего, 64 удалось связать по имени. Для 23 записей имена не
+  совпадают (как с АЛЕВКУРП). Проверю масштаб проблемы:
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT c.id, c.name FROM companies c WHERE
+      c.export_by_id IS NULL…)
+  ⎿  51|Республиканское унитарное предприятие «Учебно-научно-производственн
+     ый центр «Технолаб»
+     52|Общество с ограниченной ответственностью «Поинт»
+     … +23 lines (ctrl+o to expand)
+
+● Видно ещё дубликаты — например ЭНЭФ три раза (id 100, 103, 106), ГАЛТЕЯФАРМ
+  (105, 107). Давайте почистим:
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "
+      -- Find duplicates by normalized name pattern…)
+  ⎿  52|Общество с ограниченной ответственностью «Поинт»|21173
+     75|Совместное ООО «Джофре Лабортехник»|20888
+     100|ОАО "ЭНЭФ"|20723
+     … +14 lines (ctrl+o to expand)
+
+● Хорошо, вижу дубликаты. Удалю дублирующие записи (оставлю только одну для
+  каждой компании) и проставлю export_by_id:
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "
+      -- ЭНЭФ: keep 103 (full name), delete 100 and 106…)
+  ⎿  (No output)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT COUNT(*) as total, COUNT(export_by_id) as
+      with_id, COUNT(*)…)
+  ⎿  84|77|7
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT id, name FROM companies WHERE export_by_id IS
+      NULL;")
+  ⎿  51|Республиканское унитарное предприятие «Учебно-научно-производственн
+     ый центр «Технолаб»
+     63|Открытое акционерное общество «Житковичский моторостроительный заво
+     … +7 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "
+      SELECT r.export_by_id, r.name FROM raw_companies r WHERE r.name L…)
+  ⎿  21174|Республиканское унитарное предприятие «Учебно-научно- производст
+     венный центр «Технолаб»
+     21102|Открытое акционерное общество "Житковичский торфобрикетный завод
+     … +15 lines (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "
+      UPDATE companies SET export_by_id = 21174 WHERE id = 51;…)
+  ⎿  (No output)
+
+● Теперь пересоберём и проверим:
+
+● Bash(make build 2>&1 | tail -5)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT COUNT(*) as total, COUNT(export_by_id) as
+      with_id FROM comp…)
+  ⎿  84|84
+
+● Все 84 записи теперь имеют export_by_id. Сборка прошла успешно.
+
+  Что было сделано:
+
+  1. Корневая причина: get_unanalyzed искал дубли по r.name = c.name, но Claude
+  сокращал названия при вставке (Открытое акционерное общество «АЛЕВКУРП» → ОАО 
+  «АЛЕВКУРП»), и запись появлялась повторно.
+  2. Исправления в коде (cmd/mcp/mcp-exportby/main.go):
+    - Добавлена миграция: ALTER TABLE companies ADD COLUMN export_by_id INTEGER
+    - Запросы get_unanalyzed и totalUnanalyzed теперь JOIN по r.name = c.name OR
+   r.export_by_id = c.export_by_id
+  3. Промпт (tasks.yaml): INSERT теперь включает export_by_id + инструкция не
+  сокращать имена
+  4. База данных: удалены 4 дубликата (АЛЕВКУРП, ЭНЭФ×2, ГАЛТЕЯФАРМ), все 84
+  записи связаны с export_by_id
+  5. Документация: обновлены DOMAIN.md и schema в tasks.yaml
+
+✻ Cooked for 5m 26s

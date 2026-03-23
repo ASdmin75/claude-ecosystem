@@ -1,0 +1,1041 @@
+ ▐▛███▜▌   Claude Code v2.1.74
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ Давай еще немного изменим подход. Теперь будем "накпливать" потенциальных     
+лидов, например в таблице БД. И когда их количество превысит какой-то порог,    
+например >= 15, будем формировать Excel файл и отсылать его в ТГ и на e-mail.   
+После отправки "накопленные" лиды помечаются чтобы не попасть в следующий чанк. 
+ Как идея? Критикуй.                                                            
+
+● Идея хорошая, это классический паттерн "batch accumulate & flush". Вот
+  критика:
+
+  Плюсы:
+  - Не спамишь получателей одиночными лидами — один файл с 15+ записями гораздо
+  полезнее
+  - Excel с пачкой лидов удобнее для менеджера, чем поток отдельных сообщений
+  - Контроль через БД — можно смотреть историю, статистику, повторно отправить
+
+  Что стоит продумать:
+
+  1. Порог 15 — это жёсткий минимум или есть таймаут? Если лиды идут медленно,
+  можно ждать неделями. Нужен второй триггер: ">=15 ИЛИ прошло N дней с
+  последнего флаша и есть хотя бы 1 лид".
+  2. Кто триггерит проверку порога? Варианты:
+    - Cron-задача (например каждые 6 часов проверяет SELECT COUNT(*) FROM leads 
+  WHERE sent = 0)
+    - Сразу после добавления нового лида (проще, но связывает сбор и отправку)
+    - Рекомендую cron — развязывает процессы
+  3. Race condition при отправке. Между SELECT лидов и UPDATE sent=1 может
+  прийти новый лид. Решение: использовать транзакцию или помечать конкретные ID,
+   а не "все где sent=0".
+  4. Что если отправка упала? Excel сгенерился, но Telegram/email не отправился.
+   Нужен статус не бинарный (sent), а трёхфазный: pending → sending → sent. Если
+   застрял в sending — retry.
+  5. Дедупликация лидов в таблице. Сейчас у тебя дедупликация через
+  rejected_companies. А что если один и тот же лид попадёт в accumulator дважды?
+   Нужен UNIQUE constraint (по домену/названию компании).
+  6. Структура таблицы. Минимально:
+  CREATE TABLE leads (
+    id INTEGER PRIMARY KEY,
+    company_name TEXT NOT NULL,
+    domain TEXT UNIQUE,
+    country TEXT,
+    data JSON,          -- все поля лида
+    status TEXT DEFAULT 'pending',  -- pending/sending/sent
+    batch_id INTEGER,   -- к какой отправке относится
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    sent_at DATETIME
+  );
+  7. Два пайплайна вместо одного:
+    - Collector (cron, частый) — парсит источники, складывает в leads
+    - Flusher (cron, реже) — проверяет порог, формирует Excel, отправляет,
+  помечает
+
+  Это чище, чем всё в одном процессе.
+
+  Итого: идея рабочая, главное добавить таймаут-триггер помимо порога и
+  разделить сбор/отправку на два независимых процесса. Хочешь — могу посмотреть
+  текущий код mcp-exportby и предложить конкретную реализацию?
+
+❯ В целом выглядит разумно. Замечу, что должна быть возможность ручного запуска 
+ паплайна от обновления raw_companies до отправки в ТГ и на почту. Дело в том,  
+что список "сырых" компний уже есть в БД домена и пополняться он будет скорее   
+всего не очень часто - ждать бума экономики пока не приходится. И зарускать по  
+cron имеет смысл после того как обработаются текущие потенциалные лиды.         
+
+● Понял. Тогда уточню модель:
+
+  Ключевое: это не постоянный поток, а ручной batch-процесс. Менеджер запускает
+  пайплайн, когда считает нужным (или после пополнения raw_companies). Cron —
+  опционально, на потом.
+
+  Пайплайн (единый, ручной запуск):
+
+  1. Enrich — берёт необработанные raw_companies, Claude анализирует/фильтрует,
+  годные → leads (status=pending), негодные → rejected_companies
+  2. Check threshold — если pending leads >= 15 → продолжаем, иначе → стоп (или
+  флаг --force для отправки любого количества)
+  3. Export — генерирует Excel из pending leads
+  4. Send — отправляет в ТГ + email
+  5. Mark — помечает отправленные как sent
+
+  Вопросы перед реализацией:
+
+  1. Шаги 3-5 (Excel → send → mark) — это уже чисто программная логика, без
+  Claude. Имеет смысл сделать это в Go-коде (или MCP-инструментами), а не через
+  claude -p. Согласен?
+  2. Порог 15 — конфигурируемый через tasks.yaml или хардкод пока?
+  3. --force флаг нужен? Чтобы отправить даже если < 15 лидов?
+  4. Текущая структура домена exportby — мне посмотреть схему БД и DOMAIN.md,
+  чтобы предложить конкретные изменения в таблицах?
+
+❯ 1. да                                                                         
+2. через tasks.yaml                                                             
+3. перед запуском обработки очередной порции из raw_companies нужно проверять   
+число готовых к отправке лидов; если оно >= 15 (реальное значение берем из      
+tasks.yaml), то формируем и отправляем Excel, если < 15, то выполняем обработку 
+ очередной порции сырых компаний полностью и даже если после  этого готовых к   
+отправке лидов окажется > 15 отправляем их всех. Т.е. этап анализа и фильтрации 
+ должен вполнять полностью если подготовленных к отправке лидов < 15, т.е.      
+минимальный порог для отправки, но есо=ли после выполнения поиска и фильтрации  
+подготовленных лидов окажется  > 15, то отправляем их всех. Надеюсь не запутал. 
+4. да конечно, тем более что структуру ты и проектировал :)                     
+
+● Логика ясна:
+
+  1. Pending >= порог → сразу Excel + отправка всех pending
+  2. Pending < порог → обогащение сырых компаний → если после этого pending >
+  порог → отправка всех
+  3. Порог — минимум для триггера, но отправляем всегда всё что накопилось
+
+  Давай посмотрю текущее состояние.
+
+● Explore(Explore exportby domain structure)
+  ⎿  Done (12 tool uses · 60.4k tokens · 38s)
+  (ctrl+o to expand)
+
+● Хорошо, картина ясна. Вот текущее состояние и что нужно менять:
+
+  Текущая схема companies уже имеет status TEXT DEFAULT 'new' — это наш флаг.
+  new = pending, добавим sent.
+
+  План изменений:
+
+  1. mcp-exportby — новые MCP-инструменты (Go)
+
+  - export_leads_excel — SELECT * FROM companies WHERE status='new', генерирует
+  Excel (excelize), возвращает путь к файлу + count
+  - get_pending_count — возвращает количество лидов со status='new'
+  - Доработать mark_exported — UPDATE companies SET status='sent', sent_at=... 
+  WHERE status='new'
+
+  2. tasks.yaml — единый таск с условной логикой
+
+  Один таск process-export-by-leads вместо 4-х отдельных. В промпте:
+
+  Порог отправки: {{.Threshold}} (из tasks.yaml)
+
+  Алгоритм:
+  1. Вызови get_pending_count
+  2. Если >= {{.Threshold}} → export_leads_excel → отправь через telegram +
+  email → mark_exported → СТОП
+  3. Если < {{.Threshold}} → вызови get_unanalyzed, проанализируй компании,
+  добавь годных в companies, отклони негодных
+  4. После анализа: вызови get_pending_count снова
+  5. Если > {{.Threshold}} → export_leads_excel → отправь → mark_exported
+  6. Иначе → отчитайся сколько накопилось и завершись
+
+  3. Схема БД — добавить sent_at
+
+  ALTER TABLE companies ADD COLUMN sent_at TEXT;
+
+  4. DOMAIN.md — обновить документацию
+
+  Вопрос: threshold — как передать из tasks.yaml в промпт? Варианты:
+  - A) Просто хардкод в промпте таска (менять в одном месте — в prompt)
+  - B) Кастомное поле в домене, инжектить через Go template
+
+  Вариант A проще и достаточен. Согласен с планом? Или поправки?
+
+✻ Crunched for 1m 50s
+
+❯ A                                                                             
+
+● Начинаю реализацию. Сначала прочитаю текущие файлы.
+
+● Searched for 1 pattern, read 4 files (ctrl+o to expand)
+
+● Теперь реализую. Начну с mcp-exportby — добавляю новые инструменты.
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 2 lines
+       9    "io"
+      10    "net/http"
+      11    "os"
+      12 +  "path/filepath"                                              
+      13    "strconv"
+      14    "strings"
+      15    "time"
+      16  
+      17 +  "github.com/xuri/excelize/v2"                                
+      18    _ "modernc.org/sqlite"
+      19  )
+      20  
+
+● Now add the two new tool definitions after reject_companies:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 16 lines
+      156        "required": []string{"names"},
+      157      },
+      158    },
+      159 +  {                                                           
+      160 +    Name:        "get_pending_count",                         
+      161 +    Description: "Возвращает количество лидов со статусом 'new
+          +' в таблице companies (готовых к отправке).",                 
+      162 +    InputSchema: map[string]any{                              
+      163 +      "type":       "object",                                 
+      164 +      "properties": map[string]any{},                         
+      165 +    },                                                        
+      166 +  },                                                          
+      167 +  {                                                           
+      168 +    Name:        "export_leads_excel",                        
+      169 +    Description: "Генерирует Excel-файл из всех лидов со стату
+          +сом 'new'. Возвращает путь к файлу и количество лидов. Вызывай
+          + перед отправкой в Telegram/email.",                          
+      170 +    InputSchema: map[string]any{                              
+      171 +      "type":       "object",                                 
+      172 +      "properties": map[string]any{},                         
+      173 +    },                                                        
+      174 +  },                                                          
+      175  }
+      176  
+      177  const (
+  ⎿  Found 2 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now add the handler cases in the switch:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 4 lines
+      298      return handleMarkExported()
+      299    case "reject_companies":
+      300      return handleRejectCompanies(p.Arguments)
+      301 +  case "get_pending_count":                                   
+      302 +    return handleGetPendingCount()                            
+      303 +  case "export_leads_excel":                                  
+      304 +    return handleExportLeadsExcel()                           
+      305    default:
+      306      return errorResult("unknown tool: " + p.Name)
+      307    }
+
+● Now update mark_exported to set sent_at and use 'sent' status:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 4 lines, removed 2 lines
+      670  // --- mark_exported ---
+      671  
+      672  func handleMarkExported() toolResult {
+      673 -  res, err := db.Exec(`UPDATE companies SET status = 'reported
+          -' WHERE status = 'new'`)                                      
+      673 +  now := time.Now().Format("2006-01-02 15:04:05")             
+      674 +  res, err := db.Exec(`UPDATE companies SET status = 'sent', s
+          +ent_at = ? WHERE status = 'new'`, now)                        
+      675    if err != nil {
+      676      return errorResult("update error: " + err.Error())
+      677    }
+      678    affected, _ := res.RowsAffected()
+      679    result := map[string]any{
+      679 -    "updated": affected,                                      
+      680 +    "updated":  affected,                                     
+      681 +    "sent_at":  now,                                          
+      682    }
+      683    data, _ := json.Marshal(result)
+      684    return textResult(string(data))
+  ⎿  Found 2 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Now add the two new handler functions and the schema migration. I'll add them
+  before the helpers section:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 135 lines
+      715    return textResult(string(data))
+      716  }
+      717  
+      718 +// --- get_pending_count ---                                  
+      719 +                                                              
+      720 +func handleGetPendingCount() toolResult {                     
+      721 +  var count int                                               
+      722 +  err := db.QueryRow(`SELECT COUNT(*) FROM companies WHERE sta
+          +tus = 'new'`).Scan(&count)                                    
+      723 +  if err != nil {                                             
+      724 +    return errorResult("query error: " + err.Error())         
+      725 +  }                                                           
+      726 +  result := map[string]any{                                   
+      727 +    "pending_count": count,                                   
+      728 +  }                                                           
+      729 +  data, _ := json.Marshal(result)                             
+      730 +  return textResult(string(data))                             
+      731 +}                                                             
+      732 +                                                              
+      733 +// --- export_leads_excel ---                                 
+      734 +                                                              
+      735 +func handleExportLeadsExcel() toolResult {                    
+      736 +  dataDir := os.Getenv("DOMAIN_DATA_DIR")                     
+      737 +  if dataDir == "" {                                          
+      738 +    dataDir = "."                                             
+      739 +  }                                                           
+      740 +                                                              
+      741 +  rows, err := db.Query(`                                     
+      742 +    SELECT name, url, description, products, contact_info, exp
+          +ort_destinations,                                             
+      743 +           aviation_priority, found_date                      
+      744 +    FROM companies WHERE status = 'new'                       
+      745 +    ORDER BY aviation_priority DESC, found_date DESC          
+      746 +  `)                                                          
+      747 +  if err != nil {                                             
+      748 +    return errorResult("query error: " + err.Error())         
+      749 +  }                                                           
+      750 +  defer rows.Close()                                          
+      751 +                                                              
+      752 +  type lead struct {                                          
+      753 +    Name, URL, Description, Products, ContactInfo, ExportDest 
+          +string                                                        
+      754 +    Priority                                                  
+          +int                                                           
+      755 +    FoundDate                                                 
+          +string                                                        
+      756 +  }                                                           
+      757 +  var leads []lead                                            
+      758 +  for rows.Next() {                                           
+      759 +    var l lead                                                
+      760 +    var url, desc, products, contact, export sql.NullString   
+      761 +    if err := rows.Scan(&l.Name, &url, &desc, &products, &cont
+          +act, &export, &l.Priority, &l.FoundDate); err != nil {        
+      762 +      continue                                                
+      763 +    }                                                         
+      764 +    l.URL = nullStr(url)                                      
+      765 +    l.Description = nullStr(desc)                             
+      766 +    l.Products = nullStr(products)                            
+      767 +    l.ContactInfo = nullStr(contact)                          
+      768 +    l.ExportDest = nullStr(export)                            
+      769 +    leads = append(leads, l)                                  
+      770 +  }                                                           
+      771 +                                                              
+      772 +  if len(leads) == 0 {                                        
+      773 +    return errorResult("no pending leads to export")          
+      774 +  }                                                           
+      775 +                                                              
+      776 +  f := excelize.NewFile()                                     
+      777 +  sheet := "Лиды"                                             
+      778 +  f.SetSheetName("Sheet1", sheet)                             
+      779 +                                                              
+      780 +  // Headers                                                  
+      781 +  headers := []string{"Приоритет", "Компания", "Описание", "Пр
+          +одукция", "Экспорт", "Контакты", "URL", "Дата"}               
+      782 +  headerStyle, _ := f.NewStyle(&excelize.Style{               
+      783 +    Font:      &excelize.Font{Bold: true, Color: "FFFFFF", Siz
+          +e: 11},                                                       
+      784 +    Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Colo
+          +r: []string{"2F5496"}},                                       
+      785 +    Alignment: &excelize.Alignment{Horizontal: "center", Verti
+          +cal: "center"},                                               
+      786 +    Border: []excelize.Border{                                
+      787 +      {Type: "bottom", Color: "000000", Style: 2},            
+      788 +    },                                                        
+      789 +  })                                                          
+      790 +  for i, h := range headers {                                 
+      791 +    cell, _ := excelize.CoordinatesToCellName(i+1, 1)         
+      792 +    f.SetCellValue(sheet, cell, h)                            
+      793 +    f.SetCellStyle(sheet, cell, cell, headerStyle)            
+      794 +  }                                                           
+      795 +                                                              
+      796 +  // Priority labels                                          
+      797 +  priorityLabel := map[int]string{2: "🔴 Высокий", 1: "🟡 Сред
+          +ний", 0: "🟢 Низкий"}                                         
+      798 +                                                              
+      799 +  // Data rows                                                
+      800 +  for i, l := range leads {                                   
+      801 +    row := i + 2                                              
+      802 +    pLabel := priorityLabel[l.Priority]                       
+      803 +    if pLabel == "" {                                         
+      804 +      pLabel = fmt.Sprintf("%d", l.Priority)                  
+      805 +    }                                                         
+      806 +    vals := []any{pLabel, l.Name, l.Description, l.Products, l
+          +.ExportDest, l.ContactInfo, l.URL, l.FoundDate}               
+      807 +    for j, v := range vals {                                  
+      808 +      cell, _ := excelize.CoordinatesToCellName(j+1, row)     
+      809 +      f.SetCellValue(sheet, cell, v)                          
+      810 +    }                                                         
+      811 +  }                                                           
+      812 +                                                              
+      813 +  // Column widths                                            
+      814 +  widths := map[string]float64{"A": 16, "B": 30, "C": 40, "D":
+          + 30, "E": 20, "F": 25, "G": 35, "H": 12}                      
+      815 +  for col, w := range widths {                                
+      816 +    f.SetColWidth(sheet, col, col, w)                         
+      817 +  }                                                           
+      818 +                                                              
+      819 +  // Count by priority                                        
+      820 +  var high, medium int                                        
+      821 +  for _, l := range leads {                                   
+      822 +    switch l.Priority {                                       
+      823 +    case 2:                                                   
+      824 +      high++                                                  
+      825 +    case 1:                                                   
+      826 +      medium++                                                
+      827 +    }                                                         
+      828 +  }                                                           
+      829 +                                                              
+      830 +  filename := fmt.Sprintf("leads_%s.xlsx", time.Now().Format("
+          +2006-01-02_150405"))                                          
+      831 +  outPath := filepath.Join(dataDir, filename)                 
+      832 +  if err := f.SaveAs(outPath); err != nil {                   
+      833 +    return errorResult("save excel error: " + err.Error())    
+      834 +  }                                                           
+      835 +                                                              
+      836 +  result := map[string]any{                                   
+      837 +    "file_path":     outPath,                                 
+      838 +    "total_leads":   len(leads),                              
+      839 +    "high_priority": high,                                    
+      840 +    "med_priority":  medium,                                  
+      841 +  }                                                           
+      842 +  data, _ := json.Marshal(result)                             
+      843 +  return textResult(string(data))                             
+      844 +}                                                             
+      845 +                                                              
+      846 +func nullStr(s sql.NullString) string {                       
+      847 +  if s.Valid {                                                
+      848 +    return s.String                                           
+      849 +  }                                                           
+      850 +  return ""                                                   
+      851 +}                                                             
+      852 +                                                              
+      853  // --- helpers ---
+      854  
+      855  func textResult(text string) toolResult {
+
+● Now add sent_at column migration to ensureSchema:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 8 lines, removed 1 line
+      276      CREATE INDEX IF NOT EXISTS idx_raw_companies_export_by_id 
+           ON raw_companies(export_by_id);
+      277      CREATE INDEX IF NOT EXISTS idx_raw_companies_products_fetc
+           hed ON raw_companies(products_fetched);
+      278    `)
+      279 -  return err                                                  
+      279 +  if err != nil {                                             
+      280 +    return err                                                
+      281 +  }                                                           
+      282 +                                                              
+      283 +  // Migration: add sent_at column to companies table (ignore 
+          +error if already exists)                                      
+      284 +  db.Exec(`ALTER TABLE companies ADD COLUMN sent_at TEXT`)    
+      285 +                                                              
+      286 +  return nil                                                  
+      287  }
+      288  
+      289  func handleToolCall(params json.RawMessage) toolResult {
+
+● Now update mark_exported tool description to reflect the new behavior:
+
+● Update(cmd/mcp/mcp-exportby/main.go)
+  ⎿  Added 1 line, removed 1 line
+      131    },
+      132    {
+      133      Name:        "mark_exported",
+      134 -    Description: "Помечает все лиды со статусом 'new' как 'rep
+          -orted' в таблице companies. Вызывай после успешной отправки от
+          -чёта.",                                                       
+      134 +    Description: "Помечает все лиды со статусом 'new' как 'sen
+          +t' в таблице companies и записывает sent_at. Вызывай после усп
+          +ешной отправки отчёта.",                                      
+      135      InputSchema: map[string]any{
+      136        "type":       "object",
+      137        "properties": map[string]any{},
+
+● Let me verify the Go code compiles:
+
+● Bash(go build ./cmd/mcp/mcp-exportby/)
+  ⎿  (No output)
+
+● Compiles clean. Now update tasks.yaml — add the new unified task and update
+  the schema:
+
+● Update(tasks.yaml)
+  ⎿  Added 96 lines, removed 30 lines
+      296      max_turns: 50
+      297      max_budget_usd: 0.5
+      298      permission_mode: bypassPermissions
+      299 -  - name: compile-export-by-aviation-excel                    
+      299 +  - name: process-export-by-leads                             
+      300      domain: export-by-aviation
+      301 -    prompt: "Сформируй Excel-отчёт. Файл: data/export-by-aviat
+          -ion/leads_{{.DateTime}}.xlsx\n\nШаг 1. Запроси ВСЕ компании из
+          - БД:\nSELECT name, description, products, export_destinations,
+          - contact_info, url, aviation_priority, found_date, status\nFRO
+          -M companies WHERE status='new' ORDER BY aviation_priority DESC
+          -, found_date DESC;\n\nШаг 2. Создай Excel-файл. Первый лист \"
+          -Лиды\" — таблица через add_styled_table со столбцами:\nПриорит
+          -ет | Компания | Описание | Продукция | Экспорт | Контакты | UR
+          -L | Дата | Статус\nКаждая строка = одна компания из результата
+          - запроса. Приоритет: \U0001F534 Высокий (2), \U0001F7E1 Средни
+          -й (1), \U0001F7E2 Низкий (0).\nЭто ГЛАВНЫЙ лист — в нём ВСЕ ко
+          -мпании, по одной на строку.\n\nНЕ создавай лист \"Сводка\" — с
+          -водка отправляется отдельно в Telegram/email.\n\nВыведи ТОЛЬКО
+          - путь к файлу.\n"                                             
+      301 +    prompt: |-                                                
+      302 +      Сегодня {{.Date}}. Обработай лиды для авиаперевозки.    
+      303 +      Порог отправки: 15 лидов.                               
+      304 +                                                              
+      305 +      === АЛГОРИТМ ===                                        
+      306 +                                                              
+      307 +      ШАГ 1. Вызови mcp__exportby__get_pending_count — узнай к
+          +оличество готовых лидов (status='new').                       
+      308 +                                                              
+      309 +      ШАГ 2. ЕСЛИ pending >= 15 → переходи к ОТПРАВКЕ (шаг 4).
+      310 +                                                              
+      311 +      ШАГ 3. ЕСЛИ pending < 15 → выполни АНАЛИЗ новой порции: 
+      312 +                                                              
+      313 +        3.1. Вызови mcp__exportby__get_unanalyzed с limit=50. 
+      314 +             Если unanalyzed = 0, выведи "Неотправленных: {pen
+          +ding}, новых для анализа нет." и ЗАВЕРШИ.                     
+      315 +                                                              
+      316 +        3.2. Для каждой компании выполни ДВУХЭТАПНУЮ оценку СТ
+          +РОГО по описанию компании (поле description).                 
+      317 +             ВАЖНО: поле products может содержать мусорные дан
+          +ные — НЕ доверяй ему, если products противоречит description. 
+      318 +                                                              
+      319 +             === ЭТАП 1: ТИП КОМПАНИИ ===                     
+      320 +                                                              
+      321 +             ✗ ИНОСТРАННАЯ КОМПАНИЯ → ОТКАЗ:                  
+      322 +             Если из описания или названия видно, что компания
+          + НЕ белорусская — ОТКАЗ.                                      
+      323 +                                                              
+      324 +             ✓ ПРОИЗВОДИТЕЛЬ/ЭКСПОРТЁР → переходи к этапу 2:  
+      325 +             Признаки: собственное производство, завод, фабрик
+          +а, экспорт своей продукции.                                   
+      326 +                                                              
+      327 +             ✗ ИМПОРТЁР/ДИСТРИБЬЮТОР → ОТКАЗ:                 
+      328 +             Признаки: перепродажа чужих брендов, представител
+          +ьство иностранных компаний.                                   
+      329 +                                                              
+      330 +             ✗ СЕРВИСНЫЕ/ЛОКАЛЬНЫЕ КОМПАНИИ → ОТКАЗ:          
+      331 +             Компании без физических товаров на экспорт: услуг
+          +и, общепит, розница.                                          
+      332 +                                                              
+      333 +             ПРИНЦИП: если неясно, производитель это или импор
+          +тёр — склоняйся к ОТКАЗУ.                                     
+      334 +                                                              
+      335 +             === ЭТАП 1.5: ОБОГАЩЕНИЕ (опционально) ===       
+      336 +                                                              
+      337 +             Если description слишком короткое (< 50 символов)
+          + И у компании есть url —                                      
+      338 +             используй WebFetch для уточнения. НЕ для каждой к
+          +омпании.                                                      
+      339 +                                                              
+      340 +             === ЭТАП 2: ПРИОРИТЕТ АВИАПЕРЕВОЗКИ ===          
+      341 +                                                              
+      342 +             aviation_priority = 2 (высокий): свежие цветы, фа
+          +рмацевтика, медоборудование,                                  
+      343 +             электроника, оптика, ювелирные изделия. Высокая ц
+          +енность/кг ИЛИ критичность сроков.                            
+      344 +                                                              
+      345 +             aviation_priority = 1 (средний): малые партии, ср
+          +очные заказы, труднодоступные регионы.                        
+      346 +                                                              
+      347 +             aviation_priority = 0 (низкий → ОТКАЗ): заморожен
+          +ные продукты, консервы, сырьё,                                
+      348 +             стройматериалы, тяжёлые грузы, мебель, текстиль. 
+          +НЕ вставлять в companies.                                     
+      349 +                                                              
+      350 +             needs_aviation = 1 если aviation_priority >= 1   
+      351 +                                                              
+      352 +        3.3. Для подходящих: mcp__database__execute с INSERT O
+          +R IGNORE INTO companies                                       
+      353 +             (name, url, description, products, needs_aviation
+          +, aviation_priority, found_date, status)                      
+      354 +             VALUES ('...', url, '...', '', needs_aviation, pr
+          +iority, '{{.Date}}', 'new')                                   
+      355 +             Бери url из ответа get_unanalyzed как есть.      
+      356 +                                                              
+      357 +        3.4. ОБЯЗАТЕЛЬНО вызови mcp__exportby__reject_companie
+          +s для ВСЕХ отклонённых.                                       
+      358 +                                                              
+      359 +        3.5. Запиши в scan_log итог через mcp__database__execu
+          +te.                                                           
+      360 +                                                              
+      361 +        3.6. Вызови mcp__exportby__get_pending_count повторно.
+      362 +             Если pending >= 15 → переходи к ОТПРАВКЕ (шаг 4).
+      363 +             Иначе → выведи "Накоплено: {pending} лидов из 15.
+          + Отправка отложена." и ЗАВЕРШИ.                               
+      364 +                                                              
+      365 +      ШАГ 4. ОТПРАВКА:                                        
+      366 +                                                              
+      367 +        4.1. Вызови mcp__exportby__export_leads_excel — получи
+          +шь путь к Excel и статистику.                                 
+      368 +                                                              
+      369 +        4.2. Составь сводку ТОЧНО в формате:                  
+      370 +             📊 Авиационные лиды — {{.Date}}                  
+      371 +             Новых: {total_leads}                             
+      372 +             Приоритетных (🔴): {high_priority}               
+      373 +             📎 Excel-файл с деталями приложен.               
+      374 +                                                              
+      375 +        4.3. Отправь сводку через mcp__telegram__send_message.
+      376 +        4.4. Отправь Excel через mcp__telegram__send_document 
+          +(file_path из 4.1).                                           
+      377 +        4.5. Отправь email через mcp__email__send_report на al
+          +exstav1975@yandex.by,                                         
+      378 +             тема "📊 Авиационные лиды — {{.Date}}", тело = св
+          +одка, вложение = Excel.                                       
+      379 +        4.6. Вызови mcp__exportby__mark_exported.             
+      380 +                                                              
+      381 +      ВАЖНО: НЕ выводи текстовый анализ каждой компании. Сразу
+          + вызывай tool calls.                                          
+      382 +      Группируй по несколько компаний за один вызов. Текстовый
+          + вывод — только финальная статистика.                         
+      383      work_dir: .
+      384      tags:
+      385        - leads
+      386        - aviation
+      306 -      - excel                                                 
+      307 -      - report                                                
+      387 +      - export-by                                             
+      388 +      - process                                               
+      389      model: sonnet
+      390      timeout: 20m
+      391      mcp_servers:
+      392        - database
+      312 -      - excel                                                 
+      313 -    allowed_tools:                                            
+      314 -      - mcp__database__query                                  
+      315 -      - mcp__database__describe_table                         
+      316 -      - mcp__excel__create_spreadsheet                        
+      317 -      - mcp__excel__add_styled_table                          
+      318 -      - mcp__excel__write_spreadsheet                         
+      319 -      - mcp__excel__read_spreadsheet                          
+      320 -    max_turns: 25                                             
+      321 -    permission_mode: bypassPermissions                        
+      322 -  - name: deliver-export-by-aviation-report                   
+      323 -    domain: export-by-aviation                                
+      324 -    prompt: "Доставь отчёт по авиационным лидам. Файл: data/ex
+          -port-by-aviation/leads_{{.DateTime}}.xlsx\n\nШаг 1. Одним запр
+          -осом получи данные:\nSELECT COUNT(*) AS total, SUM(CASE WHEN a
+          -viation_priority=2 THEN 1 ELSE 0 END) AS priority FROM compani
+          -es WHERE status='new';\nSELECT name, description FROM companie
+          -s WHERE status='new' ORDER BY aviation_priority DESC LIMIT 5;\
+          -n\nШаг 2. Составь сводку ТОЧНО в этом формате (подставь данные
+          -):\n\U0001F4CA Авиационные лиды — {{.Date}}\nНовых: {total}\nП
+          -риоритетных (\U0001F534): {priority}\nТоп:\n• {name} — {descri
+          -ption обрезать до 50 символов}\n\U0001F4CE Excel-файл с деталя
+          -ми приложен.\n\nШаг 3. Отправь эту сводку через send_message в
+          - Telegram.\nШаг 4. Отправь Excel через send_document в Telegra
+          -m.\nШаг 5. Отправь email через send_report на alexstav1975@yan
+          -dex.by, тема \"\U0001F4CA Авиационные лиды — {{.Date}}\", тело
+          - = та же сводка, вложение = Excel.\nШаг 6. Вызови mark_exporte
+          -d.\n\nСводка в TG и email ИДЕНТИЧНА. Ничего лишнего не добавля
+          -й.\n"                                                         
+      325 -    work_dir: .                                               
+      326 -    tags:                                                     
+      327 -      - leads                                                 
+      328 -      - aviation                                              
+      329 -      - delivery                                              
+      393 +      - exportby                                              
+      394        - telegram
+      331 -    model: haiku                                              
+      332 -    timeout: 15m                                              
+      333 -    mcp_servers:                                              
+      334 -      - database                                              
+      335 -      - telegram                                              
+      395        - email
+      337 -      - exportby                                              
+      396      allowed_tools:
+      397 +      - mcp__exportby__get_pending_count                      
+      398 +      - mcp__exportby__get_unanalyzed                         
+      399 +      - mcp__exportby__reject_companies                       
+      400 +      - mcp__exportby__export_leads_excel                     
+      401 +      - mcp__exportby__mark_exported                          
+      402        - mcp__database__query
+      403 +      - mcp__database__execute                                
+      404 +      - mcp__database__insert                                 
+      405        - mcp__telegram__send_message
+      406        - mcp__telegram__send_document
+      407        - mcp__email__send_report
+      343 -      - mcp__exportby__mark_exported                          
+      344 -    max_turns: 25                                             
+      408 +      - WebFetch                                              
+      409 +    max_turns: 50                                             
+      410 +    max_budget_usd: 0.5                                       
+      411      permission_mode: bypassPermissions
+      412  pipelines:
+      413    - name: review-fix
+
+● Now update the pipeline and domain references:
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line, removed 4 lines
+      433      mode: sequential
+      434      steps:
+      435        - task: sync-export-by-catalog
+      436 -      - task: analyze-export-by-aviation                      
+      437 -      - task: compile-export-by-aviation-excel                
+      438 -      - task: deliver-export-by-aviation-report               
+      436 +      - task: process-export-by-leads                         
+      437      max_iterations: 1
+      440 -    stop_signal: "НОВЫХ ЛИДОВ: 0"                             
+      438  mcp_servers:
+      439    - name: database
+      440      command: ./bin/mcp-database
+
+● Now update the domain schema to include sent_at and update task/pipeline
+  references:
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line
+      466          aviation_priority INTEGER DEFAULT 0,
+      467          found_date TEXT NOT NULL,
+      468          status TEXT DEFAULT 'new',
+      469 +        sent_at TEXT,                                         
+      470          notes TEXT,
+      471          UNIQUE(name)
+      472        );
+
+● Update domain tasks list:
+
+● Update(tasks.yaml)
+  ⎿  Added 2 lines, removed 4 lines
+      510      domain_doc: DOMAIN.md
+      511      tasks:
+      512        - sync-export-by-catalog
+      513 -      - analyze-export-by-aviation                            
+      514 -      - compile-export-by-aviation-excel                      
+      515 -      - deliver-export-by-aviation-report                     
+      513 +      - process-export-by-leads                               
+      514      pipelines:
+      515        - export-by-aviation-to-ceo
+      516        - export-by-sync
+     ...
+      519      mcp_servers:
+      520        - database
+      521        - exportby
+      524 -      - excel                                                 
+      522 +      - telegram                                              
+      523        - email
+      524    leads:
+      525      description: B2B logistics leads for EAEU market
+
+● Now update DOMAIN.md:
+
+● Update(data/export-by-aviation/DOMAIN.md)
+  ⎿  Added 6 lines, removed 3 lines
+       4  
+       5  ## Архитектура
+       6  
+       7 -Данные собираются в 2 этапа:                                   
+       8 -1. **MCP-сервер `exportby`** скачивает каталог export.by через 
+         -REST API и сохраняет сырые данные в `raw_companies`. Работает б
+         -ез участия LLM — чистый Go HTTP.                               
+       9 -2. **Задача `analyze-export-by-aviation`** анализирует данные и
+         -з `raw_companies` и оценивает `aviation_priority`, записывая ли
+         -дов в `companies`.                                             
+       7 +Данные собираются и отправляются в рамках единого процесса:    
+       8 +1. **MCP-сервер `exportby`** скачивает каталог export.by через 
+         +REST API и сохраняет сырые данные в `raw_companies`. Также гене
+         +рирует Excel и управляет статусами лидов.                      
+       9 +2. **Задача `process-export-by-leads`** — единый процесс: прове
+         +ряет порог накопленных лидов → при необходимости анализирует но
+         +вую порцию → при достижении порога генерирует Excel и отправляе
+         +т в Telegram/email.                                            
+      10  
+      11 +Порог отправки: 15 лидов (настраивается в промпте задачи).     
+      12 +Статусы: `new` → `sent` (после отправки, с записью `sent_at`). 
+      13 +                                                               
+      14  ## Files
+      15  
+      16  | File | Description |
+
+● Update(data/export-by-aviation/DOMAIN.md)
+  ⎿  Added 2 lines, removed 1 line
+      60  | needs_aviation | INTEGER | 0/1 — нужна ли авиаперевозка |
+      61  | aviation_priority | INTEGER | 0=низкий, 1=средний, 2=высокий 
+          |
+      62  | found_date | TEXT | Дата обнаружения |
+      63 -| status | TEXT | new / reported |                             
+      63 +| status | TEXT | new / sent |                                 
+      64 +| sent_at | TEXT | Дата отправки |                             
+      65  | notes | TEXT | Заметки |
+      66  
+      67  ### scan_log (лог аналитических сессий)
+
+● Update(data/export-by-aviation/DOMAIN.md)
+  ⎿  Added 3 lines, removed 1 line
+       97  - `check_new` — проверяет первые N страниц на новые компании
+       98  - `get_stats` — текущая статистика
+       99  - `reject_companies` — помечает компании как отклонённые (name
+           s=[], reason=""). ОБЯЗАТЕЛЬНО вызывать для всех отклонённых пр
+           и анализе
+      100 -- `mark_exported` — помечает все лиды со статусом 'new' как 'r
+          -eported'. Вызывать после отправки отчёта                      
+      100 +- `get_pending_count` — возвращает количество лидов со статусо
+          +м 'new' (готовых к отправке)                                  
+      101 +- `export_leads_excel` — генерирует Excel из всех pending лидо
+          +в, возвращает путь к файлу и статистику                       
+      102 +- `mark_exported` — помечает все лиды со статусом 'new' как 's
+          +ent', записывает sent_at. Вызывать после отправки отчёта      
+
+● Now remove the old tasks that are no longer needed
+  (analyze-export-by-aviation, compile-export-by-aviation-excel,
+  deliver-export-by-aviation-report). The first two are already replaced, but
+  analyze-export-by-aviation is still in tasks.yaml:
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● The analyze-export-by-aviation task is still there. The old compile and
+  deliver tasks were replaced by process-export-by-leads. Let me remove the old
+  analyze task:
+
+● Read 1 file (ctrl+o to expand)
+
+● I need to remove the old analyze-export-by-aviation task:
+
+● Update(tasks.yaml)
+  ⎿  Removed 107 lines
+      189      max_turns: 15
+      190      max_budget_usd: 0.05
+      191      permission_mode: bypassPermissions
+      192 -  - name: analyze-export-by-aviation                          
+      193 -    domain: export-by-aviation                                
+      194 -    prompt: |-                                                
+      195 -      Сегодня {{.Date}}. Проанализируй компании из каталога ex
+          -port.by и определи потенциальных лидов для авиаперевозки.     
+      196 -                                                              
+      197 -      Предыдущий этап:                                        
+      198 -      {{.PrevOutput}}                                         
+      199 -                                                              
+      200 -      Работай с данными в БД. WebFetch разрешён ТОЛЬКО для обо
+          -гащения профиля компании (этап 1.5).                          
+      201 -                                                              
+      202 -      1. Вызови mcp__exportby__get_unanalyzed с limit=50 — пол
+          -учишь компании, которых ещё нет в таблице companies.          
+      203 -         Если unanalyzed = 0, выведи "НОВЫХ ЛИДОВ: 0" и заверш
+          -и.                                                            
+      204 -                                                              
+      205 -      2. Для каждой компании выполни ДВУХЭТАПНУЮ оценку СТРОГО
+          - по описанию компании (поле description).                     
+      206 -         ВАЖНО: поле products может содержать мусорные данные 
+          -от других компаний — НЕ доверяй ему, если products противоречи
+          -т description.                                                
+      207 -         Оценивай ТОЛЬКО основную деятельность компании.      
+      208 -                                                              
+      209 -         === ЭТАП 1: ТИП КОМПАНИИ ===                         
+      210 -                                                              
+      211 -         Определи по контексту описания: компания САМА произво
+          -дит товары или перепродаёт/импортирует чужие?                 
+      212 -                                                              
+      213 -         ✗ ИНОСТРАННАЯ КОМПАНИЯ → ОТКАЗ:                      
+      214 -         Если из описания или названия видно, что компания НЕ 
+          -белорусская (город в России, Китае и т.д.,                    
+      215 -         иностранное название без белорусской привязки) — ОТКА
+          -З. Каталог export.by для белорусских экспортёров,             
+      216 -         но иностранные компании тоже регистрируются. Нас инте
+          -ресуют только белорусские.                                    
+      217 -                                                              
+      218 -         ✓ ПРОИЗВОДИТЕЛЬ/ЭКСПОРТЁР → переходи к этапу 2:      
+      219 -         Признаки: собственное производство, завод, фабрика, э
+          -кспорт своей продукции.                                       
+      220 -         Это ориентиры, а не исчерпывающий список — оценивай с
+          -мысл описания целиком.                                        
+      221 -                                                              
+      222 -         ✗ ИМПОРТЁР/ДИСТРИБЬЮТОР → ОТКАЗ:                     
+      223 -         Признаки: перепродажа чужих брендов, представительств
+          -о иностранных компаний, «импорт и продажа».                   
+      224 -                                                              
+      225 -         ✗ СЕРВИСНЫЕ/ЛОКАЛЬНЫЕ КОМПАНИИ → ОТКАЗ:              
+      226 -         Компании без физических товаров на экспорт: услуги, о
+          -бщепит, розница, образование, ремонт и т.д.                   
+      227 -                                                              
+      228 -         ПРИНЦИП: если неясно, производитель это или импортёр 
+          -— склоняйся к ОТКАЗУ.                                         
+      229 -                                                              
+      230 -         === ЭТАП 1.5: ОБОГАЩЕНИЕ (опционально) ===           
+      231 -                                                              
+      232 -         Если description слишком короткое (< 50 символов) или
+          - неоднозначное, И у компании есть url —                       
+      233 -         используй WebFetch чтобы получить главную страницу са
+          -йта компании для уточнения профиля.                           
+      234 -         НЕ делай это для каждой компании — только когда описа
+          -ния недостаточно для уверенной оценки.                        
+      235 -                                                              
+      236 -         === ЭТАП 2: ПРИОРИТЕТ АВИАПЕРЕВОЗКИ (только для произ
+          -водителей/экспортёров) ===                                    
+      237 -                                                              
+      238 -         Задай себе вопрос: «Есть ли объективная экономическая
+          - причина отправлять этот товар самолётом                      
+      239 -         (платить x5–x10 от наземной/морской перевозки)?»     
+      240 -                                                              
+      241 -         aviation_priority = 2 (высокий):                     
+      242 -         Товары, которые РЕАЛЬНО летают: свежие цветы, живые о
+          -рганизмы, срочная фармацевтика/вакцины,                       
+      243 -         медоборудование, высокоценная электроника и приборы, 
+          -образцы для выставок, запчасти для простоя,                   
+      244 -         оптика, ювелирные изделия. Общий признак — высокая це
+          -нность за кг ИЛИ критичность сроков доставки.                 
+      245 -                                                              
+      246 -         aviation_priority = 1 (средний):                     
+      247 -         Товары, которые МОГУТ лететь при определённых условия
+          -х: малые партии лёгких товаров,                               
+      248 -         срочные заказы, экспорт в труднодоступные регионы без
+          - морского сообщения.                                          
+      249 -                                                              
+      250 -         aviation_priority = 0 (низкий → ОТКАЗ, НЕ вставлять):
+      251 -         Товары, которые экономически перевозятся наземным/мор
+          -ским транспортом: замороженные продукты,                      
+      252 -         консервы, сушёные товары, сырьё, стройматериалы, тяжё
+          -лые/объёмные грузы, мебель, текстиль навалом.                 
+      253 -         Заморозка — это СПОСОБ сохранения, исключающий потреб
+          -ность в срочной авиадоставке.                                 
+      254 -                                                              
+      255 -         needs_aviation = 1 если aviation_priority >= 1       
+      256 -                                                              
+      257 -      3. Для компаний с aviation_priority >= 1 вставь в таблиц
+          -у companies через mcp__database__execute:                     
+      258 -         INSERT OR IGNORE INTO companies (name, url, descripti
+          -on, products, needs_aviation, aviation_priority, found_date, s
+          -tatus)                                                        
+      259 -         VALUES ('...', url, '...', '', needs_aviation, priori
+          -ty, '{{.Date}}', 'new')                                       
+      260 -         ВАЖНО: бери поле url из ответа get_unanalyzed как ест
+          -ь — НЕ конструируй URL самостоятельно.                        
+      261 -                                                              
+      262 -      4. ОБЯЗАТЕЛЬНО вызови mcp__exportby__reject_companies дл
+          -я ВСЕХ отклонённых компаний (импортёры, сервисные, неясные).  
+      263 -         Передай массив названий и причину. Это предотвращает 
+          -повторный анализ при следующем запуске.                       
+      264 -         Пример: reject_companies(names=["ЛОКТ", "Фирма Б"], r
+          -eason="importer")                                             
+      265 -                                                              
+      266 -      5. Запиши в scan_log итог сессии.                       
+      267 -                                                              
+      268 -      ВАЖНО: НЕ выводи текстовый анализ каждой компании. Сразу
+          - вызывай tool calls:                                          
+      269 -      - Для подходящих компаний: mcp__database__execute с INSE
+          -RT                                                            
+      270 -      - Для отклонённых: mcp__exportby__reject_companies      
+      271 -      Группируй по несколько компаний за один вызов. Текстовый
+          - вывод — только финальная статистика.                         
+      272 -                                                              
+      273 -      Формат вывода:                                          
+      274 -      НОВЫХ ЛИДОВ: N                                          
+      275 -      ОТКЛОНЕНО: N                                            
+      276 -      ПРИОРИТЕТНЫЕ ЛИДЫ:                                      
+      277 -      - [Название] | [Описание 30 символов] | priority=N      
+      278 -    work_dir: .                                               
+      279 -    tags:                                                     
+      280 -      - leads                                                 
+      281 -      - aviation                                              
+      282 -      - export-by                                             
+      283 -      - analysis                                              
+      284 -    model: sonnet                                             
+      285 -    timeout: 15m                                              
+      286 -    mcp_servers:                                              
+      287 -      - database                                              
+      288 -      - exportby                                              
+      289 -    allowed_tools:                                            
+      290 -      - mcp__exportby__get_unanalyzed                         
+      291 -      - mcp__exportby__reject_companies                       
+      292 -      - mcp__database__query                                  
+      293 -      - mcp__database__execute                                
+      294 -      - mcp__database__insert                                 
+      295 -      - WebFetch                                              
+      296 -    max_turns: 50                                             
+      297 -    max_budget_usd: 0.5                                       
+      298 -    permission_mode: bypassPermissions                        
+      192    - name: process-export-by-leads
+      193      domain: export-by-aviation
+      194      prompt: |-
+
+● Let me verify everything builds and the YAML is valid:
+
+● Bash(go build ./cmd/mcp/mcp-exportby/ && echo "OK")
+  ⎿  OK
+
+● Bash(python3 -c "import yaml; yaml.safe_load(open('tasks.yaml')); print('YAML
+      OK')")
+  ⎿  YAML OK
+
+● Let me do a final sanity check — verify the full build works:
+
+● Bash(make build 2>&1 | tail -5)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Всё собирается. Вот итог изменений:
+
+  mcp-exportby/main.go
+
+  - get_pending_count — возвращает {"pending_count": N} для companies WHERE
+  status='new'
+  - export_leads_excel — генерирует стилизованный Excel (заголовки, ширина
+  колонок, приоритеты с эмодзи), возвращает {"file_path": "...", "total_leads": 
+  N, "high_priority": N, "med_priority": N}
+  - mark_exported — теперь ставит status='sent' + записывает sent_at
+  - ensureSchema — миграция: добавляет sent_at колонку в существующую БД
+
+  tasks.yaml
+
+  - Удалены 3 старых таска: analyze-export-by-aviation,
+  compile-export-by-aviation-excel, deliver-export-by-aviation-report
+  - Добавлен process-export-by-leads — единый таск с условной логикой (порог 15
+  в промпте)
+  - Пайплайн export-by-aviation-to-ceo упрощён до 2 шагов: sync → process
+  - Схема companies дополнена колонкой sent_at TEXT
+  - Домен обновлён: убран excel из mcp_servers (Excel теперь генерит exportby),
+  добавлен telegram
+
+  DOMAIN.md
+
+  - Обновлена архитектура, статусы (new → sent), добавлены новые инструменты
+
+✻ Sautéed for 5m 14s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to:
+     2026-03-13-123414-local-command-caveatcaveat-the-messages-below-w.txt
+
+❯ Давай начнем поиск с самого начала - обнули счетчики отфильтрованных          
+компаний, очисти соответствующие таблицы, оставь только raw компании.           
+
+● Сейчас очищу таблицы companies, rejected_companies и scan_log, оставив только
+  raw_companies и scan_progress.
+
+● Read 1 file (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "SELECT 'raw_companies: ' || COUNT(*) FROM
+      raw_companies; SELECT 'c…)
+  ⎿  raw_companies: 6878
+     companies: 22
+     rejected_companies: 491
+     scan_log: 6
+
+● Текущее состояние: 6878 raw, 22 лидов, 491 отклонённых, 6 записей scan_log.
+  Очищаю:
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/export-b
+      y-aviation/leads.db "DELETE FROM companies; DELETE FROM
+      rejected_companies; DELETE FROM…)
+  ⎿  Done. raw_companies: 6878
+
+● Готово. Очищено:
+  - companies — 22 → 0
+  - rejected_companies — 491 → 0
+  - scan_log — 6 → 0
+
+  raw_companies (6878) и scan_progress не тронуты. Теперь при запуске
+  process-export-by-leads анализ начнётся с чистого листа — все 6878 сырых
+  компаний будут рассматриваться заново.

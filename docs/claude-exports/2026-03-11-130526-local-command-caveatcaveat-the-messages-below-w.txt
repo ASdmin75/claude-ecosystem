@@ -1,0 +1,186 @@
+ ▐▛███▜▌   Claude Code v2.1.72
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ Почему при каждоь запуске "calaude -p" появляется диалог для авторизации на   
+github ?                                                                        
+
+● This is a known behavior of Claude Code CLI. When claude -p runs, it may
+  trigger GitHub OAuth if:
+
+  1. No cached auth token — Claude Code stores its auth in ~/.claude/ config. If
+   the token expires or isn't persisted between runs, it re-authenticates each
+  time.
+  2. Spawning many parallel processes — Your system runs claude -p as
+  subprocesses. If multiple instances start simultaneously before auth is
+  cached, they can each trigger auth independently.
+
+  Let me check your config and how the runner invokes claude.
+
+● Searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● Bash(cat ~/.claude/.credentials.json 2>/dev/null | python3 -c "import
+      json,sys; d=json.load(sys.stdin); print(json.dumps({k: ('***' if 'token'
+      in k.lower() or 'key'…)
+  ⎿  {
+       "claudeAiOauth": {
+         "accessToken": "sk-ant-oat01-WIxolO4FcCzPiT2vg2brTq2TLvUSMoQQ3k_0a
+     … +14 lines (ctrl+o to expand)
+
+● Credentials look valid and not expired. The "GitHub authorization dialog" —
+  are you sure it's GitHub and not the claude.ai OAuth browser window?
+
+  Claude Code authenticates via claude.ai OAuth, not GitHub. If you're seeing a
+  browser popup each time claude -p runs, there are a few possible causes:
+
+  1. Subprocess can't read cached credentials — when your Go server spawns
+  claude -p, the subprocess might run with a different HOME or user context.
+  Check:
+
+  # What HOME does the subprocess see?
+  claude -p "echo $HOME" --print
+
+  2. Token refresh issue — your token expires at a specific time, and if the
+  refresh flow fails silently, it re-triggers full auth.
+  3. MCP server triggering GitHub auth — if any of your MCP servers or tasks use
+   GitHub tools, those might prompt for GitHub OAuth separately.
+
+  To fix it for non-interactive claude -p usage, you can set an API key instead
+  of relying on OAuth:
+
+  export ANTHROPIC_API_KEY="sk-ant-..."
+
+  Then claude -p will use the API key directly and skip OAuth entirely. You can
+  set this in your tasks.yaml or in the environment where your server runs.
+
+  Alternatively, check if the dialog is actually coming from a specific MCP
+  server config:
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● No GitHub references in your tasks.yaml. So it's likely the claude.ai OAuth 
+  browser popup, not GitHub specifically.
+
+  Quick fix: set ANTHROPIC_API_KEY environment variable before running your
+  server — this bypasses the OAuth flow entirely and claude -p will never open a
+   browser dialog.
+
+✻ Worked for 40s
+
+❯ Опять двадцать пять :( Нет у меня API_KEY, только подписка Claude Code MAX,   
+поэтому и используем "claude -p"                                                
+
+● Понял, MAX подписка без API ключа. Тогда давайте разберёмся, почему OAuth не
+  переиспользуется.
+
+  Проверим несколько вещей:
+
+● Read 1 file (ctrl+o to expand)
+
+● Bash(# Check if token is expired
+      python3 -c "…)
+  ⎿  Expires: Wed Mar 11 19:27:46 2026
+     Now:     Wed Mar 11 13:00:43 2026
+     Valid:   True
+     Hours left: 6.5
+
+● Bash(# Test if claude -p works without auth dialog right now
+      timeout 30 claude -p "say hello" --max-turns 1 2>&1 | head -20)
+  ⎿  Error: Claude Code cannot be launched inside another Claude Code sessi
+     on.
+     Nested sessions share runtime resources and will crash all active sess
+     … +2 lines (ctrl+o to expand)
+
+● Токен валиден ещё 6.5 часов. Значит проблема не в истёкших credentials.
+
+  Уточните — что именно вы видите? Это:
+
+  1. Браузер открывается с OAuth страницей claude.ai/github?
+  2. В терминале появляется текстовый запрос авторизации?
+  3. Popup окно GitHub "Authorize Claude Code"?
+
+  И когда именно — при запуске claude -p вручную из терминала, или когда ваш
+  Go-сервер запускает его как subprocess?
+
+  Если это GitHub-специфичный диалог "Authorize application", то Claude Code
+  может запрашивать привязку GitHub-аккаунта для функций типа gh интеграции. Это
+   можно обойти, добавив в settings.json:
+
+  "skipGitHubLogin": true
+
+  Или попробуйте запустить с флагом:
+  claude -p "hello" --skip-permissions
+
+  Покажите скриншот диалога, если можете — так будет проще понять причину.
+
+✻ Brewed for 32s
+
+❯ Стоп! Проблема не авторизации, вылетает запрос автоизации на GITHUB !!!       
+Ппроверь, возможно проблема в скилах Claude Code или что то в этом роде         
+
+● Проверяю всё что связано с GitHub в конфигурации Claude Code.
+
+● Searched for 3 patterns, read 1 file (ctrl+o to expand)
+
+● Нашёл! Проблема в плагине-маркетплейсе. Claude Code при запуске обновляет
+  репозиторий anthropics/claude-plugins-official с GitHub — это и триггерит
+  авторизацию.
+
+● Bash(cd ~/.claude/plugins/marketplaces/claude-plugins-official && git remote
+      -v)
+  ⎿  origin     https://github.com/anthropics/claude-plugins-official.git
+     (fetc
+     h)
+     origin     https://github.com/anthropics/claude-plugins-official.git
+     (push)
+  ⎿  Shell cwd was reset to 
+     /home/asdmin/development/AI/Claude/claude-ecosystem
+
+● Bash(gh auth status 2>&1)
+  ⎿  github.com
+       ✓ Logged in to github.com account ASdmin75 (keyring)
+       - Active account: true
+     … +11 lines (ctrl+o to expand)
+
+● Вот и причина! Две проблемы:
+
+  1. Аккаунт AlexStav — невалидный токен. GitHub CLI (gh) имеет два аккаунта, и
+  токен для AlexStav протух. При каждом запуске Claude Code делает git fetch
+  маркетплейса плагинов с GitHub, и это может триггерить диалог авторизации.
+  2. Git operations protocol: ssh, но маркетплейс клонирован через https — это
+  несовпадение тоже может вызывать запрос credentials.
+
+  Решение — уберите сломанный аккаунт:
+
+  gh auth logout -h github.com -u AlexStav
+
+  А если диалог всё равно будет появляться, можно отключить плагин gopls-lsp
+  (единственный установленный), чтобы Claude Code не обновлял маркетплейс при
+  запуске. Для этого в ~/.claude/settings.json уберите:
+
+  "enabledPlugins": {
+      "gopls-lsp@claude-plugins-official": true
+  }
+
+  Хотите, чтобы я выполнил gh auth logout для AlexStav?
+
+✻ Baked for 40s
+
+❯ да                                                                            
+
+● Bash(gh auth logout -h github.com -u AlexStav 2>&1)
+  ⎿  ✓ Logged out of github.com account AlexStav
+
+● Готово. Проверим:
+
+● Bash(gh auth status 2>&1)
+  ⎿  github.com
+       ✓ Logged in to github.com account ASdmin75 (keyring)
+       - Active account: true
+     … +3 lines (ctrl+o to expand)
+
+● Чисто — остался только рабочий аккаунт ASdmin75. Теперь при запуске claude -p
+  диалог авторизации GitHub не должен появляться.

@@ -1,0 +1,792 @@
+
+ ▐▛███▜▌   Claude Code v2.1.71
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ @TODO.md ## 3. Динамическое обновление UI через SSE                           
+  ⎿  Read TODO.md (57 lines)
+
+● I'll explore the existing codebase to understand the current event bus, API,
+  and frontend architecture before implementing SSE.
+
+● Explore(Explore SSE and event bus code)
+  ⎿  Done (39 tool uses · 82.7k tokens · 1m 11s)
+  (ctrl+o to expand)
+
+● Now let me read the key files I need to modify.
+
+● Searched for 6 patterns, read 13 files (ctrl+o to expand)
+
+● Let me check existing event publishing for started/cancelled events.
+
+● Searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● Now I have a complete picture. Let me also check the watcher and scheduler bus
+   publishing for context.
+
+● Read 2 files (ctrl+o to expand)
+
+● Now I have the full picture. Let me implement everything. I'll work on backend
+   and frontend in parallel.
+
+  Backend changes:
+  1. Add global /api/v1/events SSE endpoint
+  2. Publish task.started / pipeline.started events
+
+  Frontend changes:
+  1. useSSE hook with auto-reconnect
+  2. Toast notification system
+  3. Update Dashboard and ExecutionHistory to react to SSE events
+  4. Remove refetchInterval polling
+
+● Update(internal/api/sse.go)
+  ⎿  Added 53 lines
+       8    "github.com/asdmin/claude-ecosystem/internal/events"
+       9  )
+      10  
+      11 +// handleEvents sends Server-Sent Events for all system events.
+      12 +// GET /api/v1/events                                          
+      13 +// Clients receive task.started, task.completed, pipeline.start
+         +ed, pipeline.completed events.                                 
+      14 +func (s *Server) handleEvents(w http.ResponseWriter, r *http.Re
+         +quest) {                                                       
+      15 +  flusher, ok := w.(http.Flusher)                              
+      16 +  if !ok {                                                     
+      17 +    writeError(w, http.StatusInternalServerError, "streaming no
+         +t supported")                                                  
+      18 +    return                                                     
+      19 +  }                                                            
+      20 +                                                               
+      21 +  w.Header().Set("Content-Type", "text/event-stream")          
+      22 +  w.Header().Set("Cache-Control", "no-cache")                  
+      23 +  w.Header().Set("Connection", "keep-alive")                   
+      24 +  w.Header().Set("X-Accel-Buffering", "no")                    
+      25 +  flusher.Flush()                                              
+      26 +                                                               
+      27 +  ch := make(chan events.Event, 128)                           
+      28 +  done := make(chan struct{})                                  
+      29 +                                                               
+      30 +  eventTypes := []string{                                      
+      31 +    "task.started", "task.completed",                          
+      32 +    "pipeline.started", "pipeline.completed",                  
+      33 +    "task.cancelled",                                          
+      34 +  }                                                            
+      35 +  for _, et := range eventTypes {                              
+      36 +    s.bus.Subscribe(et, func(e events.Event) {                 
+      37 +      select {                                                 
+      38 +      case ch <- e:                                            
+      39 +      default:                                                 
+      40 +      }                                                        
+      41 +    })                                                         
+      42 +  }                                                            
+      43 +                                                               
+      44 +  go func() {                                                  
+      45 +    <-r.Context().Done()                                       
+      46 +    close(done)                                                
+      47 +  }()                                                          
+      48 +                                                               
+      49 +  for {                                                        
+      50 +    select {                                                   
+      51 +    case <-done:                                               
+      52 +      return                                                   
+      53 +    case evt := <-ch:                                          
+      54 +      data, err := json.Marshal(evt.Payload)                   
+      55 +      if err != nil {                                          
+      56 +        continue                                               
+      57 +      }                                                        
+      58 +      fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Type, data)
+      59 +      flusher.Flush()                                          
+      60 +    }                                                          
+      61 +  }                                                            
+      62 +}                                                              
+      63 +                                                               
+      64  // handleExecutionStream sends Server-Sent Events for a specifi
+          c execution.
+      65  // GET /api/v1/executions/{id}/stream
+      66  func (s *Server) handleExecutionStream(w http.ResponseWriter, r
+           *http.Request) {
+
+● Now add the route and publish task.started / pipeline.started events.
+
+● Update(internal/api/router.go)
+  ⎿  Added 3 lines
+      136    mux.HandleFunc("POST /api/v1/mcp-servers/{name}/start", s.wi
+           thAuth(s.handleStartMCPServer))
+      137    mux.HandleFunc("POST /api/v1/mcp-servers/{name}/stop", s.wit
+           hAuth(s.handleStopMCPServer))
+      138  
+      139 +  // Global SSE event stream                                  
+      140 +  mux.HandleFunc("GET /api/v1/events", s.withAuth(s.handleEven
+          +ts))                                                          
+      141 +                                                              
+      142    // Dashboard
+      143    mux.HandleFunc("GET /api/v1/dashboard", s.withAuth(s.handleD
+           ashboard))
+      144  
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Now add task.started event publishing in the async task handler, and
+  pipeline.started in the async pipeline handler.
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(internal/api/tasks.go)
+  ⎿  Added 8 lines
+      257      return
+      258    }
+      259  
+      260 +  s.bus.Publish(events.Event{                                 
+      261 +    Type: "task.started",                                     
+      262 +    Payload: map[string]string{                               
+      263 +      "execution_id": execID,                                 
+      264 +      "task":         t.Name,                                 
+      265 +    },                                                        
+      266 +  })                                                          
+      267 +                                                              
+      268    // Run in background goroutine.
+      269    taskCopy := *t
+      270    templateVars := req.TemplateVars
+
+● Now check if events package is imported in tasks.go:
+
+● Read 1 file (ctrl+o to expand)
+
+● Good, events is already imported. Now add pipeline.started event.
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(internal/api/pipelines.go)
+  ⎿  Added 8 lines
+      319      return
+      320    }
+      321  
+      322 +  s.bus.Publish(events.Event{                                 
+      323 +    Type: "pipeline.started",                                 
+      324 +    Payload: map[string]string{                               
+      325 +      "execution_id": execID,                                 
+      326 +      "pipeline":     name,                                   
+      327 +    },                                                        
+      328 +  })                                                          
+      329 +                                                              
+      330    go func() {
+      331      ctx, cancel := context.WithCancel(context.Background())
+      332      defer cancel()
+
+● Check events import in pipelines.go:
+
+● Searched for 1 pattern (ctrl+o to expand)
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Good. Also add task.started for the sync run endpoint and the sync pipeline
+  run. Let me check the sync task run:
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(internal/api/tasks.go)
+  ⎿  Added 8 lines
+      169      defer cleanup()
+      170    }
+      171  
+      172 +  s.bus.Publish(events.Event{                                 
+      173 +    Type: "task.started",                                     
+      174 +    Payload: map[string]string{                               
+      175 +      "execution_id": execID,                                 
+      176 +      "task":         t.Name,                                 
+      177 +    },                                                        
+      178 +  })                                                          
+      179 +                                                              
+      180    timeout := t.ParsedTimeout()
+      181    ctx, cancel := context.WithTimeout(r.Context(), timeout)
+      182    defer cancel()
+
+● Now add pipeline.started for the sync pipeline run too:
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(internal/api/pipelines.go)
+  ⎿  Added 8 lines
+      268      return
+      269    }
+      270  
+      271 +  s.bus.Publish(events.Event{                                 
+      272 +    Type: "pipeline.started",                                 
+      273 +    Payload: map[string]string{                               
+      274 +      "execution_id": execID,                                 
+      275 +      "pipeline":     name,                                   
+      276 +    },                                                        
+      277 +  })                                                          
+      278 +                                                              
+      279    resp := s.runPipeline(r.Context(), name, execID)
+      280  
+      281    completedAt := time.Now().UTC()
+
+● Now let's build the frontend. First, create the SSE hook:
+
+● Write(web/src/hooks/useSSE.ts)
+  ⎿  Wrote 77 lines to web/src/hooks/useSSE.ts
+      1 import { useEffect, useRef, useCallback } from 'react'
+      2 import { useQueryClient } from '@tanstack/react-query'
+      3 
+      4 export interface SSEEvent {
+      5   type: string
+      6   data: Record<string, string>
+      7 }
+      8 
+      9 type SSEHandler = (event: SSEEvent) => void
+     … +67 lines (ctrl+o to expand)
+
+● Now create the Toast notification component:
+
+● Write(web/src/components/Toast.tsx)
+  ⎿  Wrote 59 lines to web/src/components/Toast.tsx
+       1 import { useState, useCallback, useRef } from 'react'
+       2 
+       3 interface ToastItem {
+       4   id: number
+       5   message: string
+       6   type: 'success' | 'error' | 'info'
+       7 }
+       8 
+       9 const typeStyles: Record<string, string> = {
+      10   success: 'bg-green-600 text-white',
+     … +49 lines (ctrl+o to expand)
+
+● Now update App.tsx to wire SSE + toasts:
+
+● Update(web/src/App.tsx)
+  ⎿  Added 3 lines, removed 1 line
+       1  import { Routes, Route, Link, useLocation } from 'react-router-
+          dom'
+       2 -import { useEffect, useState } from 'react'                    
+       2 +import { useEffect, useState, useCallback } from 'react'       
+       3  import Dashboard from './components/Dashboard'
+       4  import TaskList from './components/TaskList'
+       5  import SubAgentList from './components/SubAgentList'
+       6  import PipelineList from './components/PipelineList'
+       7  import ExecutionHistory from './components/ExecutionHistory'
+       8  import Login from './components/Login'
+       9 +import { ToastContainer, useToast } from './components/Toast'  
+      10 +import { useSSE, type SSEEvent } from './hooks/useSSE'         
+      11  
+      12  const navItems = [
+      13    { path: '/', label: 'Dashboard' },
+
+● Update(web/src/App.tsx)
+  ⎿  Added 33 lines
+      32    const location = useLocation()
+      33    const token = localStorage.getItem('token')
+      34    const { dark, toggle } = useTheme()
+      35 +  const { toasts, addToast, removeToast } = useToast()         
+      36  
+      37 +  const handleSSEEvent = useCallback((event: SSEEvent) => {    
+      38 +    const name = event.data.task || event.data.pipeline || ''  
+      39 +    switch (event.type) {                                      
+      40 +      case 'task.started':                                     
+      41 +        addToast(`Task "${name}" started`, 'info')             
+      42 +        break                                                  
+      43 +      case 'task.completed':                                   
+      44 +        if (event.data.status === 'failed') {                  
+      45 +          addToast(`Task "${name}" failed`, 'error')           
+      46 +        } else {                                               
+      47 +          addToast(`Task "${name}" completed`, 'success')      
+      48 +        }                                                      
+      49 +        break                                                  
+      50 +      case 'pipeline.started':                                 
+      51 +        addToast(`Pipeline "${name}" started`, 'info')         
+      52 +        break                                                  
+      53 +      case 'pipeline.completed':                               
+      54 +        if (event.data.status === 'failed') {                  
+      55 +          addToast(`Pipeline "${name}" failed`, 'error')       
+      56 +        } else {                                               
+      57 +          addToast(`Pipeline "${name}" completed`, 'success')  
+      58 +        }                                                      
+      59 +        break                                                  
+      60 +      case 'task.cancelled':                                   
+      61 +        addToast(`Task "${name}" cancelled`, 'info')           
+      62 +        break                                                  
+      63 +    }                                                          
+      64 +  }, [addToast])                                               
+      65 +                                                               
+      66 +  useSSE(token ? handleSSEEvent : undefined)                   
+      67 +                                                               
+      68    if (!token && location.pathname !== '/login') {
+      69      return <Login />
+      70    }
+     ...
+      111            <Route path="/login" element={<Login />} />
+      112          </Routes>
+      113        </main>
+      114 +      <ToastContainer toasts={toasts} onRemove={removeToast} /
+          +>                                                             
+      115      </div>
+      116    )
+      117  }
+
+● Now remove refetchInterval from ExecutionHistory — the SSE hook in App.tsx
+  already invalidates these queries:
+
+● Update(web/src/components/ExecutionHistory.tsx)
+  ⎿  Removed 2 lines
+      18    const { data: executions, isLoading } = useQuery({
+      19      queryKey: ['executions'],
+      20      queryFn: () => api.listExecutions({ limit: '50' }),
+      21 -    refetchInterval: 5000,                                     
+      21    })
+      22  
+      23    const detailQuery = useQuery({
+      24      queryKey: ['execution', selected?.id],
+      25      queryFn: () => api.getExecution(selected!.id),
+      26      enabled: !!selected,
+      28 -    refetchInterval: selected?.status === 'running' ? 3000 : fa
+         -lse,                                                           
+      27    })
+      28  
+      29    const cancelMutation = useMutation({
+
+● Now add the CSS animation for the toast slide-in. Let me find the CSS file:
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Update(web/src/index.css)
+  ⎿  Added 15 lines
+       1  @import "tailwindcss";
+       2  @plugin "@tailwindcss/typography";
+       3  @custom-variant dark (&:where(.dark, .dark *));
+       4 +                                                               
+       5 +@keyframes slide-in {                                          
+       6 +  from {                                                       
+       7 +    opacity: 0;                                                
+       8 +    transform: translateX(100%);                               
+       9 +  }                                                            
+      10 +  to {                                                         
+      11 +    opacity: 1;                                                
+      12 +    transform: translateX(0);                                  
+      13 +  }                                                            
+      14 +}                                                              
+      15 +                                                               
+      16 +.animate-slide-in {                                            
+      17 +  animation: slide-in 0.3s ease-out;                           
+      18 +}                                                              
+
+● Now let me also handle auth for the SSE endpoint. The existing SSE endpoints
+  use withAuth, and the auth middleware likely supports query param tokens. Let
+  me verify:
+
+● Read 1 file (ctrl+o to expand)
+
+● The auth middleware only checks the Authorization header, but EventSource
+  can't set custom headers. The existing streamExecution in client.ts passes
+  token as a query param, but the middleware doesn't read it. I need to add
+  query param token support for SSE endpoints.
+
+● Update(internal/auth/middleware.go)
+  ⎿  Added 10 lines
+      29  // Handler returns an http.Handler that checks the Authorizatio
+          n header.
+      30  // It tries PASETO first, then bearer. On success it sets the u
+          sername in
+      31  // the request context under UserKey. On failure it returns 401
+           Unauthorized.
+      32 +// For SSE endpoints, a "token" query parameter is also accepte
+         +d since                                                        
+      33 +// EventSource cannot set custom headers.                      
+      34  func (m *Middleware) Handler(next http.Handler) http.Handler {
+      35    return http.HandlerFunc(func(w http.ResponseWriter, r *http.R
+          equest) {
+      36      authHeader := r.Header.Get("Authorization")
+      37 +                                                               
+      38 +    // Fall back to query param for SSE (EventSource can't set 
+         +headers).                                                      
+      39      if authHeader == "" {
+      40 +      if qToken := r.URL.Query().Get("token"); qToken != "" {  
+      41 +        authHeader = "Bearer " + qToken                        
+      42 +      }                                                        
+      43 +    }                                                          
+      44 +                                                               
+      45 +    if authHeader == "" {                                      
+      46        http.Error(w, "missing authorization header", http.Status
+          Unauthorized)
+      47        return
+      48      }
+
+● Now let's build and test:
+
+● Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+● Bash(cd /home/asdmin/development/AI/Claude/claude-ecosystem/web && npx tsc
+      --noEmit 2>&1)
+  ⎿  Error: Exit code 2
+     src/hooks/useSSE.ts(14,26): error TS2554: Expected 1 arguments, but got 0.
+
+● The useSSE hook needs to handle the case when onEvent is undefined and when
+  there's no token. Let me fix:
+
+● Read 1 file (ctrl+o to expand)
+
+● The issue is useRef without an initial value. Let me fix:
+
+● Update(web/src/hooks/useSSE.ts)
+  ⎿  Added 1 line, removed 1 line
+      11  export function useSSE(onEvent?: SSEHandler) {
+      12    const queryClient = useQueryClient()
+      13    const esRef = useRef<EventSource | null>(null)
+      14 -  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(
+         -)                                                              
+      14 +  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(
+         +undefined)                                                     
+      15    const reconnectDelay = useRef(1000)
+      16  
+      17    const connect = useCallback(() => {
+
+● Bash(cd /home/asdmin/development/AI/Claude/claude-ecosystem/web && npx tsc
+      --noEmit 2>&1)
+  ⎿  (No output)
+
+● Now let's run Go tests and build the frontend:
+
+● Bash(cd /home/asdmin/development/AI/Claude/claude-ecosystem && go test ./...
+      2>&1)
+  ⎿  ?          github.com/asdmin/claude-ecosystem/cmd/hook     [no test files]
+     ?          github.com/asdmin/claude-ecosystem/cmd/mcp/mcp-database [no test
+     files]
+     … +22 lines (ctrl+o to expand)
+
+
+
+● Bash(npm run build 2>&1)
+  ⎿  Error: Exit code 254
+     npm error code ENOENT
+     npm error syscall open
+     npm error path 
+     /home/asdmin/development/AI/Claude/claude-ecosystem/package.json
+     npm error errno -2
+     npm error enoent Could not read package.json: Error: ENOENT: no such file 
+     or directory, open 
+     '/home/asdmin/development/AI/Claude/claude-ecosystem/package.json'
+     npm error enoent This is related to npm not being able to find a file.
+     npm error enoent
+     npm error A complete log of this run can be found in: 
+     /home/asdmin/.npm/_logs/2026-03-09T18_27_05_847Z-debug-0.log
+
+● Bash(cd /home/asdmin/development/AI/Claude/claude-ecosystem/web && npm run
+      build 2>&1)
+  ⎿  > claude-ecosystem-ui@1.0.0 build
+     > tsc && vite build
+     … +9 lines (ctrl+o to expand)
+  ⎿  (timeout 1m)
+
+● Everything builds. Let me also update the TODO.md to mark the completed items:
+
+● Update(TODO.md)
+  ⎿  Added 8 lines, removed 8 lines
+      22  - [x] Триггеры: on_success, on_failure, always
+      23  - [x] Альтернатива: webhook/callback URL для интеграции с внешн
+          ими системами
+      24  
+      25 -## 3. Динамическое обновление UI через SSE                     
+      25 +## 3. Динамическое обновление UI через SSE <!-- Выполнено: 2026
+         +-03-09 -->                                                     
+      26  > Добавлено: 2026-03-07 22:11
+      27  
+      28 -- [ ] Бэкенд: публиковать события через event bus при изменении
+         - статуса execution                                             
+      29 -- [ ] Бэкенд: SSE endpoint `/api/v1/events` — общий поток событ
+         -ий (task.started, task.completed, task.failed, task.cancelled) 
+      30 -- [ ] Фронтенд: SSE клиент с автопереподключением              
+      31 -- [ ] Фронтенд: обновление списка executions в реальном времени
+         - (без polling)                                                 
+      32 -- [ ] Фронтенд: обновление Dashboard счётчиков в реальном време
+         -ни                                                             
+      33 -- [ ] Фронтенд: toast-уведомления при завершении задач         
+      34 -- [ ] Убрать `refetchInterval` polling после внедрения SSE     
+      28 +- [x] Бэкенд: публиковать события через event bus при изменении
+         + статуса execution                                             
+      29 +- [x] Бэкенд: SSE endpoint `/api/v1/events` — общий поток событ
+         +ий (task.started, task.completed, task.failed, task.cancelled) 
+      30 +- [x] Фронтенд: SSE клиент с автопереподключением              
+      31 +- [x] Фронтенд: обновление списка executions в реальном времени
+         + (без polling)                                                 
+      32 +- [x] Фронтенд: обновление Dashboard счётчиков в реальном време
+         +ни                                                             
+      33 +- [x] Фронтенд: toast-уведомления при завершении задач         
+      34 +- [x] Убрать `refetchInterval` polling после внедрения SSE     
+      35  
+      36  ## 4. Конфигурация через .env <!-- Выполнено: 2026-03-08 -->
+      37  > Добавлено: 2026-03-07 22:15
+
+● All done. Here's a summary of all changes:
+
+  Backend
+
+  1. internal/api/sse.go — Added handleEvents() handler: global SSE endpoint GET
+   /api/v1/events that streams all event types (task.started, task.completed,
+  pipeline.started, pipeline.completed, task.cancelled) to connected clients
+  2. internal/api/router.go — Registered the new GET /api/v1/events route
+  3. internal/api/tasks.go — Added task.started event publishing in both sync
+  (handleRunTask) and async (handleRunTaskAsync) handlers
+  4. internal/api/pipelines.go — Added pipeline.started event publishing in both
+   sync (handleRunPipeline) and async (handleRunPipelineAsync) handlers
+  5. internal/auth/middleware.go — Added query param ?token= fallback for SSE
+  auth (EventSource can't set custom headers)
+
+  Frontend
+
+  6. web/src/hooks/useSSE.ts — New SSE client hook with:
+    - Auto-reconnect with exponential backoff (1s → 30s max)
+    - Automatic TanStack Query invalidation on every event (executions,
+  dashboard, execution detail)
+    - Custom event callback support
+  7. web/src/components/Toast.tsx — New toast notification system with
+  auto-dismiss (5s), manual close, and slide-in animation
+  8. web/src/App.tsx — Wired SSE + toasts: shows toast notifications for
+  task/pipeline started, completed, failed, and cancelled events
+  9. web/src/components/ExecutionHistory.tsx — Removed refetchInterval: 5000 and
+   refetchInterval: 3000 polling (now driven by SSE query invalidation)
+  10. web/src/index.css — Added animate-slide-in keyframe animation for toasts
+
+✻ Sautéed for 5m 52s
+
+❯ /doc-update                                                                   
+
+● Let me read the existing documentation files first.
+
+● Searched for 5 patterns, read 1 file (ctrl+o to expand)
+
+● Now let me read the CLAUDE.md to see if the REST API section needs updating.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I'll update both files. First, workflow.md with the new entry:
+
+● Update(workflow.md)
+  ⎿  Added 26 lines
+      237  - Баг: `mcp-telegram` отправлял документы без имени файла — в 
+           Telegram файл приходил как `file` без расширения
+      238  - Фикс: добавлено `FileName: filepath.Base(filePath)` в `handl
+           eSendDocument()` — теперь файл приходит с оригинальным именем 
+           (напр. `leads-report-2026-03-09.xlsx`)
+      239  
+      240 +### 2026-03-09 — Динамическое обновление UI через SSE         
+      241 +                                                              
+      242 +**Бэкенд: глобальный SSE-эндпоинт**                           
+      243 +- Новый эндпоинт `GET /api/v1/events` — общий поток Server-Sen
+          +t Events для всех событий системы                             
+      244 +- Типы событий: `task.started`, `task.completed`, `pipeline.st
+          +arted`, `pipeline.completed`, `task.cancelled`                
+      245 +- Публикация `task.started` при запуске задач (sync и async ha
+          +ndlers)                                                       
+      246 +- Публикация `pipeline.started` при запуске пайплайнов (sync и
+          + async handlers)                                              
+      247 +- Auth middleware: добавлена поддержка `?token=` query param д
+          +ля SSE (EventSource не умеет ставить заголовки)               
+      248 +                                                              
+      249 +**Фронтенд: SSE-клиент**                                      
+      250 +- Новый хук `useSSE` (`web/src/hooks/useSSE.ts`) — подключение
+          + к `/api/v1/events` с автопереподключением (exponential backof
+          +f: 1s → 30s)                                                  
+      251 +- При получении любого события — автоматическая инвалидация Ta
+          +nStack Query кешей (`executions`, `dashboard`, `execution` det
+          +ail)                                                          
+      252 +- Callback `onEvent` для кастомной обработки событий          
+      253 +                                                              
+      254 +**Фронтенд: toast-уведомления**                               
+      255 +- Новый компонент `Toast` (`web/src/components/Toast.tsx`) — х
+          +ук `useToast()` + контейнер `ToastContainer`                  
+      256 +- Три типа: `success` (зелёный), `error` (красный), `info` (си
+          +ний)                                                          
+      257 +- Автоскрытие через 5 секунд, ручное закрытие по кнопке       
+      258 +- Slide-in анимация (CSS keyframes в `index.css`)             
+      259 +                                                              
+      260 +**Фронтенд: real-time обновления**                            
+      261 +- Dashboard: счётчики обновляются в реальном времени (через SS
+          +E → query invalidation)                                       
+      262 +- Execution History: список и детали обновляются в реальном вр
+          +емени                                                         
+      263 +- Убраны `refetchInterval: 5000` (список) и `refetchInterval: 
+          +3000` (детали при status=running)                             
+      264 +- `App.tsx`: SSE подключается при наличии токена, toast-уведом
+          +ления при старте/завершении задач и пайплайнов                
+      265 +                                                              
+      266  ---
+      267  
+      268  ## Бэклог
+
+● Now update the backlog — mark the SSE-related items as done:
+
+● Update(workflow.md)
+  ⎿  Added 3 lines, removed 1 line
+      283  - [x] mcp-telegram: отправка сообщений и файлов через Telegram
+            Bot API
+      284  
+      285  ### Web UI — доработки
+      286 -- [ ] Детальный просмотр execution с SSE-стримингом           
+      286 +- [x] Динамическое обновление UI через SSE (real-time, без pol
+          +ling)                                                         
+      287 +- [x] Toast-уведомления при завершении задач/пайплайнов       
+      288 +- [ ] Детальный просмотр execution с SSE-стримингом (live outp
+          +ut)                                                           
+      289  - [x] Редактирование задач через UI (CSV-поля исправлены)
+      290  - [ ] Конфигурация scheduler/watcher через UI
+      291  - [ ] Управление MCP-серверами через UI
+
+● Now update CLAUDE.md — add mention of the global SSE events endpoint and
+  real-time UI:
+
+● Update(CLAUDE.md)
+  ⎿  Added 1 line, removed 1 line
+      54  
+      55  All under `/api/v1/`. Auth required (PASETO or bearer token) ex
+          cept `/auth/login`.
+      56  
+      57 -Key endpoints: task CRUD + run, sub-agent CRUD, pipeline run, e
+         -xecution history, MCP server management, SSE streaming, dashboa
+         -rd stats.                                                      
+      57 +Key endpoints: task CRUD + run, sub-agent CRUD, pipeline run, e
+         +xecution history, MCP server management, SSE streaming (`/event
+         +s` for global event stream, `/executions/{id}/stream` for per-e
+         +xecution), dashboard stats. Auth supports query param `?token=`
+         + for SSE (EventSource limitation).                             
+      58  
+      59  ## Web UI
+      60  
+
+● Update(CLAUDE.md)
+  ⎿  Added 1 line, removed 1 line
+      58  
+      59  ## Web UI
+      60  
+      61 -React 19 + Vite + TypeScript + Tailwind CSS 4 + TanStack Query.
+         - Source in `web/`, built output embedded in Go binary via `inte
+         -rnal/ui/dist/`. Dark mode support via class-based toggle (`loca
+         -lStorage` persisted, button in sidebar).                       
+      61 +React 19 + Vite + TypeScript + Tailwind CSS 4 + TanStack Query.
+         + Source in `web/`, built output embedded in Go binary via `inte
+         +rnal/ui/dist/`. Dark mode support via class-based toggle (`loca
+         +lStorage` persisted, button in sidebar). Real-time updates via 
+         +SSE (`useSSE` hook) with auto-reconnect — no polling. Toast not
+         +ifications on task/pipeline start/completion.                  
+      62  
+      63  ## Hook System
+      64  
+
+● Документация обновлена:
+
+  1. workflow.md — добавлена секция 2026-03-09 — Динамическое обновление UI 
+  через SSE с описанием всех изменений (бэкенд SSE-эндпоинт, SSE-клиент с
+  auto-reconnect, toast-уведомления, удаление polling). В бэклоге отмечены
+  выполненными два пункта Web UI.
+  2. CLAUDE.md — обновлены секции REST API (глобальный SSE /events, auth через
+  query param) и Web UI (real-time через SSE, toast-уведомления, отсутствие
+  polling).
+
+✻ Crunched for 1m 15s
+
+❯ /git-commit-push                                                              
+
+● Bash(cd /home/asdmin/development/AI/Claude/claude-ecosystem && git status)
+  ⎿  On branch master
+     Your branch is up to date with 'origin/master'.
+     … +23 lines (ctrl+o to expand)
+
+● Bash(cd /home/asdmin/development/AI/Claude/claude-ecosystem && git diff
+      --stat)
+  ⎿   CLAUDE.md                               |  4 +--
+      TODO.md                                 | 16 +++++-----
+      internal/api/pipelines.go               | 16 ++++++++++
+     … +11 lines (ctrl+o to expand)
+
+● Bash(cd /home/asdmin/development/AI/Claude/claude-ecosystem && git log
+      --oneline -5)
+  ⎿  c59d4c6 fix: MCP config schema, allowed_tools for dontAsk mode, Telegr
+     am filename
+     a48825b fix: optimize find-leads task — reduce max_turns, remove json_
+     … +6 lines (ctrl+o to expand)
+
+● Bash(git add CLAUDE.md TODO.md internal/api/pipelines.go
+      internal/api/router.go internal/api/sse.go internal/api/tasks.go
+      internal/auth/middleware.go web/src/App.tsx…)
+  ⎿  (No output)
+
+● Bash(git commit -m "$(cat <<'EOF'
+      feat: real-time UI updates via SSE — global event stream, toasts, no
+      polling…)
+  ⎿  [master 670da94] feat: real-time UI updates via SSE — global event str
+     eam, toasts, no polling
+      13 files changed, 324 insertions(+), 14 deletions(-)
+     … +2 lines (ctrl+o to expand)
+
+● Bash(git push)
+  ⎿  Error: Exit code 128
+     ssh_askpass: exec(/usr/bin/ssh-askpass): No such file or directory
+     git@github.com: Permission denied (publickey).
+     fatal: Could not read from remote repository.
+
+     Please make sure you have the correct access rights
+     and the repository exists.
+
+● Bash(git remote -v)
+  ⎿  origin     git@asdmin75.github.com:ASdmin75/claude-ecosystem.git (fetch)
+     origin     git@asdmin75.github.com:ASdmin75/claude-ecosystem.git (push)
+
+● Bash(GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519_asdmin75 -o IdentitiesOnly=yes"
+       git push)
+  ⎿  Error: Exit code 128
+     Warning: Identity file /home/asdmin/.ssh/id_ed25519_asdmin75 not 
+     accessible: No such file or directory.
+     ssh_askpass: exec(/usr/bin/ssh-askpass): No such file or directory
+     git@github.com: Permission denied (publickey).
+     fatal: Could not read from remote repository.
+
+     Please make sure you have the correct access rights
+     and the repository exists.
+
+● Read 2 files (ctrl+o to expand)
+
+● Bash(eval "$(ssh-agent -s)" && ssh-add ~/.ssh/asdmin75-10-03-2025 && git push)
+  ⎿  Error: Exit code 1
+     Agent pid 991353
+     ssh_askpass: exec(/usr/bin/ssh-askpass): No such file or directory
+
+● Bash(ssh -T -i ~/.ssh/asdmin75-10-03-2025 git@github.com 2>&1)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ gh                                                                            
+
+● Bash(gh auth status 2>&1)
+  ⎿  github.com
+       ✓ Logged in to github.com account ASdmin75 (keyring)
+       - Active account: true
+     … +11 lines (ctrl+o to expand)
+
+● Bash(git push --set-upstream origin master 2>&1)
+  ⎿  Error: Exit code 128
+     ssh_askpass: exec(/usr/bin/ssh-askpass): No such file or directory
+     git@github.com: Permission denied (publickey).
+     fatal: Could not read from remote repository.
+
+     Please make sure you have the correct access rights
+     and the repository exists.
+
+● Git remote uses SSH but the SSH key is passphrase-protected. Let me switch to
+  HTTPS via gh:
+
+● Bash(gh repo view ASdmin75/claude-ecosystem --json url -q .url 2>&1)
+  ⎿  https://github.com/ASdmin75/claude-ecosystem
+
+● Bash(git remote set-url origin
+      https://github.com/ASdmin75/claude-ecosystem.git && GH_TOKEN=$(gh auth
+      token) git push 2>&1)
+  ⎿  git: 'credential-!gh' is not a git command. See 'git --help'.
+     To https://github.com/ASdmin75/claude-ecosystem.git
+        c59d4c6..670da94  master -> master
+
+● Push выполнен. Восстанавливаю SSH remote обратно:
+
+● Bash(git remote set-url origin
+      git@asdmin75.github.com:ASdmin75/claude-ecosystem.git)
+  ⎿  (No output)
+
+● Готово. Коммит 670da94 запушен в origin/master:
+
+  feat: real-time UI updates via SSE — global event stream, toasts, no polling

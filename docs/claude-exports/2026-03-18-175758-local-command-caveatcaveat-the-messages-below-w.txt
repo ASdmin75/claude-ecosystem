@@ -1,0 +1,633 @@
+ ▐▛███▜▌   Claude Code v2.1.78
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯  У нас реализован вариант pipeline дял A2A. Есть ли возможность реализовать   
+параллельную работу агентов с ипользованием "claude -p" ?                       
+
+● Let me look at the current pipeline implementation to understand what's
+  already in place.
+
+● Searched for 2 patterns, read 7 files (ctrl+o to expand)
+
+● У вас уже реализован параллельный режим pipeline (mode: parallel в
+  parallel.go). Вот что есть сейчас:
+
+  Текущие возможности:
+  - mode: parallel — запускает все steps одновременно через goroutines +
+  sync.WaitGroup
+  - collector — задача-агрегатор, получающая {{.Results}} (JSON map всех
+  результатов)
+  - mode: sequential — цепочка с {{.PrevOutput}}
+
+  Что можно добавить для более продвинутого A2A:
+
+  1. Mixed mode (DAG) — граф зависимостей, где часть шагов параллельна, а часть
+  зависит от предыдущих:
+  pipelines:
+    - name: review-pipeline
+      mode: dag
+      steps:
+        - task: lint-code
+          id: lint
+        - task: security-scan
+          id: security
+        - task: review-code        # запустится только после lint И security
+          id: review
+          depends_on: [lint, security]
+        - task: summarize
+          depends_on: [review]
+
+  2. Fan-out — один агент генерирует список, затем N параллельных агентов
+  обрабатывают каждый элемент:
+  pipelines:
+    - name: batch-review
+      mode: fan-out
+      splitter: list-files        # задача, возвращающая JSON-массив
+      worker: review-single-file  # запускается параллельно для каждого элемента
+      collector: merge-reviews
+      max_parallel: 5
+
+  3. Shared context через файл/БД — параллельные агенты пишут в общий domain,
+  collector читает.
+
+  Хотите, чтобы я реализовал один из этих вариантов? DAG — самый универсальный,
+  fan-out — самый полезный для batch-обработки. Могу реализовать оба.
+
+✻ Sautéed for 53s
+
+❯ А как A2A реализован в Claude Code ?                                          
+
+● Claude Code поддерживает A2A (agent-to-agent) через механизм sub-agents — это
+  файлы .claude/agents/*.md с YAML frontmatter.
+
+  Как это работает в Claude Code
+
+  Когда вы используете claude -p, агент может делегировать работу другим агентам
+   через встроенный инструмент Agent. Claude Code сам решает, когда вызвать
+  sub-agent, на основе описания в frontmatter.
+
+  Пример файла .claude/agents/reviewer.md:
+  ---
+  name: reviewer
+  description: Reviews code for bugs and style issues
+  model: sonnet
+  tools:
+    - Read
+    - Grep
+    - Glob
+  ---
+
+  You are a code reviewer. Analyze the provided code...
+
+  Главный агент вызывает sub-agent так:
+  Tool: Agent
+  {
+    "name": "reviewer",
+    "prompt": "Review the changes in src/api/"
+  }
+
+  Sub-agent работает в отдельном контексте, со своим набором tools, моделью и
+  system prompt. Результат возвращается главному агенту как текст.
+
+  Как это интегрировано в вашем проекте
+
+  Посмотрим, как ваш код это поддерживает.
+
+● Searched for 2 patterns, read 6 files (ctrl+o to expand)
+
+● Теперь полная картина. Вот как A2A работает на разных уровнях:
+
+  A2A в Claude Code — два уровня
+
+  Уровень 1: Встроенные sub-agents (внутри одного claude -p процесса)
+
+  Claude Code имеет встроенный инструмент Agent. Когда вы запускаете claude -p,
+  главный агент может сам порождать sub-agents:
+
+  Главный агент (claude -p)
+    ├─ Agent("reviewer", "review src/api/")     ← sub-process
+    ├─ Agent("security-scanner", "scan deps")   ← sub-process
+    └─ Agent("docs-writer", "update README")    ← sub-process
+
+  Это определяется через .claude/agents/*.md файлы и передаётся через --agents
+  JSON. В вашем коде это:
+  - subagent/types.go:24 — ToAgentsJSON() сериализует агентов в формат --agents
+  - task/command.go:39-41 — передаёт --agents в CLI
+  - task/resolve.go:20-34 — резолвит имена агентов в JSON
+
+  Ключевой момент: Claude Code сам решает, запускать ли sub-agents параллельно
+  или последовательно. Вы видите это прямо в моём системном промпте — инструкция
+   "Launch multiple agents concurrently whenever possible". Это внутренний
+  параллелизм Claude.
+
+  Уровень 2: Ваш оркестратор (несколько claude -p процессов)
+
+  Это ваш pipeline/parallel.go — запускает несколько независимых claude -p
+  процессов одновременно:
+
+  Оркестратор (Go)
+    ├─ goroutine → claude -p (task: lint)       ← отдельный процесс
+    ├─ goroutine → claude -p (task: security)   ← отдельный процесс
+    └─ goroutine → claude -p (task: review)     ← отдельный процесс
+        └─ collector task: агрегирует {{.Results}}
+
+  Разница
+
+  ┌───────────────────────┬────────────────────────┬───────────────────────┐
+  │                       │ Уровень 1 (sub-agents) │ Уровень 2 (pipeline)  │
+  ├───────────────────────┼────────────────────────┼───────────────────────┤
+  │ Кто решает о          │ Claude сам             │ Ваш Go-код            │
+  │ параллелизме          │                        │                       │
+  ├───────────────────────┼────────────────────────┼───────────────────────┤
+  │ Процессы              │ 1 claude -p            │ N claude -p           │
+  ├───────────────────────┼────────────────────────┼───────────────────────┤
+  │ Общий контекст        │ Да (через главного     │ Нет (только           │
+  │                       │ агента)                │ {{.Results}})         │
+  ├───────────────────────┼────────────────────────┼───────────────────────┤
+  │ Гибкость              │ Claude выбирает        │ Вы задаёте            │
+  │                       │ стратегию              │ DAG/fan-out           │
+  ├───────────────────────┼────────────────────────┼───────────────────────┤
+  │ Стоимость             │ Один сеанс, shared     │ N сеансов, дороже     │
+  │                       │ context                │                       │
+  └───────────────────────┴────────────────────────┴───────────────────────┘
+
+  Чего не хватает
+
+  Сейчас у вас нет комбинации обоих уровней в DAG-режиме. Можно добавить:
+
+  1. DAG pipeline — шаги с depends_on, автоматический параллелизм где возможно
+  2. Fan-out — один агент порождает список → N параллельных claude -p
+  обрабатывают элементы
+  3. Session chaining — передача session_id между шагами через --resume для
+  сохранения контекста
+
+  Что из этого интереснее для реализации?
+
+✻ Cooked for 44s
+
+❯ А что из этих вариантов полезно в контексте данного проекта? Или лучше        
+оставить как есть?                                                              
+
+● Честный ответ: лучше оставить как есть, с одним небольшим дополнением.
+
+  Почему DAG и fan-out не нужны
+
+  DAG — over-engineering для этого проекта. Реальные сценарии с claude -p:
+  - Каждый вызов стоит денег и занимает минуты
+  - Типичный pipeline — 2-4 шага, не граф из 15 узлов
+  - Если нужен "частичный параллелизм", проще разбить на два pipeline
+
+  Fan-out — дублирует то, что Claude уже делает сам. Если дать одному claude -p
+  задачу "проревьюй 10 файлов" с sub-agents, он сам распараллелит через
+  встроенный Agent tool. Запускать 10 отдельных claude -p — дороже и без общего
+  контекста.
+
+  Что реально полезно: session chaining (--resume)
+
+  У вас уже есть ResumeSessionID в RunOptions (task/command.go:86-88), но в
+  sequential pipeline он не используется. Если передавать session_id от
+  предыдущего шага к следующему через --resume:
+
+  - Агент помнит контекст предыдущего шага без дублирования в промпте
+  - Не нужно передавать весь {{.PrevOutput}} (который может быть огромным)
+  - Дешевле — Claude не парсит заново весь предыдущий вывод
+  - Качественнее — полный контекст вместо сжатого текста
+
+  Пример сценария:
+  pipelines:
+    - name: review-fix
+      mode: sequential
+      session_chain: true    # ← новый флаг
+      steps:
+        - task: code-review   # возвращает session_id
+        - task: apply-fixes   # --resume с session_id предыдущего шага
+
+  Хотите реализовать session_chain? Это минимальное изменение — ~20 строк в
+  pipeline.go и sequential.go, плюс одно поле в Pipeline struct.
+
+❯ Реализаци session_chain потребует переделки всех tasks, subagents, pipelines  
+?                                                                               
+
+● Нет, изменения минимальны и ничего не ломают. Давайте посмотрим точно что
+  затрагивается.
+
+● Read 1 file (ctrl+o to expand)
+
+● Всё уже готово. Вот полная картина изменений:
+
+  Что уже есть и НЕ меняется
+
+  ┌────────────────────────────┬─────────────────────────────────────────────┐
+  │         Компонент          │                   Статус                    │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ Result.SessionID           │ Уже парсится из вывода claude -p            │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ RunOptions.ResumeSessionID │ Уже есть, передаётся как --resume           │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ BuildArgs()                │ Уже обрабатывает --resume                   │
+  │                            │ (command.go:86-88)                          │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ parseJSONOutput()          │ Уже извлекает session_id из JSON            │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ Все tasks                  │ Без изменений                               │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ Все sub-agents             │ Без изменений                               │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ Parallel pipeline          │ Без изменений                               │
+  ├────────────────────────────┼─────────────────────────────────────────────┤
+  │ API handlers               │ Без изменений                               │
+  └────────────────────────────┴─────────────────────────────────────────────┘
+
+  Что нужно добавить (3 файла, ~15 строк)
+
+  1. config/pipeline.go — одно поле:
+  SessionChain bool `yaml:"session_chain,omitempty" 
+  json:"session_chain,omitempty"`
+
+  2. pipeline/sequential.go — 5 строк в цикле:
+  // после result := r.taskRunner.Run(...)
+  if p.SessionChain && result.SessionID != "" {
+      opts.ResumeSessionID = result.SessionID
+  }
+
+  3. tasks.yaml — опционально на нужных pipelines:
+  pipelines:
+    - name: review-fix
+      session_chain: true   # ← opt-in, по умолчанию false
+      steps:
+        - task: review
+        - task: fix
+
+  Существующие pipeline без session_chain: true работают как раньше. Обратная
+  совместимость полная — это чистый opt-in. Реализовать?
+
+❯ да, реализуй                                                                  
+
+● Update(internal/config/pipeline.go)
+  ⎿  Added 1 line
+       8    MaxIterations int            `yaml:"max_iterations" json:"max
+          _iterations"`
+       9    StopSignal    string         `yaml:"stop_signal,omitempty" js
+          on:"stop_signal,omitempty"`
+      10    Collector     string         `yaml:"collector,omitempty" json
+          :"collector,omitempty"`
+      11 +  SessionChain  bool           `yaml:"session_chain,omitempty" 
+         +json:"session_chain,omitempty"`                                
+      12    Schedule        string         `yaml:"schedule,omitempty" jso
+          n:"schedule,omitempty"`
+      13    AllowConcurrent *bool          `yaml:"allow_concurrent,omitem
+          pty" json:"allow_concurrent,omitempty"`
+      14  }
+
+● Update(internal/pipeline/sequential.go)
+  ⎿  Added 10 lines
+      74          defer cleanup()
+      75        }
+      76  
+      77 +      // Chain session from the previous step so the agent reta
+         +ins full context.                                              
+      78 +      if p.SessionChain && prevSessionID != "" {               
+      79 +        opts.ResumeSessionID = prevSessionID                   
+      80 +      }                                                        
+      81 +                                                               
+      82        r.logger.Info("running step", "pipeline", p.Name, "step",
+           step.Task, "iteration", i)
+      83        result := r.taskRunner.Run(stepCtx, t, opts, vars)
+      84        cancel()
+      85  
+      86 +      // Capture session ID for chaining to the next step.     
+      87 +      if p.SessionChain && result.SessionID != "" {            
+      88 +        prevSessionID = result.SessionID                       
+      89 +      }                                                        
+      90 +                                                               
+      91        if result.Error != "" {
+      92          return prevOutput, fmt.Errorf("pipeline %s, step %s (it
+          eration %d): %s", p.Name, step.Task, i, result.Error)
+      93        }
+
+● Now add the prevSessionID variable declaration:
+
+● Update(internal/pipeline/sequential.go)
+  ⎿  Added 1 line
+      47  func (r *Runner) RunSequential(ctx context.Context, p config.Pi
+          peline) (string, error) {
+      48    maxIter := p.MaxIter()
+      49    prevOutput := ""
+      50 +  prevSessionID := ""                                          
+      51  
+      52    for i := 1; i <= maxIter; i++ {
+      53      r.logger.Info("pipeline iteration", "pipeline", p.Name, "it
+          eration", i, "max", maxIter)
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● LSP is confused because it hasn't picked up the change yet. Let me verify the
+  file looks correct:
+
+● Read 1 file (ctrl+o to expand)
+
+● Всё корректно. Проверим сборку:
+
+● Bash(go build ./...)
+  ⎿  (No output)
+
+● Bash(go test ./internal/pipeline/ ./internal/config/ ./internal/task/)
+  ⎿  ?          github.com/asdmin/claude-ecosystem/internal/pipeline    [no test
+     es]
+     ok         github.com/asdmin/claude-ecosystem/internal/config      0.005s
+     ok         github.com/asdmin/claude-ecosystem/internal/task        (cached)
+
+
+
+● Готово. Итого изменения:
+
+  1. config/pipeline.go:10 — добавлено поле SessionChain bool
+  2. pipeline/sequential.go:50,78-81,87-90 — переменная prevSessionID + передача
+   session_id между шагами
+
+  Использование в tasks.yaml:
+  pipelines:
+    - name: review-fix
+      session_chain: true
+      steps:
+        - task: review
+        - task: fix
+
+  Без session_chain: true — поведение не меняется. С ним — второй шаг получает
+  --resume <session_id> от первого, сохраняя полный контекст разговора.
+
+✻ Worked for 47s
+
+❯ Это будет работать вне зависимости от того, какую задачу я поставлю Wizard ?  
+
+● Нет, есть ограничение. --resume работает только если все шаги используют один 
+  и тот же work_dir. Claude Code привязывает сессию к проекту.
+
+  Давайте проверим, как именно --resume взаимодействует с другими параметрами.
+
+● Read 1 file (ctrl+o to expand)
+
+● Вот конкретные ограничения --resume:
+
+  Когда session_chain работает
+
+  ┌─────────────────────────┬───────────────┬───────────────────────────────┐
+  │         Условие         │   Работает?   │            Почему             │
+  ├─────────────────────────┼───────────────┼───────────────────────────────┤
+  │ Одинаковый work_dir у   │ Да            │ Сессия привязана к проекту    │
+  │ всех шагов              │               │                               │
+  ├─────────────────────────┼───────────────┼───────────────────────────────┤
+  │ Разный work_dir         │ Нет           │ Claude Code не найдёт сессию  │
+  ├─────────────────────────┼───────────────┼───────────────────────────────┤
+  │ Разные model у шагов    │ Неопределённо │ --model может игнорироваться  │
+  │                         │               │ при --resume                  │
+  ├─────────────────────────┼───────────────┼───────────────────────────────┤
+  │ Разные agents,          │ Неопределённо │ Конфигурация фиксируется при  │
+  │ mcp_servers             │               │ создании сессии               │
+  ├─────────────────────────┼───────────────┼───────────────────────────────┤
+  │ Разные allowed_tools    │ Неопределённо │ Та же причина                 │
+  └─────────────────────────┴───────────────┴───────────────────────────────┘
+
+  Безопасный сценарий
+
+  # Работает — один проект, одни настройки
+  pipelines:
+    - name: review-fix
+      session_chain: true
+      steps:
+        - task: review    # work_dir: ./myproject
+        - task: fix       # work_dir: ./myproject
+
+  Опасный сценарий
+
+  # Может сломаться — разные проекты/настройки
+  pipelines:
+    - name: cross-project
+      session_chain: true
+      steps:
+        - task: analyze-backend    # work_dir: ./backend, model: opus
+        - task: update-frontend    # work_dir: ./frontend, model: sonnet ← 
+  проблема
+
+  Стоит добавить валидацию — проверять work_dir при session_chain: true и
+  предупреждать при расхождении. Добавить?
+
+❯ Наверно, не уверен, но тебе доверяю. Вообще проект Calude Ecosystem           
+задумывался не для работы с кодом, а как костыль для использования "claude -p"  
+из-за запрета Anthropic на использование OAuth от PRO/MAX в сторонних клиентах, 
+ как ты уже наверно догадался. Т.е. я принципиально не хочу нарушать правила    
+Anthropic, но API - это очень дорого у всех AI провайдерво :(                   
+
+● Recalled 1 memory, wrote 2 memories (ctrl+o to expand)
+
+● Понял, это важный контекст. Тогда тем более — валидацию добавлю, потому что
+  задачи могут быть самые разные (документы, email, анализ данных,
+  исследования), и вероятность что пользователь соберёт pipeline из задач с
+  разными work_dir — высокая.
+
+  Добавлю предупреждение при загрузке конфига:
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Update(internal/config/validate.go)
+  ⎿  Added 19 lines
+       78          return fmt.Errorf("pipeline %s: step references unknow
+           n task %q", p.Name, step.Task)
+       79        }
+       80      }
+       81 +                                                              
+       82 +    // session_chain requires sequential mode and consistent w
+          +ork_dir across steps.                                         
+       83 +    if p.SessionChain {                                       
+       84 +      if mode != "sequential" {                               
+       85 +        return fmt.Errorf("pipeline %s: session_chain is only 
+          +supported in sequential mode", p.Name)                        
+       86 +      }                                                       
+       87 +      var firstDir string                                     
+       88 +      for i, step := range p.Steps {                          
+       89 +        t := taskByName(cfg.Tasks, step.Task)                 
+       90 +        if t == nil {                                         
+       91 +          continue // already validated above                 
+       92 +        }                                                     
+       93 +        if i == 0 {                                           
+       94 +          firstDir = t.WorkDir                                
+       95 +        } else if t.WorkDir != firstDir {                     
+       96 +          return fmt.Errorf("pipeline %s: session_chain requir
+          +es all steps to share the same work_dir (step %q has %q, expec
+          +ted %q)", p.Name, step.Task, t.WorkDir, firstDir)             
+       97 +        }                                                     
+       98 +      }                                                       
+       99 +    }                                                         
+      100    }
+      101  
+      102    // Validate domain references
+
+● Добавлю хелпер taskByName:
+
+● Update(internal/config/validate.go)
+  ⎿  Added 10 lines
+      110  
+      111    return nil
+      112  }
+      113 +                                                              
+      114 +// taskByName returns a pointer to the task with the given nam
+          +e, or nil.                                                    
+      115 +func taskByName(tasks []Task, name string) *Task {            
+      116 +  for i := range tasks {                                      
+      117 +    if tasks[i].Name == name {                                
+      118 +      return &tasks[i]                                        
+      119 +    }                                                         
+      120 +  }                                                           
+      121 +  return nil                                                  
+      122 +}                                                             
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Bash(go build ./...)
+  ⎿  (No output)
+  ⎿  Found 6 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Bash(go test ./internal/config/ ./internal/pipeline/)
+  ⎿  ok         github.com/asdmin/claude-ecosystem/internal/config      0.004s
+     ?          github.com/asdmin/claude-ecosystem/internal/pipeline    [no test
+     es]
+
+
+● Всё собирается и тесты проходят. Итого добавлено:
+
+  config/validate.go — два правила:
+  1. session_chain разрешён только в sequential mode
+  2. Все шаги pipeline должны иметь одинаковый work_dir
+
+  Если кто-то попытается собрать pipeline с session_chain: true из задач с
+  разными work_dir, получит понятную ошибку при загрузке конфига, а не
+  молчаливый сбой в рантайме.
+
+✻ Cooked for 1m 6s
+
+❯ Wizard поддерживает эти полседние изменения?                                  
+
+● Explore(Find wizard implementation)
+  ⎿  Done (18 tool uses · 53.3k tokens · 36s)
+  (ctrl+o to expand)
+
+● Нет, Wizard не поддерживает session_chain. Нужно обновить 3 файла:
+
+  1. wizard/types.go — добавить поле в PipelinePlan
+  2. wizard/prompt.go — добавить в JSON schema чтобы Claude знал про это поле
+  3. wizard/applier.go — передавать значение в config.Pipeline
+
+  Давайте исправлю.
+
+● Read 3 files (ctrl+o to expand)
+
+● Теперь обновлю все три файла:
+
+● Update(internal/wizard/types.go)
+  ⎿  Added 1 line
+      77    Steps         []string `json:"steps"`          // task names
+      78    MaxIterations int      `json:"max_iterations,omitempty"`
+      79    StopSignal    string   `json:"stop_signal,omitempty"`
+      80 +  SessionChain  bool     `json:"session_chain,omitempty"`      
+      81  }
+      82  
+      83  // ApplyResult holds the outcome of applying a plan.
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 2 lines, removed 1 line
+      100            "mode": { "type": "string", "enum": ["sequential", "
+           parallel"] },
+      101            "steps": { "type": "array", "items": { "type": "stri
+           ng" } },
+      102            "max_iterations": { "type": "integer" },
+      103 -          "stop_signal": { "type": "string" }                 
+      103 +          "stop_signal": { "type": "string" },                
+      104 +          "session_chain": { "type": "boolean", "description":
+          + "If true, pass session_id between sequential steps so each st
+          +ep resumes the previous conversation. All steps must share the
+          + same work_dir." }                                            
+      105          },
+      106          "required": ["name", "steps"]
+      107        }
+
+● Теперь обновлю описание pipelines в системном промпте wizard:
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 1 line
+      161  - steps: ordered list of task names
+      162  - max_iterations: loop count for sequential mode (default 10)
+      163  - stop_signal: text in output that stops iteration early
+      164 +- session_chain: if true, each sequential step resumes the pre
+          +vious step's Claude session via --resume, preserving full conv
+          +ersation context. All steps MUST share the same work_dir. Only
+          + works with mode "sequential".                                
+      165  
+      166  ## MCP Tool Names
+      167  
+  ⎿  Found 6 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Теперь applier — передаю SessionChain в config.Pipeline:
+
+● Update(internal/wizard/applier.go)
+  ⎿  Added 1 line
+      150        Steps:         steps,
+      151        MaxIterations: pp.MaxIterations,
+      152        StopSignal:    pp.StopSignal,
+      153 +      SessionChain:  pp.SessionChain,                         
+      154      }
+      155      if p.Mode == "" {
+      156        p.Mode = "sequential"
+  ⎿  Found 6 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Bash(go build ./... && go test ./internal/...)
+  ⎿  ?          github.com/asdmin/claude-ecosystem/internal/api [no test
+     files]
+     ok         github.com/asdmin/claude-ecosystem/internal/auth        (cached)
+     ok         github.com/asdmin/claude-ecosystem/internal/config      (cached)
+     … +14 lines (ctrl+o to expand)
+
+
+
+● Всё собирается, тесты проходят. Обновлено 3 файла в wizard:
+
+  1. wizard/types.go — поле SessionChain bool в PipelinePlan
+  2. wizard/prompt.go — описание + JSON schema для Claude, чтобы wizard знал
+  когда использовать session_chain
+  3. wizard/applier.go — передача SessionChain в config.Pipeline
+
+  Теперь когда wizard генерирует sequential pipeline где шаги логически связаны
+  (один контекст, один work_dir), Claude может сам предложить session_chain: 
+  true.
+
+✻ Worked for 1m 35s
+
+❯ У wizard есть свой system promt ?                                             
+
+● Да, только что его читали — это wizard/prompt.go. Функция buildWizardPrompt()
+  строит системный промпт, который отправляется Claude при генерации плана.
+
+  Он включает:
+  - Описание всех entity types (tasks, agents, domains, pipelines, MCP servers)
+  - Точные имена MCP tools
+  - Правила генерации (permission modes, kebab-case, etc.)
+  - JSON schema для структурированного вывода
+  - Текущие entity из конфига (чтобы избежать конфликтов имён)
+  - Запрос пользователя
+
+  Мы уже обновили в нём описание pipelines (добавили session_chain) и JSON
+  schema. Хотите что-то ещё там поменять?
+
+❯ нет, просто чтобы не забыть про system prompt. Я не заметил, что ты его       
+исправил :(                                                                     
+
+● Да, я обновил оба места в wizard/prompt.go:
+
+  1. Описание в Rules (строка ~163) — добавил документацию по session_chain в
+  секцию Pipelines
+  2. JSON schema (строка ~103) — добавил "session_chain": { "type": "boolean", 
+  "description": "..." } чтобы Claude мог генерировать это поле
+
+  Без обновления schema Claude просто не знал бы про это поле и никогда бы его
+  не предложил.

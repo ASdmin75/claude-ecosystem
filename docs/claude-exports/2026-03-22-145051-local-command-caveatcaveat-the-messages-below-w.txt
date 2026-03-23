@@ -1,0 +1,182 @@
+ ▐▛███▜▌   Claude Code v2.1.81
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ При удалении пайплайна по прежнему не удаляется соответствующий домен         
+:((((((((((                                                                     
+
+● Let me investigate the pipeline delete flow and domain cleanup logic.
+
+● Explore(Explore pipeline delete and domain cleanup)
+  ⎿  Done (16 tool uses · 53.8k tokens · 41s)
+  (ctrl+o to expand)
+
+● Let me read the key files to pinpoint the exact bug.
+
+  Read 2 files (ctrl+o to expand)
+
+● Let me check how domain references are populated, especially for tasks with
+  domain: field.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Let me check how domains and their reference lists are populated when creating
+   tasks/pipelines.
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● Let me check the task and pipeline creation handlers to see if they update
+  domain reference lists.
+
+  Read 2 files (ctrl+o to expand)
+
+● Let me check the task delete handler and how it handles domain cleanup.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Let me check the current tasks.yaml to see the actual domain/pipeline setup.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now I see the issue. Let me verify by checking what MCP servers the tasks
+  reference vs what the domains reference.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Let me check which tasks have domain: field set and map that to domain
+  reference lists.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Found the bug. In cleanDomainRefs (delete.go:114), the orphan check includes
+  len(d.MCPServers) == 0, but MCP servers in domain reference lists are shared
+  infrastructure (like database, excel). They're almost never exclusively owned
+  by deleted tasks, so they're never cleaned from the domain's list, preventing
+  the domain from being detected as orphaned.
+
+  The fix: MCP servers are tools the domain uses, not dependents that should
+  keep it alive. If all tasks, pipelines, and agents are gone, the domain is
+  orphaned regardless of MCP servers.
+
+● Update(internal/api/delete.go)
+  ⎿  Added 3 lines, removed 2 lines
+      110        }
+      111      }
+      112      if changed {
+      113 -      // Remove domain entirely if it has no remaining referen
+          -ces.                                                          
+      114 -      if len(d.Tasks) == 0 && len(d.Pipelines) == 0 && len(d.A
+          -gents) == 0 && len(d.MCPServers) == 0 {                       
+      113 +      // Remove domain entirely if it has no remaining entity 
+          +references.                                                   
+      114 +      // MCP servers are shared tools, not dependents — they d
+          +on't keep a domain alive.                                     
+      115 +      if len(d.Tasks) == 0 && len(d.Pipelines) == 0 && len(d.A
+          +gents) == 0 {                                                 
+      116          delete(s.cfg.Domains, k)
+      117        } else {
+      118          s.cfg.Domains[k] = d
+
+● Now let me update the tests that might rely on the old behavior.
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Found 2 new diagnostic issues in 2 files (ctrl+o to expand)
+● Two tests need updating to match the new behavior where MCP servers don't keep
+   a domain alive.
+
+● Update(internal/api/delete_test.go)
+  ⎿  Added 4 lines, removed 7 lines
+      119        "d1": {Tasks: []string{"t1"}, MCPServers: []string{"db",
+            "excel", "telegram"}},
+      120      },
+      121    }}
+      122 -  // Only some MCP servers cleaned — domain should remain beca
+          -use telegram is still referenced.                             
+      122 +  // All entity refs (tasks) removed — domain should be delete
+          +d even though telegram MCP remains.                           
+      123 +  // MCP servers are shared tools, not dependents that keep a 
+          +domain alive.                                                 
+      124    s.cleanDomainRefs([]string{"t1"}, nil, nil, []string{"db", "
+           excel"})
+      125  
+      125 -  d, ok := s.cfg.Domains["d1"]                                
+      126 -  if !ok {                                                    
+      127 -    t.Fatal("expected domain 'd1' to remain (still has mcp_ser
+          -vers)")                                                       
+      126 +  if _, ok := s.cfg.Domains["d1"]; ok {                       
+      127 +    t.Fatal("expected orphaned domain 'd1' to be deleted (MCP 
+          +servers don't keep domain alive)")                            
+      128    }
+      129 -  if len(d.MCPServers) != 1 || d.MCPServers[0] != "telegram" {
+      130 -    t.Fatalf("expected MCPServers=[telegram], got %v", d.MCPSe
+          -rvers)                                                        
+      131 -  }                                                           
+      129  }
+      130  
+      131  func TestCleanDomainRefs_MCPServersOnlyNoOrphan(t *testing.T) 
+           {
+
+● Update(internal/api/delete_test.go)
+  ⎿  Added 3 lines, removed 7 lines
+      134        "d1": {Tasks: []string{"t1"}, MCPServers: []string{"db"}
+           },
+      135      },
+      136    }}
+      137 -  // Remove task but not MCP server — domain should remain.   
+      137 +  // Remove task — domain should be deleted even though MCP se
+          +rver remains.                                                 
+      138    s.cleanDomainRefs([]string{"t1"}, nil, nil)
+      139  
+      140 -  d, ok := s.cfg.Domains["d1"]                                
+      141 -  if !ok {                                                    
+      142 -    t.Fatal("expected domain 'd1' to remain (still has mcp_ser
+          -vers)")                                                       
+      140 +  if _, ok := s.cfg.Domains["d1"]; ok {                       
+      141 +    t.Fatal("expected orphaned domain 'd1' to be deleted (MCP 
+          +servers don't keep domain alive)")                            
+      142    }
+      144 -  if len(d.MCPServers) != 1 {                                 
+      145 -    t.Fatalf("expected MCPServers=[db], got %v", d.MCPServers)
+      146 -  }                                                           
+      143  }
+
+● Bash(go test ./internal/api/ -run TestCleanDomainRefs -v 2>&1)
+  ⎿  === RUN   TestCleanDomainRefs_Tasks
+     --- PASS: TestCleanDomainRefs_Tasks (0.00s)
+     === RUN   TestCleanDomainRefs_Pipelines
+     … +15 lines (ctrl+o to expand)
+
+● Bash(go test ./internal/api/ -v 2>&1 | tail -30)
+  ⎿  === RUN   TestCleanDomainRefs_Tasks
+     --- PASS: TestCleanDomainRefs_Tasks (0.00s)
+     === RUN   TestCleanDomainRefs_Pipelines
+     … +15 lines (ctrl+o to expand)
+
+● All tests pass. Let me also run the full test suite to be safe.
+
+● Bash(go test ./... 2>&1 | tail -20)
+  ⎿  ?          github.com/asdmin/claude-ecosystem/cmd/server   [no test files]
+     ok         github.com/asdmin/claude-ecosystem/internal/api 0.006s
+     ok         github.com/asdmin/claude-ecosystem/internal/auth        (cached)
+     … +17 lines (ctrl+o to expand)
+
+
+
+● All tests pass.
+
+  Root cause: In cleanDomainRefs, the orphan check required len(d.MCPServers) ==
+   0 to delete a domain. But MCP servers in domain reference lists (like
+  database, excel) are shared infrastructure used by many domains/tasks. When a
+  pipeline is cascade-deleted, the exclusive MCP check filters out shared
+  servers, so they're never removed from the domain's mcp_servers list —
+  preventing the domain from ever being considered orphaned.
+
+  Fix: Removed len(d.MCPServers) == 0 from the orphan condition in
+  delete.go:114. MCP servers are tools the domain uses, not entities that should
+   keep it alive. If all tasks, pipelines, and agents are gone, the domain is
+  orphaned regardless.
+
+✻ Crunched for 3m 44s

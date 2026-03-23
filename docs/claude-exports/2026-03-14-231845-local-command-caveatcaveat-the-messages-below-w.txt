@@ -1,0 +1,164 @@
+ ▐▛███▜▌   Claude Code v2.1.76
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+  ↑ Opus now defaults to 1M context · 5x more room, same pricing
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ cron для export-by-aviation-to-ceo не срабатывает                             
+
+● Let me look at the task configuration and relevant code.
+
+● Searched for 2 patterns (ctrl+o to expand)
+
+● This is a pipeline, not a task. Let me check how the scheduler handles
+  pipeline cron schedules.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now let me check where pipelines are registered in the server startup.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now let me check the hot reload path — line 355 referenced earlier.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now let me check cron.New() — it's using the default cron parser which expects
+   5-field format (minute, hour, dom, month, dow). The schedule */15 * * * *
+  looks correct.
+
+  Let me check if the pipeline is in the pipelines section properly.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● The config looks fine. Let me check if the cron.New() uses the standard parser
+   — robfig/cron v3 defaults to a 6-field format (with seconds) unless you use
+  cron.New(cron.WithParser(...)) or cron.WithSeconds().
+
+  Wait, actually it's the opposite. Let me verify:
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● cron.New() without options in robfig/cron v3 uses the standard 5-field format,
+   so */15 * * * * should work. Let me check if the server is actually running
+  and see the logs.
+
+● Bash(ps aux | grep 'bin/server' | grep -v grep)
+  ⎿  asdmin    837985  0.0  0.0 2088948 20544 ?       Ssl  22:24   0:00 /ho
+     me/asdmin/development/AI/Claude/claude-ecosystem/bin/server -config ta
+     sks.yaml
+
+● Bash(journalctl --user -u claude-ecosystem --since "30 min ago" --no-pager
+      2>/dev/null || tail -50 logs/*.log 2>/dev/null || echo "No logs found in
+      standard location…)
+  ⎿  сак 14 22:33:38 asdmin-MS-7B84 claude-ecosystem[837985]: time=2026-03-
+     14T22:33:38.697+03:00 level=INFO msg="http request" method=GET path=/a
+     pi/v1/events status=500 duration=123.961µs
+     … +241 lines (ctrl+o to expand)
+
+● Вот проблема. Лог чётко показывает:
+
+  22:45:00 scheduled pipeline starting pipeline=export-by-aviation-to-ceo
+  22:45:00 pipeline is already running, skipping
+  pipeline=export-by-aviation-to-ceo trigger=schedule
+
+  и то же самое в 23:00. Cron срабатывает, но pipeline считается "уже
+  запущенным" и пропускается. Это значит, что runguard не был освобождён от
+  предыдущего запуска (вероятно, pipeline завис или завершился с ошибкой, но
+  guard не был отпущен).
+
+  Давайте посмотрим RunPipelineByName — как он управляет guard.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Вижу проблему! Guard acquire/release дублируется:
+
+  1. Scheduler (RegisterPipeline) в scheduler.go:131 делает
+  TryAcquire("pipeline:" + p.Name) и defer Release()
+  2. RunPipelineByName в pipelines.go:425 тоже делает TryAcquire("pipeline:" + 
+  p.Name) и defer Release()
+
+  Когда scheduler вызывает RunPipelineByName, guard уже захвачен scheduler'ом.
+  Второй TryAcquire внутри RunPipelineByName всегда фейлится, потому что guard
+  уже занят. Результат: "pipeline is already running, skipping".
+
+  Проблема в двойном acquire. Нужно убрать одну из двух проверок. Логичнее
+  убрать из scheduler'а, так как RunPipelineByName сама управляет guard'ом и
+  вызывается также из API.
+
+● Searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● Подтверждается — guard не реентерабельный. Двойной TryAcquire с одним и тем же
+   ключом гарантированно фейлится.
+
+  Исправление: убрать guard из RegisterPipeline в scheduler, оставив его только
+  в RunPipelineByName.
+
+● Update(internal/scheduler/scheduler.go)
+  ⎿  Removed 8 lines
+      127        return
+      128      }
+      129  
+      130 -    if !p.ConcurrentAllowed() {                               
+      131 -      if !s.guard.TryAcquire("pipeline:" + p.Name) {          
+      132 -        s.logger.Info("scheduled pipeline is already running, 
+          -skipping", "pipeline", p.Name)                                
+      133 -        return                                                
+      134 -      }                                                       
+      135 -      defer s.guard.Release("pipeline:" + p.Name)             
+      136 -    }                                                         
+      137 -                                                              
+      130      s.logger.Info("scheduled pipeline starting", "pipeline", p
+           .Name)
+      131  
+      132      s.ctxMu.RLock()
+
+● Теперь проверю — нет ли такой же проблемы для задач (tasks). Scheduler
+  Register делает guard + runner.Run, а runner.Run не делает guard сам. Так что
+  для tasks проблемы нет — guard только в scheduler.
+
+  Для pipeline guard находится в RunPipelineByName, куда scheduler делегирует.
+  Двойной guard был только для pipelines.
+
+● Bash(make build 2>&1 | tail -5)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Bash(make test 2>&1 | tail -20)
+  ⎿  go test ./internal/...
+     ?          github.com/asdmin/claude-ecosystem/internal/api [no test files]
+     ?          github.com/asdmin/claude-ecosystem/internal/auth        [no test
+     … +15 lines (ctrl+o to expand)
+
+
+
+● Билд и тесты проходят. Нужно перезапустить сервер.
+
+● Bash(sudo systemctl restart claude-ecosystem 2>/dev/null || systemctl --user
+      restart claude-ecosystem 2>/dev/null; echo "exit: $?")
+  ⎿  exit: 0
+
+● Bash(journalctl --user -u claude-ecosystem --since "30 sec ago" --no-pager
+      2>/dev/null | head -20)
+  ⎿  сак 14 23:07:15 asdmin-MS-7B84 claude-ecosystem[837985]: time=2026-03-
+     14T23:07:15.688+03:00 level=INFO msg="http request" method=GET path=/a
+     pi/v1/events status=500 duration=61.685µs
+     … +32 lines (ctrl+o to expand)
+
+● Сервер перезапущен. Pipeline зарегистрирован. Теперь при следующем
+  срабатывании cron (в :15) guard будет вызван только один раз — внутри
+  RunPipelineByName.
+
+  Причина бага: двойной TryAcquire на один и тот же ключ
+  "pipeline:export-by-aviation-to-ceo". Scheduler захватывал guard, потом
+  вызывал RunPipelineByName, который пытался захватить тот же guard повторно →
+  фейлился → "already running, skipping". Guard не реентерабельный (простой
+  map[string]bool).
+
+  Исправление: убрал guard из RegisterPipeline в scheduler — он не нужен, т.к.
+  RunPipelineByName сама управляет concurrency guard.
+
+✻ Sautéed for 2m 11s

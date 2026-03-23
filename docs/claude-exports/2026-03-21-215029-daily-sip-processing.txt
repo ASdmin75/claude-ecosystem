@@ -1,0 +1,335 @@
+ ▐▛███▜▌   Claude Code v2.1.81
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ Если я теперь запущу заново daily-sip-processing нкорректные WAV фалы         
+скачаются заново?                                                               
+
+● Let me check the daily-sip-processing task configuration and the download
+  logic.
+
+  Searched for 3 patterns, read 1 file (ctrl+o to expand)
+
+● Теперь посмотрю, как download_file/batch_download работает — проверяет ли он
+  существующий файл.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Теперь у меня полная картина. Вот ответ:
+
+  Нет, некорректные WAV файлы НЕ будут скачаны заново автоматически. Вот почему:
+
+  Промпт fetch-sip-recordings (tasks.yaml:410-411) имеет две проверки на
+  дубликаты:
+
+  1. По БД: SELECT call_id FROM recordings — пропускает записи, чей call_id уже
+  есть в таблице
+  2. По файлам на диске: проверяет существующие файлы в
+  $DOMAIN_DATA_DIR/recordings/ — пропускает если файл уже существует
+
+  Если некорректный файл уже скачан на диск и/или его call_id вставлен в БД, при
+   повторном запуске он будет считаться "уже обработанным" и пропущен.
+
+  Чтобы перекачать некорректные файлы, нужно:
+
+  1. Удалить битые WAV-файлы из $DOMAIN_DATA_DIR/recordings/
+  2. Удалить их записи из БД: DELETE FROM recordings WHERE call_id IN (...);
+
+  После этого повторный запуск daily-sip-processing увидит их как новые и
+  скачает заново.
+
+  Если хотите, могу помочь найти и удалить некорректные файлы.
+
+✻ Cogitated for 33s
+
+❯ Короче, очисти все WAV файлы и записи в БД. Буду начинать сначала.            
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Домен sip-calls: данные в data/sip-calls/, БД — data/sip-calls/sip-calls.db.
+  Посмотрю что там есть.
+
+  Read 3 files (ctrl+o to expand)
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/sip-call
+      s/sip-calls.db "SELECT COUNT(*) FROM recordings; SELECT COUNT(*) FROM
+      daily_reports;")
+  ⎿  33
+     1
+
+● Итого: 52 файла (WAV + SRT) в recordings/, 33 записи в recordings, 1 в
+  daily_reports.
+
+  Удаляю всё:
+
+● Bash(rm -f /home/asdmin/development/AI/Claude/claude-ecosystem/data/sip-calls/
+      recordings/*.wav
+      /home/asdmin/development/AI/Claude/claude-ecosystem/data/sip-calls/rec…)
+  ⎿  Done
+
+● Bash(sqlite3 /home/asdmin/development/AI/Claude/claude-ecosystem/data/sip-call
+      s/sip-calls.db "DELETE FROM recordings; DELETE FROM daily_reports;")
+  ⎿  (No output)
+
+● Проверю:
+
+● Bash(ls /home/asdmin/development/AI/Claude/claude-ecosystem/data/sip-calls/rec
+      ordings/ | wc -l && sqlite3
+      /home/asdmin/development/AI/Claude/claude-ecosystem/data/si…)
+  ⎿  0
+     0
+     0
+
+● Готово. Удалено:
+  - 52 файла (WAV + SRT) из data/sip-calls/recordings/
+  - 33 записи из таблицы recordings
+  - 1 запись из таблицы daily_reports
+
+  Также проверю, нет ли отчётов в reports/:
+
+  Read 1 file (ctrl+o to expand)
+
+● Папка reports/ уже пустая. Всё чисто — можно запускать daily-sip-processing
+  заново.
+
+✻ Churned for 30s
+
+[Image #1]
+
+● Fetch-sip-recordings отработал успешно (36 WAV скачано), но
+  transcribe-sip-recordings упал с signal: killed — это OOM kill или таймаут
+  whisper.
+
+  Проверю конфигурацию whisper и таймаут.
+
+  Searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● Bash(free -h)
+  ⎿                 total        used        free      shared  buff/cache
+      available
+     Mem:            29Gi       6,6Gi       7,8Gi       155Mi        15Gi
+     … +2 lines (ctrl+o to expand)
+
+● 65 МБ WAV, 30 ГБ RAM — OOM исключён. Длительность 11228с (~3 часа) — это
+  больше таймаута 180m (3 часа). Скорее всего whisper-cli был убит по таймауту
+  процесса.
+
+  Посмотрю как batch_transcribe работает — может он зависает на каком-то файле.
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Вот что произошло:
+
+  Причина: transcribe-sip-recordings убит по таймауту. Задача имеет timeout: 
+  180m, а пайплайн работал 11228с (~187 мин). Fetch занял часть этого времени, а
+   на транскрипцию 36 файлов моделью large-v3-turbo на CPU оставшегося времени
+  не хватило.
+
+  batch_transcribe обрабатывает файлы последовательно (строка 203 — обычный for
+  loop), при этом каждый файл имеет свой таймаут 60 мин. Модель large-v3-turbo
+  на CPU для 65 МБ WAV может работать долго.
+
+  Варианты решения:
+
+  1. Увеличить таймаут задачи transcribe-sip-recordings (например, 360m)
+  2. Использовать модель поменьше — base или small (значительно быстрее, но хуже
+   качество)
+  3. Добавить параллелизм в batch_transcribe (goroutines вместо
+  последовательного цикла)
+
+  Что предпочитаете? Я бы рекомендовал вариант 3 — параллельная транскрипция
+  нескольких файлов одновременно (например, 4 потока) ускорит процесс в разы.
+
+✻ Cogitated for 52s
+
+❯ 3, ну и таймаут на всякий случай увеличь                                      
+  Read 1 file (ctrl+o to expand)
+
+● Now let me implement the parallel version and update the timeout.
+
+● Update(cmd/mcp/mcp-whisper/main.go)
+  ⎿  Added 2 lines
+       9    "os"
+      10    "os/exec"
+      11    "path/filepath"
+      12 +  "strconv"                                                    
+      13    "strings"
+      14 +  "sync"                                                       
+      15    "time"
+      16  
+      17    "github.com/mark3labs/mcp-go/mcp"
+
+● Now replace the sequential handleBatchTranscribe with a parallel worker-pool
+  version:
+
+● Update(cmd/mcp/mcp-whisper/main.go)
+  ⎿  Added 49 lines, removed 13 lines
+      199      Error   string `json:"error,omitempty"`
+      200    }
+      201  
+      202 -  results := make([]fileResult, 0, len(filesRaw))             
+      203 -  success, skipped, failed := 0, 0, 0                         
+      202 +  // Determine concurrency: WHISPER_WORKERS env or default 4. 
+      203 +  workers := 4                                                
+      204 +  if w, err := strconv.Atoi(os.Getenv("WHISPER_WORKERS")); err
+          + == nil && w > 0 {                                            
+      205 +    workers = w                                               
+      206 +  }                                                           
+      207  
+      205 -  for _, item := range filesRaw {                             
+      208 +  // Pre-filter: separate skipped from work items, preserving 
+          +original order.                                               
+      209 +  type workItem struct {                                      
+      210 +    index int                                                 
+      211 +    path  string                                              
+      212 +  }                                                           
+      213 +  results := make([]fileResult, len(filesRaw))                
+      214 +  var toProcess []workItem                                    
+      215 +  skipped := 0                                                
+      216 +                                                              
+      217 +  for i, item := range filesRaw {                             
+      218      path, _ := item.(string)
+      219      if path == "" {
+      208 -      results = append(results, fileResult{Status: "error", Er
+          -ror: "empty path"})                                           
+      209 -      failed++                                                
+      220 +      results[i] = fileResult{Status: "error", Error: "empty p
+          +ath"}                                                         
+      221        continue
+      222      }
+      212 -                                                              
+      223      // Skip files that already have an output file on disk (id
+           empotent).
+      224      if outputFormat != "txt" {
+      225        outFile := path + "." + outputFormat
+      226        if _, err := os.Stat(outFile); err == nil {
+      217 -        results = append(results, fileResult{Path: path, SRTPa
+          -th: outFile, Status: "skipped"})                              
+      227 +        results[i] = fileResult{Path: path, SRTPath: outFile, 
+          +Status: "skipped"}                                            
+      228          skipped++
+      229          continue
+      230        }
+      231      }
+      232 +    toProcess = append(toProcess, workItem{index: i, path: pat
+          +h})                                                           
+      233 +  }                                                           
+      234  
+      223 -    r := transcribeOne(ctx, path, language, outputFormat, mode
+          -lPath, false)                                                 
+      224 -    if r.Err != nil {                                         
+      225 -      results = append(results, fileResult{Path: path, Status:
+          - "error", Error: r.Err.Error()})                              
+      226 -      failed++                                                
+      227 -    } else {                                                  
+      228 -      results = append(results, fileResult{Path: path, SRTPath
+          -: r.SRTPath, Status: "ok"})                                   
+      235 +  // Process files in parallel using a worker pool.           
+      236 +  jobs := make(chan workItem, len(toProcess))                 
+      237 +  var wg sync.WaitGroup                                       
+      238 +                                                              
+      239 +  for range min(workers, len(toProcess)) {                    
+      240 +    wg.Add(1)                                                 
+      241 +    go func() {                                               
+      242 +      defer wg.Done()                                         
+      243 +      for job := range jobs {                                 
+      244 +        r := transcribeOne(ctx, job.path, language, outputForm
+          +at, modelPath, false)                                         
+      245 +        if r.Err != nil {                                     
+      246 +          results[job.index] = fileResult{Path: job.path, Stat
+          +us: "error", Error: r.Err.Error()}                            
+      247 +        } else {                                              
+      248 +          results[job.index] = fileResult{Path: job.path, SRTP
+          +ath: r.SRTPath, Status: "ok"}                                 
+      249 +        }                                                     
+      250 +      }                                                       
+      251 +    }()                                                       
+      252 +  }                                                           
+      253 +  for _, item := range toProcess {                            
+      254 +    jobs <- item                                              
+      255 +  }                                                           
+      256 +  close(jobs)                                                 
+      257 +  wg.Wait()                                                   
+      258 +                                                              
+      259 +  success, failed := 0, 0                                     
+      260 +  for _, r := range results {                                 
+      261 +    switch r.Status {                                         
+      262 +    case "ok":                                                
+      263        success++
+      264 +    case "error":                                             
+      265 +      failed++                                                
+      266      }
+      267    }
+      268  
+  ⎿  Found 2 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● The diagnostics are stale — both strconv and sync are used in the new code.
+  Let me also need to reduce WHISPER_THREADS to avoid over-subscribing CPU when
+  running parallel workers. Let me check if threads is per-process (it is —
+  passed as -t to whisper-cli), so with 4 workers × 8 threads = 32, which might
+  be too much. I'll leave that to the user via env vars.
+
+  Now increase the timeout:
+
+● Update(tasks.yaml)
+  ⎿  Added 1 line, removed 1 line
+      466          - whisper
+      467          - transcription
+      468        model: haiku
+      469 -      timeout: 180m                                           
+      469 +      timeout: 360m                                           
+      470        max_turns: 30
+      471        mcp_servers:
+      472          - whisper
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Let me build to verify:
+
+● Bash(go build ./cmd/mcp/mcp-whisper/ 2>&1)
+  ⎿  (No output)
+
+● Компилируется. Но нужно учесть важный момент — 4 worker'а × 8 threads = 32
+  потока одновременно. Нужно подстроить WHISPER_THREADS при параллельной работе.
+   Посмотрю сколько ядер:
+
+● Bash(nproc)
+  ⎿  8
+
+● 8 ядер. 4 worker'а × 8 threads = 32 — перебор, будут конкурировать за CPU и
+  работать медленнее. Оптимально: 4 workers × 2 threads = 8, или 2 workers × 4
+  threads = 8.
+
+  Установлю WHISPER_WORKERS: "2" и WHISPER_THREADS: "4" в конфиге whisper:
+
+● Update(tasks.yaml)
+  ⎿  Added 2 lines, removed 1 line
+      653          WHISPER_BIN: ./data/whisper/bin/whisper-cli
+      654          WHISPER_MODEL: ./data/whisper/models/ggml-large-v3-tur
+           bo.bin
+      655          WHISPER_MODELS_DIR: ./data/whisper/models
+      656 -        WHISPER_THREADS: "8"                                  
+      656 +        WHISPER_THREADS: "4"                                  
+      657 +        WHISPER_WORKERS: "2"                                  
+      658      - name: word
+      659        command: ./bin/mcp-word
+      660      - name: yeastar-api
+
+● Bash(make build 2>&1 | tail -5)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Готово. Вот что изменено:
+
+  cmd/mcp/mcp-whisper/main.go — batch_transcribe теперь параллельный:
+  - Worker pool с конфигурируемым числом воркеров (WHISPER_WORKERS, по умолчанию
+   4)
+  - Файлы распределяются по воркерам через канал, результаты записываются в
+  слайс по индексу (порядок сохраняется)
+  - Пре-фильтрация (skip уже готовых файлов) остаётся до параллельной фазы
+
+  tasks.yaml:
+  - transcribe-sip-recordings таймаут: 180m → 360m
+  - Whisper: WHISPER_THREADS: "4", WHISPER_WORKERS: "2" (2 файла параллельно × 4
+   потока = 8 = все ядра CPU)
+
+✻ Churned for 1m 22s

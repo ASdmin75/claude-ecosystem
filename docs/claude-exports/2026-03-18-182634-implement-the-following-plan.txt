@@ -1,0 +1,226 @@
+ ▐▛███▜▌   Claude Code v2.1.78
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ Plan: MCP-сервер для транскрибации аудио через whisper.cpp                   │
+│                                                                              │
+│ Context                                                                      │
+│                                                                              │
+│ Нужна бесплатная локальная транскрибация аудио в Claude Ecosystem.           │
+│ Единственный вариант — whisper.cpp. Интеграция через новый MCP-сервер        │
+│ mcp-whisper, который оборачивает whisper-cli через os/exec.                  │
+│                                                                              │
+│ Системные ресурсы: AMD Ryzen 5 2400G (4c/8t), 30 GB RAM, нет NVIDIA GPU      │
+│ (только Vega iGPU), ffmpeg 6.1 установлен.                                   │
+│                                                                              │
+│ Подход к зависимостям: Всё внутри проекта — whisper.cpp собирается в         │
+│ data/whisper/bin/, модели хранятся в data/whisper/models/.                   │
+│                                                                              │
+│ Выбор модели: С 30 GB RAM large-v3 (~5 GB RAM) технически помещается, но на  │
+│ CPU без GPU будет очень медленной. Рекомендация: начать с small (лучший      │
+│ баланс скорости/качества для русского на CPU), но реализовать download_model │
+│  инструмент чтобы Claude мог скачать любую модель по запросу. Можно          │
+│ попробовать large-v3 и откатиться на small если слишком медленно.            │
+│                                                                              │
+│ Почему CLI-обёртка, а не Go-биндинги:                                        │
+│ - Go-биндинги требуют CGo → ломает чистую Go-сборку                          │
+│ - CLI-обёртка проще обновлять, проще отлаживать                              │
+│                                                                              │
+│ 1. Настройка whisper.cpp внутри проекта                                      │
+│                                                                              │
+│ Makefile target: make setup-whisper                                          │
+│                                                                              │
+│ WHISPER_DIR := data/whisper                                                  │
+│ WHISPER_SRC := $(WHISPER_DIR)/whisper.cpp                                    │
+│ WHISPER_BIN := $(WHISPER_DIR)/bin/whisper-cli                                │
+│ WHISPER_MODEL := $(WHISPER_DIR)/models/ggml-small.bin                        │
+│                                                                              │
+│ setup-whisper: $(WHISPER_BIN) $(WHISPER_MODEL)                               │
+│                                                                              │
+│ $(WHISPER_BIN): $(WHISPER_SRC)                                               │
+│       cd $(WHISPER_SRC) && cmake -B build -DCMAKE_BUILD_TYPE=Release         │
+│       cd $(WHISPER_SRC) && cmake --build build --config Release -j$(nproc)   │
+│       mkdir -p $(WHISPER_DIR)/bin                                            │
+│       cp $(WHISPER_SRC)/build/bin/whisper-cli $(WHISPER_BIN)                 │
+│                                                                              │
+│ $(WHISPER_SRC):                                                              │
+│       mkdir -p $(WHISPER_DIR)                                                │
+│       git clone --depth 1 https://github.com/ggml-org/whisper.cpp $(WHISPER_S│
+│                                                                              │
+│ $(WHISPER_MODEL):                                                            │
+│       mkdir -p $(WHISPER_DIR)/models                                         │
+│       wget -O $@                                                             │
+│ "https://huggingface.co/ggml-org/whisper-small/resolve/main/ggml-small.bin"  │
+│                                                                              │
+│ .gitignore                                                                   │
+│                                                                              │
+│ Добавить:                                                                    │
+│ data/whisper/                                                                │
+│                                                                              │
+│ Структура каталогов                                                          │
+│                                                                              │
+│ data/whisper/                                                                │
+│ ├── whisper.cpp/     # клонированный репозиторий (gitignored)                │
+│ ├── bin/                                                                     │
+│ │   └── whisper-cli  # собранный бинарник                                    │
+│ └── models/                                                                  │
+│     ├── ggml-small.bin   # модель по умолчанию                               │
+│     └── ggml-large-v3.bin  # опционально, через download_model               │
+│                                                                              │
+│ 2. Создать cmd/mcp/mcp-whisper/main.go                                       │
+│                                                                              │
+│ Структура — по шаблону mcp-pdf/main.go: JSON-RPC 2.0 stdio, var tools,       │
+│ handleToolCall().                                                            │
+│                                                                              │
+│ Инструменты (3 шт.)                                                          │
+│                                                                              │
+│ a) transcribe_audio — основной инструмент                                    │
+│ - Параметры:                                                                 │
+│   - path (string, required) — путь к аудиофайлу                              │
+│   - language (string, optional, default "auto") — код языка ("ru", "en",     │
+│ "auto")                                                                      │
+│   - output_format (string, optional, enum: "txt"/"srt"/"vtt"/"json", default │
+│  "txt")                                                                      │
+│   - translate (bool, optional) — перевести на английский                     │
+│   - model (string, optional) — имя модели для переопределения (e.g.          │
+│ "large-v3"), ищет в WHISPER_MODELS_DIR                                       │
+│ - Логика:                                                                    │
+│   a. os.Stat() — проверить что файл существует                               │
+│   b. Если не .wav и есть ffmpeg — конвертировать: ffmpeg -i input -ar 16000  │
+│ -ac 1 -c:a pcm_s16le tmp.wav                                                 │
+│   c. Запустить whisper-cli -m $MODEL -f audio.wav -l language -np через      │
+│ exec.CommandContext                                                          │
+│   d. Для формата srt/vtt/json — whisper-cli пишет файл рядом с входным,      │
+│ прочитать его                                                                │
+│   e. Для txt — захватить stdout                                              │
+│   f. Вернуть через textResult()                                              │
+│   g. Очистить temp-файлы (defer)                                             │
+│                                                                              │
+│ b) list_models — список доступных моделей                                    │
+│ - Сканирует WHISPER_MODELS_DIR на ggml-*.bin, возвращает имена и размеры     │
+│                                                                              │
+│ c) download_model — скачать модель с Hugging Face                            │
+│ - Параметр: model (string, required, enum:                                   │
+│ "tiny"/"base"/"small"/"medium"/"large-v3")                                   │
+│ - URL: https://huggingface.co/ggml-org/whisper-{model}/resolve/main/ggml-{mo │
+│ del}.bin                                                                     │
+│ - Скачивает в WHISPER_MODELS_DIR/ggml-{model}.bin (через .tmp → rename для   │
+│ атомарности)                                                                 │
+│ - Показывает прогресс/размер в ответе                                        │
+│                                                                              │
+│ Переменные окружения                                                         │
+│                                                                              │
+│                                                                              │
+│ ┌────────────────────┬──────────────────────────────────────┬──────────────┐ │
+│ │     Переменная     │               Default                │   Описание   │ │
+│ ├────────────────────┼──────────────────────────────────────┼──────────────┤ │
+│ │ WHISPER_BIN        │ ./data/whisper/bin/whisper-cli       │ Путь к       │ │
+│ │                    │                                      │ бинарнику    │ │
+│ ├────────────────────┼──────────────────────────────────────┼──────────────┤ │
+│ │ WHISPER_MODEL      │ ./data/whisper/models/ggml-small.bin │ Модель по    │ │
+│ │                    │                                      │ умолчанию    │ │
+│ ├────────────────────┼──────────────────────────────────────┼──────────────┤ │
+│ │ WHISPER_MODELS_DIR │ ./data/whisper/models                │ Каталог      │ │
+│ │                    │                                      │ моделей      │ │
+│ ├────────────────────┼──────────────────────────────────────┼──────────────┤ │
+│ │                    │                                      │ Потоки CPU   │ │
+│ │ WHISPER_THREADS    │ 8                                    │ (Ryzen 5     │ │
+│ │                    │                                      │ 2400G = 8    │ │
+│ │                    │                                      │ threads)     │ │
+│ ├────────────────────┼──────────────────────────────────────┼──────────────┤ │
+│ │ FFMPEG_BIN         │ ffmpeg                               │ Путь к       │ │
+│ │                    │                                      │ ffmpeg       │ │
+│ └────────────────────┴──────────────────────────────────────┴──────────────┘ │
+│                                                                              │
+│ Обработка ошибок                                                             │
+│                                                                              │
+│ - whisper-cli не найден → fatal exit при старте с сообщением run 'make       │
+│ setup-whisper' first                                                         │
+│ - Файл не найден → ошибка инструмента                                        │
+│ - ffmpeg нет + не-WAV → "ffmpeg not found; only WAV supported"               │
+│ - whisper-cli упал → вернуть stderr                                          │
+│ - Пустой результат → "No speech detected"                                    │
+│ - Таймаут → exec.CommandContext                                              │
+│                                                                              │
+│ 3. Конфигурация в tasks.yaml                                                 │
+│                                                                              │
+│ mcp_servers:                                                                 │
+│     # ... существующие ...                                                   │
+│     - name: whisper                                                          │
+│       command: ./bin/mcp-whisper                                             │
+│       env:                                                                   │
+│         WHISPER_BIN: ./data/whisper/bin/whisper-cli                          │
+│         WHISPER_MODEL: ./data/whisper/models/ggml-small.bin                  │
+│         WHISPER_MODELS_DIR: ./data/whisper/models                            │
+│         WHISPER_THREADS: "8"                                                 │
+│                                                                              │
+│ 4. Пример задачи и пайплайна                                                 │
+│                                                                              │
+│ Задача транскрибации (добавить в tasks.yaml)                                 │
+│                                                                              │
+│ - name: transcribe-audio                                                     │
+│   prompt: |                                                                  │
+│     Транскрибируй аудиофайл: {{.AudioFile}}                                  │
+│     Используй инструмент transcribe_audio с языком "ru".                     │
+│     Выведи полный текст транскрипции.                                        │
+│   work_dir: .                                                                │
+│   mcp_servers:                                                               │
+│     - whisper                                                                │
+│   allowed_tools:                                                             │
+│     - mcp__whisper__transcribe_audio                                         │
+│     - mcp__whisper__list_models                                              │
+│   timeout: 60m                                                               │
+│   model: haiku                                                               │
+│                                                                              │
+│ Пайплайн: транскрибация → анализ (session_chain)                             │
+│                                                                              │
+│ pipelines:                                                                   │
+│   - name: meeting-notes                                                      │
+│     mode: sequential                                                         │
+│     session_chain: true                                                      │
+│     steps:                                                                   │
+│       - task: transcribe-audio                                               │
+│       - task: summarize-transcription                                        │
+│     max_iterations: 1                                                        │
+│                                                                              │
+│ С session_chain: true Claude помнит полный контекст транскрипции через       │
+│ --resume — не нужно передавать текст через {{.PrevOutput}}. Идеально для     │
+│ длинных транскрипций, которые могут не поместиться в промпт.                 │
+│                                                                              │
+│ 5. Файлы для изменения/создания                                              │
+│                                                                              │
+│ ┌─────────────────────────────┬────────────────────────────────────────────┐ │
+│ │            Файл             │                  Действие                  │ │
+│ ├─────────────────────────────┼────────────────────────────────────────────┤ │
+│ │ cmd/mcp/mcp-whisper/main.go │ Создать — MCP-сервер (~400 строк)          │ │
+│ ├─────────────────────────────┼────────────────────────────────────────────┤ │
+│ │ Makefile                    │ Изменить — добавить target setup-whisper   │ │
+│ ├─────────────────────────────┼────────────────────────────────────────────┤ │
+│ │ tasks.yaml                  │ Изменить — добавить whisper в mcp_servers, │ │
+│ │                             │  пример задачи                             │ │
+│ ├─────────────────────────────┼────────────────────────────────────────────┤ │
+│ │ .gitignore                  │ Изменить — добавить data/whisper/          │ │
+│ └─────────────────────────────┴────────────────────────────────────────────┘ │
+│                                                                              │
+│ 6. Сборка (без изменений в основном build)                                   │
+│                                                                              │
+│ - make build автоматически соберёт bin/mcp-whisper из cmd/mcp/mcp-whisper/   │
+│ - make setup-whisper — отдельный one-time setup для whisper.cpp + модели     │
+│ - go.mod не меняется — только stdlib                                         │
+│                                                                              │
+│ 7. Верификация                                                               │
+│                                                                              │
+│ 1. make setup-whisper — клонирование, сборка whisper.cpp, скачивание модели  │
+│ small                                                                        │
+│ 2. make build — убедиться что bin/mcp-whisper собрался                       │
+│ 3. Ручной тест JSON-RPC: запустить bin/mcp-whisper и отправить               │
+│ transcribe_audio с тестовым аудиофайлом                                      │
+│ 4. Тест ffmpeg: подготовить .mp3 файл, проверить автоконвертацию             │
+│ 5. make run-task TASK=transcribe-audio — e2e тест через Claude CLI           │
+│ 6. Попробовать download_model с "large-v3", сравнить качество/скорость со    │
+│ small                                                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  ⎿  Interrupted · What should Claude do instead?

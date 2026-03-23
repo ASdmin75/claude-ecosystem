@@ -1,0 +1,61 @@
+ ▐▛███▜▌   Claude Code v2.1.72
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ mcp__database__check_exists, mcp__database__insert, mcp__database__query      
+Объясни что означают эти заклинания :)                                          
+
+● Это названия инструментов (tools) MCP-сервера database, который реализован в
+  этом проекте. Давай посмотрю на реализацию.
+
+● Explore(Explore database MCP server)
+  ⎿  Done (4 tool uses · 33.4k tokens · 12s)
+  (ctrl+o to expand)
+
+● Формат mcp__<сервер>__<инструмент> — это соглашение Claude Code для вызова
+  инструментов MCP-серверов. Разберём:
+
+  mcp__database__check_exists — проверяет, существует ли запись в таблице по
+  значению колонки. Возвращает true/false. Основное назначение — дедупликация
+  перед вставкой ("такой лид уже есть?").
+
+  mcp__database__insert — вставляет запись в таблицу. Принимает имя таблицы и
+  JSON-объект {колонка: значение}. Возвращает ID вставленной строки.
+
+  mcp__database__query — выполняет произвольный read-only SQL-запрос (только
+  SELECT/WITH/PRAGMA). Блокирует DROP, ALTER и прочие опасные операции.
+  Автоматически добавляет LIMIT 1000, если лимит не указан.
+
+  Все три инструмента реализованы в cmd/mcp/mcp-database/main.go и работают с
+  SQLite через domain-систему проекта. Защита от SQL-инъекций — через
+  regex-валидацию имён таблиц/колонок и параметризованные запросы.
+
+❯ как формируются эти названия?                                                 
+
+● Формат: mcp__<имя_сервера>__<имя_инструмента>
+
+  - database — это имя MCP-сервера из конфигурации tasks.yaml (секция
+  mcp_servers)
+  - query, insert, check_exists — это имена инструментов, которые сервер
+  регистрирует в своём JSON-RPC ответе на tools/list
+
+  Посмотрим оба конца.
+
+● Searched for 2 patterns (ctrl+o to expand)
+
+● Итого, склейка происходит так:
+
+  1. В tasks.yaml сервер зарегистрирован как database (строка 211: name: 
+  database)
+  2. Сам сервер в cmd/mcp/mcp-database/main.go объявляет инструменты с именами
+  query, check_exists, insert
+  3. Claude Code автоматически формирует полное имя по шаблону:
+
+  mcp__{имя сервера из конфига}__{имя инструмента из tools/list}
+
+  Поэтому mcp__database__query = сервер database + инструмент query.
+
+  Если бы сервер в tasks.yaml назывался my_db, инструменты были бы
+  mcp__my_db__query, mcp__my_db__insert и т.д. Имена инструментов — это то, что
+  сервер возвращает Claude Code по протоколу MCP в ответ на запрос tools/list, а
+   префикс mcp__<name>__ добавляет сам Claude Code для неймспейсинга.

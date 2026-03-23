@@ -1,0 +1,51 @@
+ ▐▛███▜▌   Claude Code v2.1.74
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ Какой то сбой? Файл с лидами отправлен нормально                              
+  ⎿  [Image #1]
+
+● Судя по скриншоту, это не сбой. Задача завершилась успешно (is_error: false,
+  stop_reason: "end_turn"), но в output отображается subtype: 
+  "error_max_budget_usd" — это значит Claude достиг лимита бюджета
+  (total_cost_usd: 0.509655).
+
+  Давайте проверю настройку max_budget_usd в конфиге.
+
+● Searched for 2 patterns (ctrl+o to expand)
+
+● Всё ясно. Задача process-export-by-leads имеет max_budget_usd: 0.5, и
+  выполнение потратило $0.509 — чуть превысив лимит. При этом is_error: false и
+  stop_reason: "end_turn" — значит Claude успел завершить работу (отправить
+  файл) до того, как лимит окончательно сработал.
+
+  Это не сбой. Файл отправлен, задача завершена. Просто Claude подошёл к лимиту
+  бюджета. Если хотите избежать этого предупреждения в будущем, можно немного
+  увеличить лимит, например до 0.75:
+
+● Read 1 file (ctrl+o to expand)
+
+● Хотите увеличить max_budget_usd до 0.75 для этой задачи, чтобы не упираться в
+  лимит?
+
+✻ Crunched for 31s
+
+❯ Убери бюджет вообще                                                           
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ Убери бюджет для этой задачи вообще                                           
+
+● Update(tasks.yaml)
+  ⎿  Removed 1 line
+      300        - mcp__email__send_report
+      301        - WebFetch
+      302      max_turns: 50
+      303 -    max_budget_usd: 0.5                                       
+      303      permission_mode: bypassPermissions
+      304  pipelines:
+      305    - name: review-fix
+
+● Готово, max_budget_usd убран для задачи process-export-by-leads.
