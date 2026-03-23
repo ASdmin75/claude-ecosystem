@@ -1154,6 +1154,36 @@ data/backup/
 - `web/src/components/PipelineList.tsx` — импорт `Link`, иконка `↗` с навигацией
 - `web/src/components/TaskList.tsx` — импорт `useSearchParams`/`useEffect`, автоселект задачи по query param
 
+### 2026-03-23 — Подготовка демо: AviationStack API через mcp-openapi
+
+**Контекст:** подготовка демонстрации для руководства компании — интеграция с внешним API авиационных данных через Wizard + mcp-openapi.
+
+**OpenAPI-спецификация AviationStack:**
+- Создан `specs/aviationstack.yaml` — OpenAPI 3.0 спецификация для AviationStack API (free tier)
+- 4 эндпоинта: `getFlights` (поиск рейсов), `getAirports` (аэропорты), `getTimetable` (расписание на сегодня), `getFutureFlights` (будущие рейсы)
+- Полные response-схемы: `Flight` (departure/arrival/airline/flight objects), `Airport`, `Pagination`
+- Base URL: `http://api.aviationstack.com` (free tier — только HTTP)
+- Аутентификация: API key как query parameter `access_key` (через OPENAPI_API_KEY_IN=query)
+
+**Инфраструктура:**
+- Добавлен `AVIATIONSTACK_API_KEY` в `.env`
+- Добавлен `api.aviationstack.com` в `NO_PROXY`/`no_proxy` (чтобы запросы к API не шли через прокси)
+
+**Документация демо:**
+- Создан `docs/demo-aviation-2024-03-24.md` — полный сценарий демонстрации:
+  - Текст для Wizard (MCP-сервер + домен + 4 задачи + пайплайн)
+  - 3 акта: Wizard (создание) → CLI (flight tracker) → Web UI (пайплайн до Telegram)
+  - Тезисы для руководства, бюджет API-запросов, план Б при сбоях
+
+**Сценарий демо (Wizard-first):**
+- Wizard создаёт всё из текстового описания: MCP-сервер `aviationstack`, домен `aviation-monitoring` (SQLite: tracked_flights, hub_snapshots), 4 задачи (flight-tracker, hub-monitor, compile-report, deliver-report), пайплайн `aviation-cargo-monitor`
+- Единственный ручной шаг — OpenAPI-спека (`specs/aviationstack.yaml`) создана заранее
+
+**Изменённые файлы:**
+- `specs/aviationstack.yaml` — новый: OpenAPI спецификация AviationStack
+- `.env` — добавлен AVIATIONSTACK_API_KEY + NO_PROXY обновлён
+- `docs/demo-aviation-2024-03-24.md` — новый: шпаргалка демо
+
 ---
 
 ## Бэклог

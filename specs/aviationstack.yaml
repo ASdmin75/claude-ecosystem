@@ -1,0 +1,297 @@
+openapi: "3.0.3"
+info:
+  title: AviationStack API
+  description: Real-time flight tracking and aviation data API
+  version: "1.0"
+servers:
+  - url: http://api.aviationstack.com
+
+paths:
+  /v1/flights:
+    get:
+      operationId: getFlights
+      summary: Search real-time and historical flights
+      description: |
+        Returns flight data with optional filters. Use airline_iata to filter by airline
+        (e.g. TK=Turkish Airlines, CV=Cargolux, EK=Emirates, QR=Qatar Airways).
+        Use dep_iata/arr_iata for departure/arrival airport IATA codes.
+        Free plan: max 100 results per request.
+      parameters:
+        - name: airline_iata
+          in: query
+          description: Filter by airline IATA code (e.g. TK, CV, EK, LH, QR)
+          schema:
+            type: string
+        - name: flight_iata
+          in: query
+          description: Filter by flight IATA number (e.g. TK6271)
+          schema:
+            type: string
+        - name: dep_iata
+          in: query
+          description: Filter by departure airport IATA code (e.g. FRA, IST, LUX)
+          schema:
+            type: string
+        - name: arr_iata
+          in: query
+          description: Filter by arrival airport IATA code (e.g. SVO, PVG, DXB)
+          schema:
+            type: string
+        - name: flight_status
+          in: query
+          description: "Filter by status: scheduled, active, landed, cancelled, incident, diverted"
+          schema:
+            type: string
+            enum: [scheduled, active, landed, cancelled, incident, diverted]
+        - name: flight_date
+          in: query
+          description: Filter by date (YYYY-MM-DD)
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Number of results (default 100)
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          description: Pagination offset
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Flight data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Flight"
+
+  /v1/airports:
+    get:
+      operationId: getAirports
+      summary: Get airport information
+      description: Returns airport data. Filter by IATA code to get specific airport details.
+      parameters:
+        - name: iata_code
+          in: query
+          description: Airport IATA code (e.g. FRA, IST, SVO)
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Airport data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Airport"
+
+  /v1/timetable:
+    get:
+      operationId: getTimetable
+      summary: Get airport timetable for today
+      description: |
+        Returns today's flight schedule for a specific airport.
+        Rate limit on free plan: 1 request per 60 seconds.
+      parameters:
+        - name: iata_code
+          in: query
+          required: true
+          description: Airport IATA code (e.g. FRA, IST, SVO)
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: "Schedule type: departure or arrival"
+          schema:
+            type: string
+            enum: [departure, arrival]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Timetable data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Flight"
+
+  /v1/flightsFuture:
+    get:
+      operationId: getFutureFlights
+      summary: Get future flight schedules
+      description: |
+        Returns future flight schedule for a specific airport and date.
+        Rate limit on free plan: 1 request per 60 seconds.
+      parameters:
+        - name: iata_code
+          in: query
+          required: true
+          description: Airport IATA code
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: "departure or arrival"
+          schema:
+            type: string
+            enum: [departure, arrival]
+        - name: date
+          in: query
+          required: true
+          description: Future date (YYYY-MM-DD)
+          schema:
+            type: string
+        - name: airline_iata
+          in: query
+          description: Filter by airline IATA code
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Future flight data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Flight"
+
+components:
+  schemas:
+    Pagination:
+      type: object
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+        count:
+          type: integer
+        total:
+          type: integer
+
+    Flight:
+      type: object
+      properties:
+        flight_date:
+          type: string
+        flight_status:
+          type: string
+        departure:
+          type: object
+          properties:
+            airport:
+              type: string
+            timezone:
+              type: string
+            iata:
+              type: string
+            scheduled:
+              type: string
+            estimated:
+              type: string
+            actual:
+              type: string
+            delay:
+              type: integer
+        arrival:
+          type: object
+          properties:
+            airport:
+              type: string
+            timezone:
+              type: string
+            iata:
+              type: string
+            scheduled:
+              type: string
+            estimated:
+              type: string
+            actual:
+              type: string
+        airline:
+          type: object
+          properties:
+            name:
+              type: string
+            iata:
+              type: string
+            icao:
+              type: string
+        flight:
+          type: object
+          properties:
+            number:
+              type: string
+            iata:
+              type: string
+            icao:
+              type: string
+
+    Airport:
+      type: object
+      properties:
+        airport_name:
+          type: string
+        iata_code:
+          type: string
+        icao_code:
+          type: string
+        latitude:
+          type: number
+        longitude:
+          type: number
+        timezone:
+          type: string
+        country_name:
+          type: string
+        city_iata_code:
+          type: string
