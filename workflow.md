@@ -1184,6 +1184,75 @@ data/backup/
 - `.env` — добавлен AVIATIONSTACK_API_KEY + NO_PROXY обновлён
 - `docs/demo-aviation-2024-03-24.md` — новый: шпаргалка демо
 
+### 2026-03-24 — Полный аудит проекта: безопасность, надёжность, качество кода
+
+**Контекст:** комплексный аудит всего проекта выявил ~40 проблем разной критичности. Исправлены все найденные проблемы + добавлены тесты.
+
+**Фаза 1: Critical — Race Conditions и утечки ресурсов**
+- **Event Bus Unsubscribe:** добавлен ID-based `Unsubscribe()` в `events.Bus` — `Subscribe()` теперь возвращает `UnsubscribeFunc`. Все SSE handlers (`handleEvents`, `handleExecutionStream`, `handleTaskStream`) вызывают cleanup при disconnect клиента. Устранена утечка памяти: ранее каждое SSE-подключение навсегда регистрировало handlers в event bus
+- **Transaction rollback в mcp-database:** добавлен `defer tx.Rollback()` в `handleBatchInsert()` — ранее при ошибках вставки транзакция оставалась открытой
+- **Config race condition:** добавлен `sync.RWMutex` в `config.Config` с методами `RLock/RUnlock/Lock/Unlock`. Write lock в `reloadConfig()` (hot-reload), read lock в `handleListTasks/Pipelines`, `handleDashboard`, `findTask/findPipeline`. Write lock в CRUD handlers (create/update/delete tasks и pipelines)
+
+**Фаза 2: Security**
+- **Path traversal в mcp-filesystem:** новая функция `validatePath()` + env var `ALLOWED_DIRS` (разделитель `:`). Все 5 handlers (read, write, list, search, copy) валидируют пути. Без `ALLOWED_DIRS` — поведение без ограничений (обратная совместимость)
+- **Security headers:** `X-Content-Type-Options: nosniff` и `X-Frame-Options: DENY` в `writeJSON()`
+- **Rate limiting на login:** `loginRateLimiter` — 10 попыток / 15 минут per IP на `/api/v1/auth/login`, поддержка `X-Forwarded-For`
+- **Request size limit:** `http.MaxBytesReader` 1MB в `readJSON()` — защита от memory exhaustion
+- **Temp file permissions:** MCP config файлы (`GenerateConfigFileWithEnv`) создаются с `0600` вместо default (могут содержать API keys)
+
+**Фаза 3: Reliability и Validation**
+- **Config validation:** валидация cron expressions через `cron.ParseStandard()` для задач и пайплайнов; проверка `MaxTurns >= 0`; warning при наличии и `schedule`, и `watch` у одной задачи
+- **LIMIT injection fix:** `mcp-database` — обёртка в subquery (`SELECT * FROM (...) LIMIT 1000`) вместо append, который ломал SQL с ORDER BY/GROUP BY
+- **UTF-8 safe truncation:** `mcp-openapi` — `[]rune` вместо побайтового обрезания описаний
+- **Dashboard COUNT:** новый метод `CountExecutions()` в store interface + SQLite реализация с `GROUP BY status`. Dashboard больше не загружает 100K записей
+- **Scheduler pause state leak:** `Reset()` теперь очищает `paused` map — удалённые задачи не копились в памяти
+- **Watcher error logging:** `fsw.Remove()` логирует ошибки вместо `_ =`
+- **itoa → strconv.Itoa:** убрана рекурсивная самописная `itoa()` в depcheck (риск stack overflow)
+
+**Фаза 4: Frontend и API quality**
+- **ErrorBoundary:** React error boundary (`web/src/components/ErrorBoundary.tsx`) обёртка в `main.tsx`
+- **Error sanitization:** API client скрывает детали 5xx ошибок от пользователя (`Internal server error`)
+- **SSE reconnection limit:** максимум 50 попыток (`maxReconnectAttempts`), после чего прекращает попытки
+
+**Фаза 5: Тесты (+39 новых тестов)**
+- `internal/events/bus_test.go` — unsubscribe (4 теста: remove handler, partial unsub, nil handler, double unsub)
+- `cmd/mcp/mcp-filesystem/main_test.go` — path traversal protection (7 тестов)
+- `internal/api/helpers_test.go` — request size limit + security headers (8 тестов)
+- `internal/api/auth_test.go` — rate limiter (5 тестов)
+- `internal/config/config_test.go` — concurrent config access с `-race` (5 тестов)
+- `internal/config/validate_test.go` — cron, MaxTurns, pipeline validation (9 тестов)
+- `internal/store/sqlite/sqlite_test.go` — CountExecutions (1 тест)
+- Все тесты проходят с `go test -race ./...`
+
+**Изменённые файлы (backend):**
+- `internal/events/bus.go` — Unsubscribe, ID-based subscriptions
+- `internal/api/sse.go` — cleanup подписок при disconnect
+- `internal/api/helpers.go` — security headers, MaxBytesReader
+- `internal/api/auth.go` — rate limiter
+- `internal/api/router.go` — RLock в findTask/findPipeline
+- `internal/api/tasks.go` — RLock/Lock для config access
+- `internal/api/pipelines.go` — RLock/Lock для config access
+- `internal/api/dashboard.go` — CountExecutions вместо ListExecutions
+- `internal/config/config.go` — sync.RWMutex
+- `internal/config/validate.go` — cron validation, MaxTurns check
+- `internal/store/store.go` — ExecutionCounts, CountExecutions interface
+- `internal/store/sqlite/queries.go` — CountExecutions implementation
+- `internal/scheduler/scheduler.go` — Reset() clears paused map
+- `internal/watcher/watcher.go` — error logging in Reset()
+- `internal/mcpmanager/config.go` — file permissions 0600
+- `internal/depcheck/checker.go` — strconv.Itoa
+- `internal/notify/notify.go` — updated Subscribe call
+- `cmd/server/main.go` — config write lock in reloadConfig
+- `cmd/mcp/mcp-database/main.go` — tx.Rollback, LIMIT subquery
+- `cmd/mcp/mcp-filesystem/main.go` — validatePath, ALLOWED_DIRS
+- `cmd/mcp/mcp-openapi/main.go` — UTF-8 truncation
+
+**Изменённые файлы (frontend):**
+- `web/src/components/ErrorBoundary.tsx` — новый
+- `web/src/main.tsx` — ErrorBoundary wrapper
+- `web/src/api/client.ts` — error sanitization
+- `web/src/hooks/useSSE.ts` — reconnection limit
+
 ---
 
 ## Бэклог
@@ -1223,7 +1292,17 @@ data/backup/
 
 ### Инфраструктура
 - [x] Unit-тесты: auth, events, runguard, subagent, task, store/sqlite, depcheck, backup (75+ тестов)
-- [ ] CI/CD pipeline (GitHub Actions)
+- [x] Аудит безопасности + hardening: rate limiting, security headers, path traversal protection, request size limits (2026-03-24)
+- [x] Race condition protection: sync.RWMutex на Config, event bus Unsubscribe (2026-03-24)
+- [x] Тесты: filesystem path traversal, API helpers, rate limiter, concurrent config, validation, CountExecutions (+39 тестов, 2026-03-24)
+- [ ] CI/CD pipeline (GitHub Actions) — добавить `go test -race ./...` и `go vet`
 - [x] Docker-образ (Dockerfile + docker-compose.yml)
 - [ ] Docker: авторизация Claude Code Max (OAuth) — `claude login` из контейнера не подключается к api.anthropic.com (ERR_BAD_REQUEST). Варианты: host network, DNS-fix, или ANTHROPIC_API_KEY
 - [ ] Документация API (OpenAPI/Swagger)
+
+### Безопасность — оставшиеся пункты (low priority)
+- [ ] CORS middleware (если API будет доступен с других доменов)
+- [ ] Content-Security-Policy header
+- [ ] Strict-Transport-Security header (при HTTPS)
+- [ ] httpOnly cookie вместо localStorage для токенов (XSS protection)
+- [ ] Тесты: pipeline (sequential/parallel), scheduler (cron/pause/reset), watcher (debounce)

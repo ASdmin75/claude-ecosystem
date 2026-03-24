@@ -99,9 +99,10 @@ func handleQuery(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 		return mcp.NewToolResultError("query contains disallowed SQL keywords"), nil
 	}
 
-	// Add LIMIT if not present
+	// Add LIMIT if not present by wrapping in a subquery to avoid breaking
+	// queries with ORDER BY / GROUP BY clauses.
 	if !strings.Contains(strings.ToUpper(sqlStr), "LIMIT") {
-		sqlStr = sqlStr + " LIMIT 1000"
+		sqlStr = "SELECT * FROM (" + sqlStr + ") LIMIT 1000"
 	}
 
 	rows, err := db.Query(sqlStr)
@@ -292,6 +293,7 @@ func handleBatchInsert(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	if err != nil {
 		return mcp.NewToolResultError("begin transaction: " + err.Error()), nil
 	}
+	defer tx.Rollback() // no-op after successful Commit
 
 	inserted := 0
 	var errors []string

@@ -2,6 +2,7 @@ package depcheck
 
 import (
 	"slices"
+	"strconv"
 
 	"github.com/asdmin/claude-ecosystem/internal/config"
 )
@@ -203,8 +204,5 @@ func findTask(cfg *config.Config, name string) *config.Task {
 }
 
 func itoa(n int) string {
-	if n < 10 {
-		return string(rune('0' + n))
-	}
-	return itoa(n/10) + string(rune('0'+n%10))
+	return strconv.Itoa(n)
 }

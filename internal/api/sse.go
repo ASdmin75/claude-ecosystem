@@ -32,14 +32,21 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		"pipeline.started", "pipeline.completed",
 		"task.cancelled",
 	}
+	var unsubscribes []events.UnsubscribeFunc
 	for _, et := range eventTypes {
-		s.bus.Subscribe(et, func(e events.Event) {
+		unsub := s.bus.Subscribe(et, func(e events.Event) {
 			select {
 			case ch <- e:
 			default:
 			}
 		})
+		unsubscribes = append(unsubscribes, unsub)
 	}
+	defer func() {
+		for _, unsub := range unsubscribes {
+			unsub()
+		}
+	}()
 
 	go func() {
 		<-r.Context().Done()
@@ -90,30 +97,18 @@ func (s *Server) handleExecutionStream(w http.ResponseWriter, r *http.Request) {
 	done := make(chan struct{})
 
 	// Subscribe to task and pipeline completion events.
-	s.bus.Subscribe("task.completed", func(e events.Event) {
+	filterByExec := func(e events.Event) {
 		if e.Payload["execution_id"] == execID {
 			select {
 			case ch <- e:
 			default:
 			}
 		}
-	})
-	s.bus.Subscribe("pipeline.completed", func(e events.Event) {
-		if e.Payload["execution_id"] == execID {
-			select {
-			case ch <- e:
-			default:
-			}
-		}
-	})
-	s.bus.Subscribe("task.output", func(e events.Event) {
-		if e.Payload["execution_id"] == execID {
-			select {
-			case ch <- e:
-			default:
-			}
-		}
-	})
+	}
+	unsub1 := s.bus.Subscribe("task.completed", filterByExec)
+	unsub2 := s.bus.Subscribe("pipeline.completed", filterByExec)
+	unsub3 := s.bus.Subscribe("task.output", filterByExec)
+	defer func() { unsub1(); unsub2(); unsub3() }()
 
 	go func() {
 		<-r.Context().Done()
@@ -167,22 +162,17 @@ func (s *Server) handleTaskStream(w http.ResponseWriter, r *http.Request) {
 	done := make(chan struct{})
 
 	// Subscribe to events for this task name.
-	s.bus.Subscribe("task.completed", func(e events.Event) {
+	filterByTask := func(e events.Event) {
 		if e.Payload["task"] == name {
 			select {
 			case ch <- e:
 			default:
 			}
 		}
-	})
-	s.bus.Subscribe("task.output", func(e events.Event) {
-		if e.Payload["task"] == name {
-			select {
-			case ch <- e:
-			default:
-			}
-		}
-	})
+	}
+	unsub1 := s.bus.Subscribe("task.completed", filterByTask)
+	unsub2 := s.bus.Subscribe("task.output", filterByTask)
+	defer func() { unsub1(); unsub2() }()
 
 	go func() {
 		<-r.Context().Done()

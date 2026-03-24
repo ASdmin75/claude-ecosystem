@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/robfig/cron/v3"
 )
 
 // Validate checks the configuration for common errors:
@@ -33,10 +36,24 @@ func Validate(cfg *Config) error {
 			}
 		}
 
+		if t.Schedule != "" {
+			if _, err := cron.ParseStandard(t.Schedule); err != nil {
+				return fmt.Errorf("task %s: invalid cron schedule %q: %w", t.Name, t.Schedule, err)
+			}
+		}
+
+		if t.Schedule != "" && t.Watch != nil {
+			slog.Warn("task has both schedule and watch configured; both triggers will fire independently", "task", t.Name)
+		}
+
 		if t.Watch != nil && t.Watch.Debounce != "" {
 			if _, err := time.ParseDuration(t.Watch.Debounce); err != nil {
 				return fmt.Errorf("task %s: invalid debounce %q: %w", t.Name, t.Watch.Debounce, err)
 			}
+		}
+
+		if t.MaxTurns < 0 {
+			return fmt.Errorf("task %s: max_turns must be >= 0", t.Name)
 		}
 
 		if t.Domain != "" {
@@ -60,6 +77,12 @@ func Validate(cfg *Config) error {
 		}
 		if len(p.Steps) == 0 {
 			return fmt.Errorf("pipeline %s: at least one step is required", p.Name)
+		}
+
+		if p.Schedule != "" {
+			if _, err := cron.ParseStandard(p.Schedule); err != nil {
+				return fmt.Errorf("pipeline %s: invalid cron schedule %q: %w", p.Name, p.Schedule, err)
+			}
 		}
 
 		mode := p.EffectiveMode()

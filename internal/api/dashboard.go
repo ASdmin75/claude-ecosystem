@@ -2,8 +2,6 @@ package api
 
 import (
 	"net/http"
-
-	"github.com/asdmin/claude-ecosystem/internal/store"
 )
 
 // dashboardResponse holds aggregated stats for the dashboard.
@@ -19,30 +17,25 @@ type dashboardResponse struct {
 // handleDashboard returns aggregated statistics.
 // GET /api/v1/dashboard
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	resp := dashboardResponse{
-		TotalTasks:     len(s.cfg.Tasks),
-		TotalPipelines: len(s.cfg.Pipelines),
-	}
+	s.cfg.RLock()
+	totalTasks := len(s.cfg.Tasks)
+	totalPipelines := len(s.cfg.Pipelines)
+	s.cfg.RUnlock()
 
-	// Count executions by status. We fetch all with a large limit.
-	// A production system would use a dedicated COUNT query.
-	allExecs, err := s.store.ListExecutions(r.Context(), store.ExecutionFilter{Limit: 100000})
+	counts, err := s.store.CountExecutions(r.Context())
 	if err != nil {
-		s.logger.Error("failed to list executions for dashboard", "error", err)
+		s.logger.Error("failed to count executions for dashboard", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load dashboard data")
 		return
 	}
 
-	resp.TotalExecutions = len(allExecs)
-	for _, e := range allExecs {
-		switch e.Status {
-		case "running":
-			resp.Running++
-		case "completed":
-			resp.Completed++
-		case "failed":
-			resp.Failed++
-		}
+	resp := dashboardResponse{
+		TotalTasks:      totalTasks,
+		TotalPipelines:  totalPipelines,
+		TotalExecutions: counts.Total,
+		Running:         counts.Running,
+		Completed:       counts.Completed,
+		Failed:          counts.Failed,
 	}
 
 	writeJSON(w, http.StatusOK, resp)

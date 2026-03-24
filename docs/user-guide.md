@@ -615,7 +615,7 @@ mcp_servers:
 
 | Сервер | Инструменты | Статус |
 |--------|------------|--------|
-| **mcp-filesystem** | `read_file`, `write_file`, `list_directory`, `search_files`, `copy_file` | Реализован |
+| **mcp-filesystem** | `read_file`, `write_file`, `list_directory`, `search_files`, `copy_file` | Реализован (поддержка `ALLOWED_DIRS`) |
 | **mcp-excel** | `create_spreadsheet`, `write_spreadsheet`, `read_spreadsheet`, `add_styled_table` | Реализован |
 | **mcp-email** | `send_email` (с вложениями и HTML), `read_inbox`*, `search_emails`* | Частично (*stubs) |
 | **mcp-telegram** | `send_message`, `send_document` | Реализован |
@@ -626,6 +626,22 @@ mcp_servers:
 | **mcp-google** | — | Stub |
 | **mcp-database** | `query`, `execute`, `list_tables`, `describe_table`, `check_exists`, `insert`, `batch_insert` | Реализован |
 | **mcp-exportby** | `sync_catalog`, `get_unanalyzed`, `check_new`, `get_stats`, `get_pending_count`, `export_leads_excel`, `mark_exported`, `reject_companies` | Реализован |
+
+### mcp-filesystem — ограничение доступа к файловой системе
+
+По умолчанию `mcp-filesystem` имеет доступ ко всей файловой системе. Для ограничения задайте `ALLOWED_DIRS` — список разрешённых директорий через двоеточие:
+
+```yaml
+mcp_servers:
+  - name: filesystem
+    command: ./bin/mcp-filesystem
+    env:
+      ALLOWED_DIRS: "/home/user/workspace:/home/user/data"
+```
+
+Все операции (`read_file`, `write_file`, `list_directory`, `search_files`, `copy_file`) будут работать только внутри указанных директорий. Попытки доступа за пределы (включая path traversal через `../`) будут отклонены с ошибкой.
+
+Если `ALLOWED_DIRS` не задана — ограничений нет (обратная совместимость).
 
 ### mcp-openapi — интеграция внешних API
 

@@ -214,7 +214,9 @@ func (w *Watcher) Reset() {
 	w.mu.Unlock()
 
 	for _, path := range w.fsw.WatchList() {
-		_ = w.fsw.Remove(path)
+		if err := w.fsw.Remove(path); err != nil {
+			w.logger.Warn("failed to remove watch path", "path", path, "error", err)
+		}
 	}
 }
 

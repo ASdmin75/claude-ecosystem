@@ -39,7 +39,10 @@ type asyncRunResponse struct {
 // handleListTasks returns all tasks from the config.
 // GET /api/v1/tasks
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.cfg.Tasks)
+	s.cfg.RLock()
+	tasks := s.cfg.Tasks
+	s.cfg.RUnlock()
+	writeJSON(w, http.StatusOK, tasks)
 }
 
 // handleGetTask returns a single task by name.
@@ -77,15 +80,18 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.cfg.Lock()
 	s.cfg.Tasks = append(s.cfg.Tasks, task)
 
 	if err := s.cfg.Save(); err != nil {
 		// Rollback
 		s.cfg.Tasks = s.cfg.Tasks[:len(s.cfg.Tasks)-1]
+		s.cfg.Unlock()
 		s.logger.Error("failed to save config", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
 		return
 	}
+	s.cfg.Unlock()
 
 	s.logger.Info("task created", "name", task.Name)
 	writeJSON(w, http.StatusCreated, s.findTask(task.Name))
@@ -103,6 +109,7 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find existing task
+	s.cfg.Lock()
 	var found bool
 	for i := range s.cfg.Tasks {
 		if s.cfg.Tasks[i].Name == name {
@@ -114,16 +121,19 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found {
+		s.cfg.Unlock()
 		writeError(w, http.StatusNotFound, "task not found: "+name)
 		return
 	}
 
 	// Persist to disk
 	if err := s.cfg.Save(); err != nil {
+		s.cfg.Unlock()
 		s.logger.Error("failed to save config", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
 		return
 	}
+	s.cfg.Unlock()
 
 	s.logger.Info("task updated", "name", name)
 	writeJSON(w, http.StatusOK, s.findTask(name))
@@ -173,12 +183,14 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Remove from config.
+	s.cfg.Lock()
 	for i := range s.cfg.Tasks {
 		if s.cfg.Tasks[i].Name == name {
 			s.cfg.Tasks = append(s.cfg.Tasks[:i], s.cfg.Tasks[i+1:]...)
 			break
 		}
 	}
+	s.cfg.Unlock()
 
 	// Only clean MCP server refs not used by surviving tasks.
 	mcpSet := make(map[string]struct{})

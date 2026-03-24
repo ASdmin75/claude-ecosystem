@@ -6,10 +6,15 @@ import (
 	"net/http"
 )
 
+// maxRequestBodySize limits JSON request bodies to 1MB to prevent memory exhaustion.
+const maxRequestBodySize = 1 << 20 // 1MB
+
 // writeJSON marshals data as JSON and writes it to the response with the given status code.
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
 	w.WriteHeader(status)
 	if data != nil {
 		if err := json.NewEncoder(w).Encode(data); err != nil {
@@ -25,6 +30,7 @@ func readJSON(r *http.Request, v interface{}) error {
 	if r.Body == nil {
 		return fmt.Errorf("missing request body")
 	}
+	r.Body = http.MaxBytesReader(nil, r.Body, maxRequestBodySize)
 	defer r.Body.Close()
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()

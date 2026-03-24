@@ -34,6 +34,14 @@ type ExecutionFilter struct {
 	Offset       int
 }
 
+// ExecutionCounts holds per-status execution counts for the dashboard.
+type ExecutionCounts struct {
+	Total     int `json:"total"`
+	Running   int `json:"running"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+}
+
 // ExecutionStore defines persistence operations for execution records.
 type ExecutionStore interface {
 	CreateExecution(ctx context.Context, exec *Execution) error
@@ -41,6 +49,7 @@ type ExecutionStore interface {
 	GetExecution(ctx context.Context, id string) (*Execution, error)
 	ListExecutions(ctx context.Context, filter ExecutionFilter) ([]Execution, error)
 	DeleteExecution(ctx context.Context, id string) error
+	CountExecutions(ctx context.Context) (ExecutionCounts, error)
 }
 
 // User represents an authenticated user.

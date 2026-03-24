@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -206,6 +207,51 @@ func TestGetNonExistentUser(t *testing.T) {
 	_, err := s.GetUserByUsername(context.Background(), "nobody")
 	if err == nil {
 		t.Fatal("expected error for nonexistent user")
+	}
+}
+
+func TestCountExecutions(t *testing.T) {
+	s := setupTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Empty store should return zero counts.
+	counts, err := s.CountExecutions(ctx)
+	if err != nil {
+		t.Fatalf("CountExecutions on empty store: %v", err)
+	}
+	if counts.Total != 0 {
+		t.Errorf("expected 0 total, got %d", counts.Total)
+	}
+
+	// Create executions with different statuses.
+	statuses := []string{"completed", "completed", "completed", "failed", "failed", "running"}
+	for i, status := range statuses {
+		s.CreateExecution(ctx, &store.Execution{
+			ID:        fmt.Sprintf("count-%d", i),
+			TaskName:  "count-task",
+			Status:    status,
+			Trigger:   "manual",
+			StartedAt: now.Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	counts, err = s.CountExecutions(ctx)
+	if err != nil {
+		t.Fatalf("CountExecutions: %v", err)
+	}
+
+	if counts.Total != 6 {
+		t.Errorf("total: got %d, want 6", counts.Total)
+	}
+	if counts.Completed != 3 {
+		t.Errorf("completed: got %d, want 3", counts.Completed)
+	}
+	if counts.Failed != 2 {
+		t.Errorf("failed: got %d, want 2", counts.Failed)
+	}
+	if counts.Running != 1 {
+		t.Errorf("running: got %d, want 1", counts.Running)
 	}
 }
 

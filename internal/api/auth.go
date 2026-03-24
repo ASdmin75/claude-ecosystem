@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/asdmin/claude-ecosystem/internal/auth"
@@ -9,6 +10,48 @@ import (
 )
 
 const tokenDuration = 24 * time.Hour
+
+// loginRateLimiter implements a simple per-IP rate limiter for login attempts.
+type loginRateLimiter struct {
+	mu       sync.Mutex
+	attempts map[string][]time.Time
+	window   time.Duration
+	max      int
+}
+
+func newLoginRateLimiter(window time.Duration, max int) *loginRateLimiter {
+	return &loginRateLimiter{
+		attempts: make(map[string][]time.Time),
+		window:   window,
+		max:      max,
+	}
+}
+
+func (rl *loginRateLimiter) allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+
+	// Clean old entries
+	recent := rl.attempts[ip][:0]
+	for _, t := range rl.attempts[ip] {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+
+	if len(recent) >= rl.max {
+		rl.attempts[ip] = recent
+		return false
+	}
+
+	rl.attempts[ip] = append(recent, now)
+	return true
+}
+
+var loginLimiter = newLoginRateLimiter(15*time.Minute, 10)
 
 // loginRequest is the JSON body for POST /api/v1/auth/login.
 type loginRequest struct {
@@ -25,6 +68,16 @@ type tokenResponse struct {
 // handleLogin authenticates a user and returns a PASETO token.
 // POST /api/v1/auth/login
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Rate limit login attempts per IP.
+	ip := r.RemoteAddr
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		ip = fwd
+	}
+	if !loginLimiter.allow(ip) {
+		writeError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
+		return
+	}
+
 	var req loginRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

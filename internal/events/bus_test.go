@@ -10,7 +10,7 @@ func TestPublishToSubscriber(t *testing.T) {
 	bus := NewBus()
 
 	var received atomic.Value
-	bus.Subscribe("test.event", func(e Event) {
+	_ = bus.Subscribe("test.event", func(e Event) {
 		received.Store(e)
 	})
 
@@ -31,7 +31,7 @@ func TestMultipleSubscribers(t *testing.T) {
 	var count atomic.Int32
 
 	for range 3 {
-		bus.Subscribe("multi", func(e Event) {
+		_ = bus.Subscribe("multi", func(e Event) {
 			count.Add(1)
 		})
 	}
@@ -55,7 +55,7 @@ func TestSubscribersIsolatedByType(t *testing.T) {
 	bus := NewBus()
 
 	var called atomic.Bool
-	bus.Subscribe("type.a", func(e Event) {
+	_ = bus.Subscribe("type.a", func(e Event) {
 		called.Store(true)
 	})
 
@@ -71,10 +71,10 @@ func TestHandlerPanicRecovery(t *testing.T) {
 	bus := NewBus()
 
 	var afterPanic atomic.Bool
-	bus.Subscribe("panic.test", func(e Event) {
+	_ = bus.Subscribe("panic.test", func(e Event) {
 		panic("test panic")
 	})
-	bus.Subscribe("panic.test", func(e Event) {
+	_ = bus.Subscribe("panic.test", func(e Event) {
 		afterPanic.Store(true)
 	})
 
@@ -91,7 +91,7 @@ func TestWaitBlocksUntilComplete(t *testing.T) {
 	bus := NewBus()
 	var done atomic.Bool
 
-	bus.Subscribe("slow", func(e Event) {
+	_ = bus.Subscribe("slow", func(e Event) {
 		time.Sleep(50 * time.Millisecond)
 		done.Store(true)
 	})
@@ -102,4 +102,67 @@ func TestWaitBlocksUntilComplete(t *testing.T) {
 	if !done.Load() {
 		t.Fatal("Wait should block until handler completes")
 	}
+}
+
+func TestUnsubscribeRemovesHandler(t *testing.T) {
+	bus := NewBus()
+	var count atomic.Int32
+
+	unsub := bus.Subscribe("unsub.test", func(e Event) {
+		count.Add(1)
+	})
+
+	bus.Publish(Event{Type: "unsub.test"})
+	bus.Wait()
+	if count.Load() != 1 {
+		t.Fatalf("expected 1 call, got %d", count.Load())
+	}
+
+	unsub()
+
+	bus.Publish(Event{Type: "unsub.test"})
+	bus.Wait()
+	if count.Load() != 1 {
+		t.Fatalf("expected still 1 call after unsubscribe, got %d", count.Load())
+	}
+}
+
+func TestUnsubscribeOnlyRemovesTargetHandler(t *testing.T) {
+	bus := NewBus()
+	var countA, countB atomic.Int32
+
+	unsubA := bus.Subscribe("partial", func(e Event) {
+		countA.Add(1)
+	})
+	_ = bus.Subscribe("partial", func(e Event) {
+		countB.Add(1)
+	})
+
+	unsubA()
+
+	bus.Publish(Event{Type: "partial"})
+	bus.Wait()
+
+	if countA.Load() != 0 {
+		t.Fatalf("handler A should not be called after unsubscribe, got %d", countA.Load())
+	}
+	if countB.Load() != 1 {
+		t.Fatalf("handler B should still be called, got %d", countB.Load())
+	}
+}
+
+func TestSubscribeNilHandlerIsNoop(t *testing.T) {
+	bus := NewBus()
+	unsub := bus.Subscribe("nil.test", nil)
+	// Should not panic
+	bus.Publish(Event{Type: "nil.test"})
+	bus.Wait()
+	unsub() // should not panic
+}
+
+func TestDoubleUnsubscribeIsNoop(t *testing.T) {
+	bus := NewBus()
+	unsub := bus.Subscribe("double.unsub", func(e Event) {})
+	unsub()
+	unsub() // should not panic
 }

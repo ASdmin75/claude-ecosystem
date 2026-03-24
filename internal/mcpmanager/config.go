@@ -71,6 +71,12 @@ func (m *Manager) GenerateConfigFileWithEnv(serverNames []string, extraEnv map[s
 	}
 	defer f.Close()
 
+	// Restrict permissions since the file may contain secrets (API keys, tokens).
+	if err := f.Chmod(0o600); err != nil {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("setting MCP config file permissions: %w", err)
+	}
+
 	if _, err := f.Write(data); err != nil {
 		os.Remove(f.Name())
 		return "", fmt.Errorf("writing MCP config file: %w", err)

@@ -755,8 +755,8 @@ func buildTool(name string, op apiOperation) mcp.Tool {
 	if desc == "" {
 		desc = fmt.Sprintf("%s %s", op.Method, op.Path)
 	}
-	if len(desc) > 500 {
-		desc = desc[:497] + "..."
+	if runes := []rune(desc); len(runes) > 500 {
+		desc = string(runes[:497]) + "..."
 	}
 
 	properties := make(map[string]any)

@@ -196,6 +196,12 @@ func (s *Scheduler) Reset() {
 	stopCtx := s.cron.Stop()
 	<-stopCtx.Done()
 
+	// Clear stale pause states from removed tasks. Fresh registrations
+	// after Reset will re-establish any needed pause states.
+	s.pauseMu.Lock()
+	s.paused = make(map[string]bool)
+	s.pauseMu.Unlock()
+
 	s.cron = cron.New()
 	s.cron.Start()
 }

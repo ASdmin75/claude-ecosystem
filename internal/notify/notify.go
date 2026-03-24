@@ -66,8 +66,8 @@ func NewHandler(tasks []config.Task, logger *slog.Logger) *Handler {
 // Subscribe registers the handler on the event bus for task and pipeline
 // completion events.
 func (h *Handler) Subscribe(bus *events.Bus) {
-	bus.Subscribe("task.completed", h.handleEvent)
-	bus.Subscribe("pipeline.completed", h.handleEvent)
+	_ = bus.Subscribe("task.completed", h.handleEvent)
+	_ = bus.Subscribe("pipeline.completed", h.handleEvent)
 }
 
 func (h *Handler) handleEvent(e events.Event) {

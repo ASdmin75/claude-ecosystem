@@ -12,7 +12,44 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// allowedDirs restricts file operations to these directories.
+// Set via ALLOWED_DIRS env var (colon-separated). If empty, all paths are allowed.
+var allowedDirs []string
+
+// validatePath checks that the given path is within one of the allowed directories.
+// Returns the cleaned absolute path or an error.
+func validatePath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
+	abs = filepath.Clean(abs)
+
+	if len(allowedDirs) == 0 {
+		return abs, nil
+	}
+
+	for _, dir := range allowedDirs {
+		if strings.HasPrefix(abs, dir+string(filepath.Separator)) || abs == dir {
+			return abs, nil
+		}
+	}
+	return "", fmt.Errorf("access denied: path %s is outside allowed directories", abs)
+}
+
 func main() {
+	if dirs := os.Getenv("ALLOWED_DIRS"); dirs != "" {
+		for _, d := range strings.Split(dirs, ":") {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				abs, err := filepath.Abs(d)
+				if err == nil {
+					allowedDirs = append(allowedDirs, filepath.Clean(abs))
+				}
+			}
+		}
+	}
+
 	s := server.NewMCPServer("mcp-filesystem", "0.1.0")
 
 	s.AddTool(mcp.NewTool("read_file",
@@ -51,7 +88,11 @@ func main() {
 }
 
 func handleReadFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	path, err := req.RequireString("path")
+	rawPath, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	path, err := validatePath(rawPath)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -63,7 +104,11 @@ func handleReadFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 }
 
 func handleWriteFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	path, err := req.RequireString("path")
+	rawPath, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	path, err := validatePath(rawPath)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -81,7 +126,11 @@ func handleWriteFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 }
 
 func handleListDirectory(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	path, err := req.RequireString("path")
+	rawPath, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	path, err := validatePath(rawPath)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -127,7 +176,11 @@ func handleListDirectory(_ context.Context, req mcp.CallToolRequest) (*mcp.CallT
 }
 
 func handleSearchFiles(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	root, err := req.RequireString("path")
+	rawRoot, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	root, err := validatePath(rawRoot)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -152,11 +205,19 @@ func handleSearchFiles(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 }
 
 func handleCopyFile(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	src, err := req.RequireString("src")
+	rawSrc, err := req.RequireString("src")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	dst, err := req.RequireString("dst")
+	src, err := validatePath(rawSrc)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	rawDst, err := req.RequireString("dst")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	dst, err := validatePath(rawDst)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}

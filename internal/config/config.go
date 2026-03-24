@@ -3,12 +3,17 @@ package config
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Config is the top-level configuration loaded from tasks.yaml (or agents.yaml).
 type Config struct {
+	// mu protects concurrent access to Tasks, Pipelines, and Domains
+	// during hot-reload. Use RLock/RUnlock for reads and Lock/Unlock for writes.
+	mu sync.RWMutex `yaml:"-" json:"-"`
+
 	ClaudeBin  string            `yaml:"claude_bin"`
 	Tasks      []Task            `yaml:"tasks"`
 	Pipelines  []Pipeline        `yaml:"pipelines,omitempty"`
@@ -20,6 +25,18 @@ type Config struct {
 	// FilePath is the resolved path to the config file (not serialized).
 	FilePath string `yaml:"-" json:"-"`
 }
+
+// RLock acquires a read lock on the config.
+func (c *Config) RLock()   { c.mu.RLock() }
+
+// RUnlock releases a read lock on the config.
+func (c *Config) RUnlock() { c.mu.RUnlock() }
+
+// Lock acquires a write lock on the config.
+func (c *Config) Lock()    { c.mu.Lock() }
+
+// Unlock releases a write lock on the config.
+func (c *Config) Unlock()  { c.mu.Unlock() }
 
 // AuthConfig holds authentication settings for the server.
 type AuthConfig struct {

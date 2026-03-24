@@ -257,6 +257,8 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 
 // findTask looks up a task by name in the config.
 func (s *Server) findTask(name string) *config.Task {
+	s.cfg.RLock()
+	defer s.cfg.RUnlock()
 	for i := range s.cfg.Tasks {
 		if s.cfg.Tasks[i].Name == name {
 			return &s.cfg.Tasks[i]
@@ -267,6 +269,8 @@ func (s *Server) findTask(name string) *config.Task {
 
 // findPipeline looks up a pipeline by name in the config.
 func (s *Server) findPipeline(name string) *config.Pipeline {
+	s.cfg.RLock()
+	defer s.cfg.RUnlock()
 	for i := range s.cfg.Pipelines {
 		if s.cfg.Pipelines[i].Name == name {
 			return &s.cfg.Pipelines[i]

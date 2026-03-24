@@ -62,7 +62,7 @@ func main() {
 	taskRunner := task.NewRunner(cfg.ClaudeBin)
 	bus := events.NewBus()
 
-	bus.Subscribe("task.completed", func(e events.Event) {
+	_ = bus.Subscribe("task.completed", func(e events.Event) {
 		if e.Payload["error"] != "" {
 			logger.Error("task completed with error", "task", e.Payload["task"], "error", e.Payload["error"])
 			return
@@ -344,9 +344,11 @@ func reloadConfig(cfg *config.Config, sched *scheduler.Scheduler, w *watcher.Wat
 		return
 	}
 
-	// Update shared config (tasks and pipelines only).
+	// Update shared config (tasks and pipelines only) under write lock.
+	cfg.Lock()
 	cfg.Tasks = newCfg.Tasks
 	cfg.Pipelines = newCfg.Pipelines
+	cfg.Unlock()
 
 	// Reset and re-register scheduler.
 	sched.Reset()

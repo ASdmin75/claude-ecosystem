@@ -160,6 +160,34 @@ func (s *Store) DeleteExecution(ctx context.Context, id string) error {
 	return nil
 }
 
+// CountExecutions returns per-status counts using COUNT(*) for dashboard efficiency.
+func (s *Store) CountExecutions(ctx context.Context) (store.ExecutionCounts, error) {
+	var c store.ExecutionCounts
+	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM executions GROUP BY status`)
+	if err != nil {
+		return c, fmt.Errorf("count executions: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return c, fmt.Errorf("scan execution count: %w", err)
+		}
+		c.Total += count
+		switch status {
+		case "running":
+			c.Running = count
+		case "completed":
+			c.Completed = count
+		case "failed":
+			c.Failed = count
+		}
+	}
+	return c, rows.Err()
+}
+
 // MarkStaleRunning updates all executions stuck in "running" status to "failed".
 // This handles cases where the server restarted or a task timed out without updating the DB.
 func (s *Store) MarkStaleRunning(ctx context.Context) (int64, error) {

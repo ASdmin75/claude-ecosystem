@@ -20,7 +20,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(body.error || res.statusText)
+    // Avoid exposing internal server details to the UI.
+    const msg = body.error || res.statusText
+    if (res.status >= 500) {
+      throw new Error('Internal server error')
+    }
+    throw new Error(msg)
   }
 
   return res.json()

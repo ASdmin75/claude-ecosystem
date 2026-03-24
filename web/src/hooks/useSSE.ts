@@ -13,6 +13,8 @@ export function useSSE(onEvent?: SSEHandler) {
   const esRef = useRef<EventSource | null>(null)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const reconnectDelay = useRef(1000)
+  const reconnectAttempts = useRef(0)
+  const maxReconnectAttempts = 50
   const wasConnected = useRef(false)
 
   const invalidateAll = useCallback(() => {
@@ -64,11 +66,19 @@ export function useSSE(onEvent?: SSEHandler) {
       }
       wasConnected.current = true
       reconnectDelay.current = 1000
+      reconnectAttempts.current = 0
     }
 
     es.onerror = () => {
       es.close()
       esRef.current = null
+      reconnectAttempts.current++
+
+      if (reconnectAttempts.current >= maxReconnectAttempts) {
+        console.error('SSE: max reconnection attempts reached, giving up')
+        return
+      }
+
       // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
       reconnectTimer.current = setTimeout(() => {
         connect()

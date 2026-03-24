@@ -30,7 +30,10 @@ type pipelineRunResponse struct {
 // handleListPipelines returns all pipelines from the config.
 // GET /api/v1/pipelines
 func (s *Server) handleListPipelines(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.cfg.Pipelines)
+	s.cfg.RLock()
+	pipelines := s.cfg.Pipelines
+	s.cfg.RUnlock()
+	writeJSON(w, http.StatusOK, pipelines)
 }
 
 // handleGetPipeline returns a single pipeline by name.
@@ -200,14 +203,17 @@ func (s *Server) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.cfg.Lock()
 	s.cfg.Pipelines = append(s.cfg.Pipelines, p)
 
 	if err := s.cfg.Save(); err != nil {
 		s.cfg.Pipelines = s.cfg.Pipelines[:len(s.cfg.Pipelines)-1]
+		s.cfg.Unlock()
 		s.logger.Error("failed to save config", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
 		return
 	}
+	s.cfg.Unlock()
 
 	s.logger.Info("pipeline created", "name", p.Name)
 	writeJSON(w, http.StatusCreated, s.findPipeline(p.Name))
@@ -224,6 +230,7 @@ func (s *Server) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.cfg.Lock()
 	var found bool
 	for i := range s.cfg.Pipelines {
 		if s.cfg.Pipelines[i].Name == name {
@@ -234,15 +241,18 @@ func (s *Server) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found {
+		s.cfg.Unlock()
 		writeError(w, http.StatusNotFound, "pipeline not found: "+name)
 		return
 	}
 
 	if err := s.cfg.Save(); err != nil {
+		s.cfg.Unlock()
 		s.logger.Error("failed to save config", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
 		return
 	}
+	s.cfg.Unlock()
 
 	s.logger.Info("pipeline updated", "name", name)
 	writeJSON(w, http.StatusOK, s.findPipeline(name))
