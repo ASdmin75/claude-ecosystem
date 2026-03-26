@@ -76,7 +76,8 @@ export default function ExecutionHistory() {
         streamCleanup.current = null
         streamingId.current = null
       }
-      if (currentStatus !== 'running') {
+      // Clear stream output only when switching to a different execution
+      if (!currentId || (streamingId.current && streamingId.current !== currentId)) {
         setStreamOutput('')
       }
       return
@@ -285,22 +286,38 @@ export default function ExecutionHistory() {
                 </div>
               )}
 
-              {(detailQuery.data?.status ?? selected.status) === 'running' && (
-                <div>
-                  <h4 className="text-sm font-semibold text-blue-600 dark:text-blue-400 mb-1 flex items-center gap-2">
-                    <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
-                    Live Output
-                  </h4>
-                  {streamOutput ? (
-                    <div className="bg-gray-900 dark:bg-gray-950 text-green-400 text-xs font-mono p-3 rounded overflow-auto max-h-96 whitespace-pre-wrap break-words">
-                      {streamOutput}
-                      <div ref={outputEndRef} />
+              {(() => {
+                const isRunning = (detailQuery.data?.status ?? selected.status) === 'running'
+                if (isRunning) {
+                  return (
+                    <div>
+                      <h4 className="text-sm font-semibold text-blue-600 dark:text-blue-400 mb-1 flex items-center gap-2">
+                        <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+                        Live Output
+                      </h4>
+                      {streamOutput ? (
+                        <div className="bg-gray-900 dark:bg-gray-950 text-green-400 text-xs font-mono p-3 rounded overflow-auto max-h-96 whitespace-pre-wrap break-words">
+                          {streamOutput}
+                          <div ref={outputEndRef} />
+                        </div>
+                      ) : (
+                        <p className="text-sm text-blue-500 dark:text-blue-400">Waiting for output...</p>
+                      )}
                     </div>
-                  ) : (
-                    <p className="text-sm text-blue-500 dark:text-blue-400">Waiting for output...</p>
-                  )}
-                </div>
-              )}
+                  )
+                }
+                if (streamOutput) {
+                  return (
+                    <details className="mt-2">
+                      <summary className="text-sm font-semibold text-gray-500 dark:text-gray-400 cursor-pointer">Execution Log</summary>
+                      <div className="bg-gray-900 dark:bg-gray-950 text-green-400 text-xs font-mono p-3 rounded overflow-auto max-h-96 whitespace-pre-wrap break-words mt-1">
+                        {streamOutput}
+                      </div>
+                    </details>
+                  )
+                }
+                return null
+              })()}
             </div>
           ) : (
             <div className="bg-white dark:bg-gray-800 rounded-lg shadow dark:shadow-gray-950 p-8 text-center text-gray-400 dark:text-gray-500">

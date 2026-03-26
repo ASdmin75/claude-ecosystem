@@ -178,6 +178,13 @@ export function streamExecution(id: string, onMessage: (data: string) => void): 
 
   // Fallback for unnamed events
   es.onmessage = (e) => onMessage(e.data)
-  es.onerror = () => es.close()
+
+  // Let EventSource auto-reconnect on transient errors.
+  // Only close on fatal auth errors (readyState CLOSED means server rejected).
+  es.onerror = () => {
+    if (es.readyState === EventSource.CLOSED) {
+      es.close()
+    }
+  }
   return () => es.close()
 }

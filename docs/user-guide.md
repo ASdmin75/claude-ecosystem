@@ -647,6 +647,8 @@ mcp_servers:
 
 `mcp-openapi` — MCP-сервер, который динамически генерирует инструменты из OpenAPI v2/v3 спецификации. Каждый эндпоинт API становится отдельным MCP-инструментом.
 
+Поддерживаемые content types для request body: `application/json` (приоритет), `multipart/form-data`, `application/x-www-form-urlencoded`. Тип определяется автоматически из спецификации.
+
 #### Конфигурация
 
 ```yaml
@@ -1036,7 +1038,7 @@ curl -X POST -H "Authorization: Bearer <token>" \
 | GET | `/executions` | Список (фильтры: task, status, trigger, limit, offset) |
 | GET | `/executions/:id` | Детали исполнения |
 | DELETE | `/executions/:id` | Удалить запись |
-| GET | `/executions/:id/stream` | SSE-стрим |
+| GET | `/executions/:id/stream` | SSE-стрим (события `task.output`, `task.completed`, `pipeline.completed`) |
 
 ### MCP-серверы
 

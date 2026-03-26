@@ -32,6 +32,11 @@ func BuildArgs(t config.Task, opts RunOptions) []string {
 	}
 	args = append(args, "--output-format", outputFormat)
 
+	// stream-json requires --verbose when used with -p (--print)
+	if outputFormat == "stream-json" {
+		args = append(args, "--verbose")
+	}
+
 	if t.Model != "" {
 		args = append(args, "--model", t.Model)
 	}

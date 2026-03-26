@@ -113,10 +113,30 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 
 			s.logger.Info("pipeline step starting", "pipeline", pipelineName, "step", stepIdx+1, "task", step.Task, "iteration", iterations)
 
-			// Apply per-task timeout.
+			// Apply per-task timeout with streaming output.
 			stepCtx, stepCancel := context.WithTimeout(ctx, t.ParsedTimeout())
 			stepStart := time.Now()
-			result := s.taskRunner.Run(stepCtx, *t, opts, vars)
+
+			chunks := make(chan task.StreamChunk, 64)
+			var result task.Result
+			go func() {
+				result = s.taskRunner.RunStream(stepCtx, *t, opts, vars, chunks)
+			}()
+
+			// Forward chunks as task.output SSE events for real-time UI updates.
+			for chunk := range chunks {
+				if chunk.Content != "" {
+					s.bus.Publish(events.Event{
+						Type: "task.output",
+						Payload: map[string]string{
+							"execution_id": execID,
+							"task":         step.Task,
+							"chunk_type":   chunk.Type,
+							"content":      chunk.Content,
+						},
+					})
+				}
+			}
 			stepCancel()
 
 			stepDuration := time.Since(stepStart)

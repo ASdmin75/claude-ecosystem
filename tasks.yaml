@@ -1351,6 +1351,7 @@ mcp_servers:
       env:
         OPENAPI_AUTH_TYPE: oauth2_client_credentials
         OPENAPI_BASE_URL: ${4LOG_API_URL}
+        OPENAPI_MAX_TOOLS: "150"
         OPENAPI_OAUTH2_CLIENT_ID: ${4LOG_CLIENT_ID}
         OPENAPI_OAUTH2_CLIENT_SECRET: ${4LOG_CLIENT_SECRET}
         OPENAPI_OAUTH2_TOKEN_URL: ${4LOG_API_URL}/oauth/v2/token

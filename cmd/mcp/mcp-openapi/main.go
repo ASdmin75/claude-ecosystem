@@ -8,15 +8,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/asdmin/claude-ecosystem/internal/safepath"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/pb33f/libopenapi"
@@ -36,16 +39,17 @@ type apiParameter struct {
 }
 
 type apiOperation struct {
-	OperationID string
-	Method      string
-	Path        string
-	Summary     string
-	Description string
-	Tags        []string
-	Parameters  []apiParameter
-	HasBody     bool
-	BodySchema  map[string]any
-	BodyKeyMap map[string]string // sanitized key → original key (for bracket notation)
+	OperationID        string
+	Method             string
+	Path               string
+	Summary            string
+	Description        string
+	Tags               []string
+	Parameters         []apiParameter
+	HasBody            bool
+	RequestContentType string // e.g. "application/json", "multipart/form-data"
+	BodySchema         map[string]any
+	BodyKeyMap         map[string]string // sanitized key → original key (for bracket notation)
 }
 
 type generatedTool struct {
@@ -224,8 +228,9 @@ var (
 	apiKeyIn       string
 	basicUser      string
 	basicPass      string
-	extraHeaders   map[string]string
-	tokenManager   *oauth2TokenManager
+	extraHeaders      map[string]string
+	tokenManager      *oauth2TokenManager
+	downloadValidator *safepath.Validator
 )
 
 func main() {
@@ -371,6 +376,13 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "mcp-openapi: oauth2 authenticated (token_in=%s)\n", tokenManager.tokenIn)
+	}
+
+	// Initialize download path validator
+	downloadValidator, err = safepath.NewFromEnv("OPENAPI_DOWNLOAD_DIR")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mcp-openapi: invalid OPENAPI_DOWNLOAD_DIR: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Parse extra headers
@@ -524,11 +536,12 @@ func extractOperations(model *libopenapi.DocumentModel[v3.Document]) []apiOperat
 
 			// Request body
 			if op.RequestBody != nil && op.RequestBody.Content != nil {
-				jsonContent := findJSONContent(op.RequestBody.Content)
-				if jsonContent != nil && jsonContent.Schema != nil {
+				bodyContent, contentType := findBodyContent(op.RequestBody.Content)
+				if bodyContent != nil && bodyContent.Schema != nil {
 					apiOp.HasBody = true
+					apiOp.RequestContentType = contentType
 					apiOp.BodyKeyMap = make(map[string]string)
-					apiOp.BodySchema = schemaToMapWithKeyMap(jsonContent.Schema.Schema(), 0, apiOp.BodyKeyMap)
+					apiOp.BodySchema = schemaToMapWithKeyMap(bodyContent.Schema.Schema(), 0, apiOp.BodyKeyMap)
 				}
 			}
 
@@ -552,13 +565,24 @@ func convertParameter(p *v3.Parameter) apiParameter {
 	return ap
 }
 
-func findJSONContent(content *orderedmap.Map[string, *v3.MediaType]) *v3.MediaType {
+// findBodyContent returns the best media type for body extraction.
+// Prefers JSON, falls back to multipart/form-data or x-www-form-urlencoded.
+// Returns (mediaType, contentTypeKey).
+func findBodyContent(content *orderedmap.Map[string, *v3.MediaType]) (*v3.MediaType, string) {
+	// Prefer JSON
 	for pair := orderedmap.First(content); pair != nil; pair = pair.Next() {
 		if strings.Contains(pair.Key(), "json") {
-			return pair.Value()
+			return pair.Value(), "application/json"
 		}
 	}
-	return nil
+	// Fall back to form types
+	for pair := orderedmap.First(content); pair != nil; pair = pair.Next() {
+		key := pair.Key()
+		if strings.Contains(key, "form-data") || strings.Contains(key, "x-www-form-urlencoded") {
+			return pair.Value(), key
+		}
+	}
+	return nil, ""
 }
 
 const maxSchemaDepth = 3
@@ -874,33 +898,48 @@ func doExecute(op apiOperation, args map[string]any) (mcp.CallToolResult, int) {
 	}
 
 	// Build body
-	var bodyBytes []byte
+	var bodyReader io.Reader
+	contentType := "application/json"
 	if op.HasBody {
 		if bodyData, ok := args["body"]; ok {
 			// Restore original property keys (e.g., bracket notation) before sending
 			if len(op.BodyKeyMap) > 0 {
 				bodyData = restoreBodyKeys(bodyData, op.BodyKeyMap)
 			}
-			var err error
-			bodyBytes, err = json.Marshal(bodyData)
-			if err != nil {
-				return errorResult("failed to marshal body: " + err.Error()), 0
+
+			isFormData := strings.Contains(op.RequestContentType, "form-data") ||
+				strings.Contains(op.RequestContentType, "x-www-form-urlencoded")
+
+			if isFormData {
+				// Build multipart/form-data
+				var buf bytes.Buffer
+				writer := multipart.NewWriter(&buf)
+				if bodyMap, ok := bodyData.(map[string]any); ok {
+					for key, val := range bodyMap {
+						writer.WriteField(key, fmt.Sprintf("%v", val))
+					}
+				}
+				writer.Close()
+				bodyReader = &buf
+				contentType = writer.FormDataContentType()
+			} else {
+				bodyBytes, err := json.Marshal(bodyData)
+				if err != nil {
+					return errorResult("failed to marshal body: " + err.Error()), 0
+				}
+				bodyReader = bytes.NewReader(bodyBytes)
 			}
 		}
 	}
 
 	// Create request
-	var bodyReader io.Reader
-	if bodyBytes != nil {
-		bodyReader = bytes.NewReader(bodyBytes)
-	}
 	req, err := http.NewRequest(op.Method, fullURL, bodyReader)
 	if err != nil {
 		return errorResult("failed to create request: " + err.Error()), 0
 	}
 
 	if op.HasBody {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 	req.Header.Set("Accept", "application/json")
 
@@ -1027,6 +1066,15 @@ func downloadOneFile(ctx context.Context, rawURL, destPath string) (int64, error
 		return 0, fmt.Errorf("both 'url' and 'path' are required")
 	}
 
+	// Validate destination path to prevent directory traversal
+	if downloadValidator != nil {
+		var err error
+		destPath, err = downloadValidator.Validate(destPath)
+		if err != nil {
+			return 0, fmt.Errorf("path validation: %w", err)
+		}
+	}
+
 	if strings.HasPrefix(rawURL, "/") {
 		base := baseURL
 		if i := strings.Index(base, "/openapi/"); i > 0 {
@@ -1068,8 +1116,8 @@ func downloadOneFile(ctx context.Context, rawURL, destPath string) (int64, error
 		return 0, fmt.Errorf("expected binary file but got JSON response: %s", string(body))
 	}
 
-	dir := destPath[:strings.LastIndex(destPath, "/")]
-	if dir != "" {
+	dir := filepath.Dir(destPath)
+	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return 0, fmt.Errorf("create directory: %w", err)
 		}

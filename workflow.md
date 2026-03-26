@@ -1356,6 +1356,45 @@ data/backup/
 - `web/src/api/client.ts` — DiagnosisError class, 422 handling, wizardValidate, wizardTestRun
 - `web/src/components/Wizard.tsx` — 5-state machine, DiagnosisPanel, editing/testing states
 
+### 2026-03-26 — Pipeline streaming, multipart/form-data, OPENAPI_MAX_TOOLS
+
+**Pipeline Live Output streaming**
+
+**Проблема:** пайплайны отображали вывод только после полного завершения. Секция "Live Output" во время выполнения показывала "Waiting for output..." — события `task.output` не публиковались.
+
+**Причина:** `runPipeline()` в `internal/api/pipelines.go` использовал синхронный `s.taskRunner.Run()`, который буферизирует весь вывод и возвращает только финальный результат. `RunStream()` (с SSE-событиями) применялся только для async-тасков.
+
+**Исправления (backend):**
+- `internal/api/pipelines.go`: `Run()` заменён на `RunStream()` — каждый шаг пайплайна теперь стримит чанки через канал, публикуя `task.output` SSE-события с `execution_id`, `task`, `chunk_type`, `content`
+- `internal/task/command.go`: автоматическое добавление `--verbose` при `output-format=stream-json` (требование Claude CLI: `-p` + `stream-json` требует `--verbose`)
+
+**Исправления (frontend):**
+- `web/src/api/client.ts`: `streamExecution()` — убрано жёсткое закрытие SSE при ошибках (`es.onerror = () => es.close()` → проверка `readyState === CLOSED`). EventSource теперь автоматически переподключается при временных ошибках
+- `web/src/components/ExecutionHistory.tsx`: стриминговый лог сохраняется после завершения выполнения — показывается как сворачиваемая секция "Execution Log" (ранее `streamOutput` очищался при смене статуса на completed)
+
+**mcp-openapi: поддержка multipart/form-data**
+
+**Проблема:** 4Logist API указывает `multipart/form-data` как content type для всех POST-эндпоинтов (Symfony framework). `mcp-openapi` жёстко отправлял `Content-Type: application/json` → API возвращал HTTP 500.
+
+**Исправления (`cmd/mcp/mcp-openapi/main.go`):**
+- Новое поле `RequestContentType` в `apiOperation` — хранит content type из спека
+- `findJSONContent()` → `findBodyContent()` — извлекает медиа-тип с приоритетом: JSON > multipart/form-data > x-www-form-urlencoded
+- `doExecute()`: при `multipart/form-data` или `x-www-form-urlencoded` — body строится через `multipart.NewWriter()` с `WriteField()` для каждого параметра, Content-Type устанавливается из `writer.FormDataContentType()`
+
+**mcp-openapi: OPENAPI_MAX_TOOLS**
+
+**Проблема:** дефолтный лимит 50 инструментов обрезал 134 операции из спека 4Logist. Нужные инструменты (`post_api_order_list`, `post_api_invoices_list`, `post_api_order_statuses_list`) не попадали в первые 50.
+
+**Исправление:** `OPENAPI_MAX_TOOLS: "150"` добавлен в конфигурацию MCP-сервера `4log-api` в `tasks.yaml`.
+
+**Изменённые файлы:**
+- `internal/api/pipelines.go` — RunStream() вместо Run(), публикация task.output событий
+- `internal/task/command.go` — автоматический --verbose для stream-json
+- `cmd/mcp/mcp-openapi/main.go` — RequestContentType, findBodyContent(), multipart/form-data в doExecute()
+- `web/src/api/client.ts` — SSE reconnect fix
+- `web/src/components/ExecutionHistory.tsx` — сохранение Execution Log после завершения
+- `tasks.yaml` — OPENAPI_MAX_TOOLS для 4log-api
+
 ---
 
 ## Бэклог
@@ -1376,6 +1415,7 @@ data/backup/
 - [x] mcp-telegram: отправка сообщений и файлов через Telegram Bot API
 - [x] mcp-exportby: каталог export.by — scan, analyze, reject, mark_exported
 - [x] mcp-openapi: динамические MCP-инструменты из OpenAPI-спецификаций (libopenapi)
+- [x] mcp-openapi: поддержка multipart/form-data (Symfony/4Logist APIs) (2026-03-26)
 - [x] mcp-whisper: транскрипция аудио через whisper.cpp (WAV/MP3/FLAC/OGG/M4A, multi-language)
 - [x] Миграция всех 11 MCP-серверов на библиотеку mcp-go (устранение ~900 строк JSON-RPC boilerplate)
 
@@ -1383,6 +1423,8 @@ data/backup/
 - [x] Динамическое обновление UI через SSE (real-time, без polling)
 - [x] Toast-уведомления при завершении задач/пайплайнов
 - [x] Детальный просмотр execution с SSE-стримингом (live output)
+- [x] Pipeline live streaming — вывод в реальном времени для шагов пайплайна (2026-03-26)
+- [x] Execution Log — сохранение стримингового лога после завершения (collapsible секция)
 - [x] Редактирование задач через UI (CSV-поля исправлены)
 - [x] Удаление execution записей (с подтверждением)
 - [x] Конфигурация allow_concurrent через UI (чекбокс в TaskEditor и PipelineEditor)
@@ -1402,6 +1444,11 @@ data/backup/
 - [x] Docker-образ (Dockerfile + docker-compose.yml)
 - [ ] Docker: авторизация Claude Code Max (OAuth) — `claude login` из контейнера не подключается к api.anthropic.com (ERR_BAD_REQUEST). Варианты: host network, DNS-fix, или ANTHROPIC_API_KEY
 - [ ] Документация API (OpenAPI/Swagger)
+
+### Безопасность модифицирующих действий в API
+- [ ] Архитектура подтверждения для write-операций во внешних API (create, edit, delete)
+- [ ] Варианты: ручной запуск отдельного пайплайна для фиксации, approval step в pipeline, human-in-the-loop confirmation
+- [ ] Wizard: при генерации тасков с MCP OpenAPI — `allowed_tools` должен включать только read-only эндпоинты (list, get)
 
 ### Безопасность — оставшиеся пункты (low priority)
 - [ ] CORS middleware (если API будет доступен с других доменов)
