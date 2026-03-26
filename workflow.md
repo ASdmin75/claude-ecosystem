@@ -1395,6 +1395,22 @@ data/backup/
 - `web/src/components/ExecutionHistory.tsx` — сохранение Execution Log после завершения
 - `tasks.yaml` — OPENAPI_MAX_TOOLS для 4log-api
 
+### 2026-03-26 — Расширение allowed_tools для задач 4Logist + диагностика API
+
+**Проблема:** pipeline `4log-weekly-report` завершался с ошибкой `permission denied`. Часть MCP-инструментов 4Logist API была заблокирована политикой `dontAsk`, часть эндпоинтов возвращала HTTP 500.
+
+**Диагностика:**
+
+1. **Permission denied** — Claude при выполнении задачи `4log-fetch-weekly-data` обращался к инструментам `get_api_users_info`, `post_api_user_current`, `post_api_order_statuses_list`, которые не были указаны в `allowed_tools`. В режиме `permission_mode: dontAsk` неразрешённые инструменты блокируются.
+
+2. **HTTP 500** — эндпоинты `post_api_order_list`, `post_api_client_list`, `post_api_invoices_list` возвращают HTTP 500 с пустым телом. OAuth2-токен получается успешно, но все API-эндпоинты 4Logist отвечают серверной ошибкой. Проблема на стороне API-сервера 4Logist (не конфигурации).
+
+**Исправления (`tasks.yaml`):**
+- Добавлены 3 недостающих инструмента в `allowed_tools` задачи `4log-fetch-weekly-data`: `mcp__4log-api__post_api_order_statuses_list`, `mcp__4log-api__get_api_users_info`, `mcp__4log-api__post_api_user_current`
+- Аналогичные инструменты добавлены в `4log-fetch-daily-data`
+
+**Статус HTTP 500:** требует проверки на стороне 4Logist — возможно, OAuth-клиент деактивирован или API-сервер временно недоступен.
+
 ---
 
 ## Бэклог

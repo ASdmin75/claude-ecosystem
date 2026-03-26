@@ -1,0 +1,1996 @@
+ ▐▛███▜▌   Claude Code v2.1.84
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ Использование Wizard очень часто приводит к ошибкам, пустым результатам и     
+другим проблемам. Такие проблемы решаются ручным вызовом Claude Code и ручного  
+допиливания пайплайна. Нужно добавить механизм решения проблем прямо в Wizard.  
+Т.е. Wizard должен понимать, что его работа завершилась некорректно и давать    
+возможность решения проблемы.                                                   
+
+● 2 Explore agents finished (ctrl+o to expand)
+   ├─ Explore Wizard implementation · 21 tool uses · 72.6k tokens
+   │  ⎿  Done
+   └─ Explore outputcheck and error handling · 37 tool uses · 66.8k tokens
+      ⎿  Done
+
+● Теперь мне нужно прочитать ключевые файлы Wizard для точного понимания кода.
+
+  Read 5 files (ctrl+o to expand)
+
+● Теперь у меня есть полная картина. Запускаю агента для проектирования решения.
+
+● Plan(Design wizard troubleshooting)
+  ⎿  Done (29 tool uses · 62.2k tokens · 2m 44s)
+  (ctrl+o to expand)
+
+● Отлично, у меня есть полная картина. Пишу финальный план.
+
+  Read 2 files (ctrl+o to expand)
+
+● Теперь посмотрю API client и типы на фронтенде.
+
+  Read 3 files (ctrl+o to expand)
+
+● Теперь также проверю как request обрабатывает ошибки на фронтенде.
+
+  Read 1 file (ctrl+o to expand)
+
+● Теперь у меня есть вся необходимая информация. Пишу план.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/snuggly-jingling-turing.md · /plan to edit
+     Wizard Troubleshooter — план реализации
+
+     Context
+
+     Wizard часто генерирует ошибки, пустые результаты и невалидные
+     конфигурации. Сейчас при ошибке пользователь видит только generic сообщение
+      и должен вручную дебажить через CLI. Нужен механизм диагностики, retry с
+     контекстом, редактирование плана и тестовый запуск — всё из UI.
+
+     Архитектура решения
+
+     Три новых возможности:
+     1. Structured diagnosis — категоризация ошибок + предложения по исправлению
+     2. Retry с контекстом — повторная генерация с информацией о предыдущей
+     ошибке
+     3. Test run — запуск первой задачи после apply для проверки через
+     outputcheck
+
+     UI расширяется с 3 до 5 состояний: input → preview → editing → result → 
+     testing
+
+     ---
+     Шаг 1: Новые типы — internal/wizard/types.go
+
+     Добавить структуры:
+
+     // RetryContext передаёт контекст предыдущей ошибки при повторной 
+     генерации.
+     type RetryContext struct {
+         PreviousError     string `json:"previous_error"`
+         PreviousRawOutput string `json:"previous_raw_output,omitempty"`
+         UserHint          string `json:"user_hint,omitempty"`
+     }
+
+     // ErrorCategory классифицирует ошибку wizard.
+     type ErrorCategory string
+
+     const (
+         ErrCatEmptyOutput      ErrorCategory = "empty_output"
+         ErrCatJSONParse        ErrorCategory = "json_parse"
+         ErrCatTimeout          ErrorCategory = "timeout"
+         ErrCatDuplicateName    ErrorCategory = "duplicate_name"
+         ErrCatMissingReference ErrorCategory = "missing_reference"
+         ErrCatPermissionMode   ErrorCategory = "permission_mode"
+         ErrCatApplyFailed      ErrorCategory = "apply_failed"
+         ErrCatTestSoftFailure  ErrorCategory = "test_soft_failure"
+         ErrCatTestHardFailure  ErrorCategory = "test_hard_failure"
+         ErrCatUnknown          ErrorCategory = "unknown"
+     )
+
+     // WizardDiagnosis — структурированная ошибка для UI.
+     type WizardDiagnosis struct {
+         Category    ErrorCategory   `json:"category"`
+         Message     string          `json:"message"`
+         Details     string          `json:"details,omitempty"`
+         Suggestions []RecoveryAction `json:"suggestions"`
+     }
+
+     // RecoveryAction — один вариант исправления.
+     type RecoveryAction struct {
+         ID          string `json:"id"`
+         Label       string `json:"label"`
+         Description string `json:"description"`
+         PatchedPlan *Plan  `json:"patched_plan,omitempty"`
+     }
+
+     // TestRunRequest указывает задачу для тестового запуска.
+     type TestRunRequest struct {
+         TaskName string `json:"task_name"`
+     }
+
+     // TestRunResult — результат тестового запуска.
+     type TestRunResult struct {
+         TaskName    string           `json:"task_name"`
+         Output      string           `json:"output"`
+         Error       string           `json:"error,omitempty"`
+         SoftFailure string           `json:"soft_failure,omitempty"`
+         DurationMS  int64            `json:"duration_ms"`
+         CostUSD     float64          `json:"cost_usd,omitempty"`
+         Diagnosis   *WizardDiagnosis `json:"diagnosis,omitempty"`
+     }
+
+     Расширить GenerateRequest:
+     type GenerateRequest struct {
+         Description  string        `json:"description"`
+         WorkDir      string        `json:"work_dir,omitempty"`
+         RetryContext *RetryContext  `json:"retry_context,omitempty"`
+     }
+
+     Добавить RawOutput в Plan:
+     type Plan struct {
+         // ... существующие поля ...
+         RawOutput string `json:"raw_output,omitempty"` // для диагностики при 
+     ошибках парсинга
+     }
+
+     ---
+     Шаг 2: Диагностика ошибок — internal/wizard/troubleshoot.go (новый файл)
+
+     Функция DiagnoseError(phase string, err error, rawOutput string, plan 
+     *Plan) *WizardDiagnosis:
+
+     Фаза generate:
+     - "empty output" → ErrCatEmptyOutput, suggestions: retry, retry_simplified
+     - "parsing plan JSON" → ErrCatJSONParse, details = rawOutput, suggestions:
+     retry, edit_raw
+     - context.DeadlineExceeded → ErrCatTimeout, suggestions: retry, simplify
+
+     Фаза validate:
+     - "already exists" → ErrCatDuplicateName, вычислить PatchedPlan с суффиксом
+      -v2
+     - "references unknown" → ErrCatMissingReference, suggestions: edit_plan,
+     retry
+     - "permission_mode" → ErrCatPermissionMode, suggestions: auto_fix (уже есть
+      в validate)
+
+     Фаза apply:
+     - Любая ошибка → ErrCatApplyFailed, suggestions: edit_plan, retry
+
+     Фаза test:
+     - soft failure → ErrCatTestSoftFailure, suggestions: edit_task, add_tools,
+     regenerate
+
+     Вспомогательная функция AutoFixDuplicateNames(plan *Plan, cfg 
+     *config.Config) *Plan:
+     - Находит конфликтующие имена
+     - Добавляет суффикс -v2 (или -v3 и т.д.)
+     - Обновляет ВСЕ ссылки: pipeline steps, domain lists, task agents
+
+     ---
+     Шаг 3: Retry context в промпте — internal/wizard/prompt.go
+
+     В buildWizardPrompt добавить обработку req.RetryContext:
+
+     // После "## User Request" секции, перед "## Output Format":
+     if req.RetryContext != nil {
+         sb.WriteString("\n## Previous Attempt Failed\n\n")
+         sb.WriteString(fmt.Sprintf("Error: %s\n",
+     req.RetryContext.PreviousError))
+         if req.RetryContext.PreviousRawOutput != "" {
+             sb.WriteString(fmt.Sprintf("Raw output (first 1000 chars): %s\n",
+                 truncateField(req.RetryContext.PreviousRawOutput, 1000)))
+         }
+         if req.RetryContext.UserHint != "" {
+             sb.WriteString(fmt.Sprintf("User's additional context: %s\n",
+     req.RetryContext.UserHint))
+         }
+         sb.WriteString("\nFix the issues and generate a correct plan.\n")
+     }
+
+     Также изменить GenerateRequest — уже содержит RetryContext.
+
+     ---
+     Шаг 4: Экспорт валидации — internal/wizard/applier.go
+
+     Добавить публичный метод:
+
+     // ValidateOnly проверяет план без применения.
+     func (a *Applier) ValidateOnly(plan *Plan) ([]string, error) {
+         return a.validate(plan)
+     }
+
+     ---
+     Шаг 5: API handlers — internal/api/wizard.go
+
+     Изменить handleWizardGenerate:
+
+     - При ошибке вызывать wizard.DiagnoseError("generate", err, rawOutput, nil)
+     - Возвращать 422 Unprocessable Entity с WizardDiagnosis вместо 500
+     - Для этого Generate() должен возвращать rawOutput при ошибке — изменить
+     сигнатуру или обернуть ошибку
+
+     Изменить handleWizardApply:
+
+     - При ошибке вызывать wizard.DiagnoseError("apply", err, "", plan)
+     - Возвращать 422 с WizardDiagnosis
+
+     Новый handleWizardValidate:
+
+     POST /api/v1/wizard/plans/{id}/validate
+     - Получает план из store
+     - Создаёт Applier, вызывает ValidateOnly(plan)
+     - Успех → 200 {"valid": true, "warnings": [...]}
+     - Ошибка → 422 с WizardDiagnosis
+
+     Новый handleWizardTestRun:
+
+     POST /api/v1/wizard/plans/{id}/test
+     - Получает план из store (status must be "applied")
+     - Читает task_name из body
+     - Находит задачу в cfg
+     - Вызывает task.ResolveRunOptions + runner.Run с timeout (max 2 min для
+     test)
+     - Проверяет output через outputcheck.CheckStepOutput
+     - Возвращает TestRunResult с опциональной WizardDiagnosis
+
+     ---
+     Шаг 6: Маршруты — internal/api/router.go
+
+     Добавить после строки 166:
+     mux.HandleFunc("POST /api/v1/wizard/plans/{id}/validate",
+     s.withAuth(s.handleWizardValidate))
+     mux.HandleFunc("POST /api/v1/wizard/plans/{id}/test",
+     s.withAuth(s.handleWizardTestRun))
+
+     ---
+     Шаг 7: Изменить генератор — internal/wizard/generator.go
+
+     Обернуть ошибки в специальный тип для передачи rawOutput:
+
+     // GenerateError хранит ошибку генерации вместе с raw output для 
+     диагностики.
+     type GenerateError struct {
+         Err       error
+         RawOutput string
+     }
+
+     func (e *GenerateError) Error() string { return e.Err.Error() }
+     func (e *GenerateError) Unwrap() error { return e.Err }
+
+     В Generate():
+     - При пустом output: return nil, &GenerateError{Err: ..., RawOutput: ""}
+     - При ошибке парсинга JSON: return nil, &GenerateError{Err: ..., RawOutput:
+      result.Output}
+     - При ошибке Claude: return nil, &GenerateError{Err: ..., RawOutput: 
+     result.Output}
+
+     ---
+     Шаг 8: Frontend типы — web/src/types/index.ts
+
+     export interface WizardDiagnosis {
+       category: string
+       message: string
+       details?: string
+       suggestions: RecoveryAction[]
+     }
+
+     export interface RecoveryAction {
+       id: string
+       label: string
+       description: string
+       patched_plan?: WizardPlan
+     }
+
+     export interface TestRunResult {
+       task_name: string
+       output: string
+       error?: string
+       soft_failure?: string
+       duration_ms: number
+       cost_usd?: number
+       diagnosis?: WizardDiagnosis
+     }
+
+     ---
+     Шаг 9: Frontend API client — web/src/api/client.ts
+
+     Изменить request helper:
+
+     - Ошибки 422 парсить как WizardDiagnosis и бросать специальный
+     DiagnosisError:
+
+     class DiagnosisError extends Error {
+       diagnosis: WizardDiagnosis
+       constructor(diagnosis: WizardDiagnosis) {
+         super(diagnosis.message)
+         this.diagnosis = diagnosis
+       }
+     }
+
+     В request(), перед generic обработкой !res.ok:
+     if (res.status === 422) {
+       const body = await res.json()
+       if (body.category) {
+         throw new DiagnosisError(body as WizardDiagnosis)
+       }
+     }
+
+     Новые методы:
+
+     wizardGenerate: (description: string, workDir?: string, retryContext?: 
+     RetryContext) =>
+       request<WizardPlan>('/wizard/generate', {
+         method: 'POST',
+         body: JSON.stringify({ description, work_dir: workDir, retry_context:
+     retryContext }),
+       }),
+
+     wizardValidate: (id: string) =>
+       request<{ valid: boolean; warnings?: string[]
+     }>(`/wizard/plans/${id}/validate`, {
+         method: 'POST',
+       }),
+
+     wizardTestRun: (id: string, taskName: string) =>
+       request<TestRunResult>(`/wizard/plans/${id}/test`, {
+         method: 'POST',
+         body: JSON.stringify({ task_name: taskName }),
+       }),
+
+     ---
+     Шаг 10: Frontend компонент — web/src/components/Wizard.tsx
+
+     Новые состояния:
+
+     type WizardState = 'input' | 'preview' | 'editing' | 'result' | 'testing'
+
+     // Новые state vars:
+     const [diagnosis, setDiagnosis] = useState<WizardDiagnosis | null>(null)
+     const [retryContext, setRetryContext] = useState<RetryContext | null>(null)
+     const [editingJSON, setEditingJSON] = useState('')
+     const [testResult, setTestResult] = useState<TestRunResult | null>(null)
+     const [userHint, setUserHint] = useState('')
+
+     Обработка ошибок генерации:
+
+     const handleGenerate = async () => {
+       try {
+         const p = await api.wizardGenerate(description, workDir, retryContext
+     || undefined)
+         setPlan(p)
+         setDiagnosis(null)
+         setState('preview')
+       } catch (e) {
+         if (e instanceof DiagnosisError) {
+           setDiagnosis(e.diagnosis)
+           // Сохранить контекст для retry
+           setRetryContext({ previous_error: e.diagnosis.message, ... })
+         } else {
+           setError(e instanceof Error ? e.message : 'Generation failed')
+         }
+       }
+     }
+
+     Input state — DiagnosisPanel:
+
+     Если diagnosis !== null, показать панель с:
+     - Иконка категории + сообщение
+     - Collapsible "Details" (raw output)
+     - Кнопки recovery actions
+     - Текстовое поле "Add more context" для user hint при retry
+
+     Preview state — ошибки apply:
+
+     При 422 от apply показать DiagnosisPanel с actions:
+     - "Auto-fix names" → применить patched_plan через wizardUpdatePlan
+     - "Edit plan" → перейти в editing state
+     - "Retry" → вернуться в input с retry_context
+
+     Editing state (новый):
+
+     - <textarea> с JSON плана (без id/status)
+     - Кнопка "Validate" → POST /wizard/plans/{id}/validate
+     - Зелёная галка если valid, DiagnosisPanel если ошибка
+     - "Save & Preview" → PUT plan, вернуться в preview
+     - "Cancel" → вернуться в preview без изменений
+
+     Result state — Test Run:
+
+     - Кнопка "Test Run" рядом с "Create Another"
+     - Dropdown выбора задачи из result.tasks_created
+     - Переход в testing state
+
+     Testing state (новый):
+
+     - Spinner во время выполнения
+     - Успех: зелёная панель с truncated output
+     - Soft failure: жёлтая панель с DiagnosisPanel
+     - Hard error: красная панель с DiagnosisPanel
+     - Кнопка "Back to results" для возврата
+
+     DiagnosisPanel (переиспользуемый компонент):
+
+     function DiagnosisPanel({ diagnosis, onAction }: {
+       diagnosis: WizardDiagnosis
+       onAction: (action: RecoveryAction) => void
+     }) { /* ... */ }
+
+     ---
+     Файлы для изменения
+
+     ┌─────────────────────────────────┬────────────────────────────────────────
+     ┐
+     │              Файл               │                Действие
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │                                 │ Добавить RetryContext,
+     │
+     │ internal/wizard/types.go        │ WizardDiagnosis, RecoveryAction,
+     │
+     │                                 │ TestRunResult, GenerateError,
+     │
+     │                                 │ RawOutput в Plan
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ internal/wizard/troubleshoot.go │ Новый — DiagnoseError,
+     │
+     │                                 │ AutoFixDuplicateNames
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ internal/wizard/generator.go    │ RetryContext в промпт, GenerateError
+     │
+     │                                 │ обёртка
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ internal/wizard/prompt.go       │ Секция "Previous Attempt Failed"
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ internal/wizard/applier.go      │ Экспортировать ValidateOnly
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │                                 │ Изменить error handling, добавить
+     │
+     │ internal/api/wizard.go          │ handleWizardValidate +
+     │
+     │                                 │ handleWizardTestRun
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ internal/api/router.go          │ 2 новых маршрута
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ web/src/types/index.ts          │ WizardDiagnosis, RecoveryAction,
+     │
+     │                                 │ TestRunResult
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ web/src/api/client.ts           │ DiagnosisError class, 422 handling,
+     │
+     │                                 │ новые методы
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ web/src/components/Wizard.tsx   │ 5-state machine, DiagnosisPanel,
+     │
+     │                                 │ editing/testing states
+     │
+     └─────────────────────────────────┴────────────────────────────────────────
+     ┘
+
+     Верификация
+
+     1. make test — все существующие тесты проходят
+     2. make build && make build-ui — компиляция без ошибок
+     3. Ручное тестирование через UI:
+       - Генерация с невалидным описанием → diagnosis panel с retry
+       - Генерация с дублирующими именами → auto-fix suggestion
+       - Edit plan → validate → apply
+       - Apply → test run → проверить soft failure detection
+     4. Написать unit-тесты для troubleshoot.go: DiagnoseError по каждой
+     категории, AutoFixDuplicateNames
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/asdmin/development/AI/Claude/claude-ecosyst
+     em/2026-03-26-161639-wizard.txt
+
+❯ продолжай                                                                     
+
+● Начинаю реализацию по плану. Сначала backend, потом frontend.
+● Начинаю с backend. Шаг 1: типы, troubleshoot, generator.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(internal/wizard/types.go)
+  ⎿  Added 10 lines, removed 2 lines
+       2  
+       3  // GenerateRequest is the input for wizard plan generation.
+       4  type GenerateRequest struct {
+       5 -  Description string `json:"description"`                      
+       6 -  WorkDir     string `json:"work_dir,omitempty"`               
+       5 +  Description  string        `json:"description"`              
+       6 +  WorkDir      string        `json:"work_dir,omitempty"`       
+       7 +  RetryContext *RetryContext  `json:"retry_context,omitempty"` 
+       8  }
+       9  
+      10 +// RetryContext carries context from a previous failed generati
+         +on attempt.                                                    
+      11 +type RetryContext struct {                                     
+      12 +  PreviousError     string `json:"previous_error"`             
+      13 +  PreviousRawOutput string `json:"previous_raw_output,omitempty
+         +"`                                                             
+      14 +  UserHint          string `json:"user_hint,omitempty"`        
+      15 +}                                                              
+      16 +                                                               
+      17  // Plan holds the full wizard-generated configuration plan.
+      18  type Plan struct {
+      19    ID          string         `json:"id"`
+
+● Update(internal/wizard/types.go)
+  ⎿  Added 2 lines, removed 1 line
+      25    Tasks       []TaskPlan      `json:"tasks,omitempty"`
+      26    Pipelines   []PipelinePlan  `json:"pipelines,omitempty"`
+      27    SetupNotes  string         `json:"setup_notes,omitempty"`
+      28 -  Status      string         `json:"status"` // "draft", "appli
+         -ed", "discarded"                                               
+      28 +  Status      string         `json:"status"`              // "d
+         +raft", "applied", "discarded"                                  
+      29 +  RawOutput   string         `json:"raw_output,omitempty"` // s
+         +tored for troubleshooting on parse errors                      
+      30  }
+      31  
+      32  // DomainPlan describes a domain to be created.
+
+● Update(internal/wizard/types.go)
+  ⎿  Added 57 lines
+       90    SessionChain  bool     `json:"session_chain,omitempty"`
+       91  }
+       92  
+       93 +// ErrorCategory classifies a wizard failure for the troublesh
+          +ooter UI.                                                     
+       94 +type ErrorCategory string                                     
+       95 +                                                              
+       96 +const (                                                       
+       97 +  ErrCatEmptyOutput      ErrorCategory = "empty_output"       
+       98 +  ErrCatJSONParse        ErrorCategory = "json_parse"         
+       99 +  ErrCatTimeout          ErrorCategory = "timeout"            
+      100 +  ErrCatDuplicateName    ErrorCategory = "duplicate_name"     
+      101 +  ErrCatMissingReference ErrorCategory = "missing_reference"  
+      102 +  ErrCatPermissionMode   ErrorCategory = "permission_mode"    
+      103 +  ErrCatApplyFailed      ErrorCategory = "apply_failed"       
+      104 +  ErrCatTestSoftFailure  ErrorCategory = "test_soft_failure"  
+      105 +  ErrCatTestHardFailure  ErrorCategory = "test_hard_failure"  
+      106 +  ErrCatUnknown          ErrorCategory = "unknown"            
+      107 +)                                                             
+      108 +                                                              
+      109 +// WizardDiagnosis is a structured error returned to the front
+          +end.                                                          
+      110 +type WizardDiagnosis struct {                                 
+      111 +  Category    ErrorCategory    `json:"category"`              
+      112 +  Message     string           `json:"message"`               
+      113 +  Details     string           `json:"details,omitempty"`     
+      114 +  Suggestions []RecoveryAction `json:"suggestions"`           
+      115 +}                                                             
+      116 +                                                              
+      117 +// RecoveryAction describes one way the user can fix the probl
+          +em.                                                           
+      118 +type RecoveryAction struct {                                  
+      119 +  ID          string `json:"id"`                              
+      120 +  Label       string `json:"label"`                           
+      121 +  Description string `json:"description"`                     
+      122 +  PatchedPlan *Plan  `json:"patched_plan,omitempty"`          
+      123 +}                                                             
+      124 +                                                              
+      125 +// GenerateError wraps a generation error with the raw Claude 
+          +output for diagnosis.                                         
+      126 +type GenerateError struct {                                   
+      127 +  Err       error                                             
+      128 +  RawOutput string                                            
+      129 +}                                                             
+      130 +                                                              
+      131 +func (e *GenerateError) Error() string { return e.Err.Error() 
+          +}                                                             
+      132 +func (e *GenerateError) Unwrap() error { return e.Err }       
+      133 +                                                              
+      134 +// TestRunRequest specifies which task to test after plan appl
+          +y.                                                            
+      135 +type TestRunRequest struct {                                  
+      136 +  TaskName string `json:"task_name"`                          
+      137 +}                                                             
+      138 +                                                              
+      139 +// TestRunResult holds the outcome of a wizard test run.      
+      140 +type TestRunResult struct {                                   
+      141 +  TaskName    string           `json:"task_name"`             
+      142 +  Output      string           `json:"output"`                
+      143 +  Error       string           `json:"error,omitempty"`       
+      144 +  SoftFailure string           `json:"soft_failure,omitempty"`
+      145 +  DurationMS  int64            `json:"duration_ms"`           
+      146 +  CostUSD     float64          `json:"cost_usd,omitempty"`    
+      147 +  Diagnosis   *WizardDiagnosis `json:"diagnosis,omitempty"`   
+      148 +}                                                             
+      149 +                                                              
+      150  // ApplyResult holds the outcome of applying a plan.
+      151  type ApplyResult struct {
+      152    MCPServersCreated []string `json:"mcp_servers_created,omitem
+           pty"`
+
+● Теперь создаю troubleshoot.go и обновляю generator.go.
+
+● Write(internal/wizard/troubleshoot.go)
+  ⎿  Wrote 360 lines to internal/wizard/troubleshoot.go
+       1 package wizard
+       2 
+       3 import (
+       4        "context"
+       5        "errors"
+       6        "fmt"
+       7        "strings"
+       8 
+       9        "github.com/asdmin/claude-ecosystem/internal/config"
+      10 )
+     … +350 lines (ctrl+o to expand)
+
+● Теперь обновляю generator.go — оборачиваю ошибки в GenerateError:
+
+● Update(internal/wizard/generator.go)
+  ⎿  Added 12 lines, removed 3 lines
+      64    )
+      65  
+      66    if result.Error != "" {
+      67 -    return nil, fmt.Errorf("claude generation failed: %s", resu
+         -lt.Error)                                                      
+      67 +    return nil, &GenerateError{                                
+      68 +      Err:       fmt.Errorf("claude generation failed: %s", res
+         +ult.Error),                                                    
+      69 +      RawOutput: result.Output,                                
+      70 +    }                                                          
+      71    }
+      72  
+      73    if result.Output == "" {
+      71 -    return nil, fmt.Errorf("claude returned empty output")     
+      74 +    return nil, &GenerateError{                                
+      75 +      Err:       fmt.Errorf("claude returned empty output"),   
+      76 +      RawOutput: "",                                           
+      77 +    }                                                          
+      78    }
+      79  
+      80    // Claude may return JSON wrapped in markdown code fences or 
+          inside a CLI envelope.
+     ...
+       91        "extracted_preview", truncate(extracted, 500),
+       92      )
+       93      if err2 := json.Unmarshal([]byte(extracted), &plan); err2 
+           != nil {
+       88 -      return nil, fmt.Errorf("parsing plan JSON: %w\nraw outpu
+          -t: %s", err2, result.Output)                                  
+       94 +      return nil, &GenerateError{                             
+       95 +        Err:       fmt.Errorf("parsing plan JSON: %w", err2), 
+       96 +        RawOutput: result.Output,                             
+       97 +      }                                                       
+       98      }
+       99    }
+      100  
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Шаг 2: prompt.go (retry context) + applier.go (ValidateOnly).
+
+● Update(internal/wizard/prompt.go)
+  ⎿  Added 14 lines
+      298      sb.WriteString(fmt.Sprintf("\nWorking directory: %s\n", re
+           q.WorkDir))
+      299    }
+      300  
+      301 +  // Retry context from a previous failed attempt             
+      302 +  if req.RetryContext != nil {                                
+      303 +    sb.WriteString("\n## Previous Attempt Failed\n\n")        
+      304 +    sb.WriteString(fmt.Sprintf("Error: %s\n", req.RetryContext
+          +.PreviousError))                                              
+      305 +    if req.RetryContext.PreviousRawOutput != "" {             
+      306 +      sb.WriteString(fmt.Sprintf("\nRaw output (first 1000 cha
+          +rs):\n%s\n",                                                  
+      307 +        truncateField(req.RetryContext.PreviousRawOutput, 1000
+          +)))                                                           
+      308 +    }                                                         
+      309 +    if req.RetryContext.UserHint != "" {                      
+      310 +      sb.WriteString(fmt.Sprintf("\nUser's additional context:
+          + %s\n", req.RetryContext.UserHint))                           
+      311 +    }                                                         
+      312 +    sb.WriteString("\nFix the issues from the previous attempt
+          + and generate a correct plan.\n")                             
+      313 +  }                                                           
+      314 +                                                              
+      315    sb.WriteString("\n## Output Format\n\n")
+      316    sb.WriteString("Respond with ONLY a raw JSON object (no mark
+           down fences, no explanation, no extra text).\n")
+      317    sb.WriteString("The JSON must match this schema:\n\n")
+
+● Update(internal/wizard/applier.go)
+  ⎿  Added 5 lines
+      213    return result, nil
+      214  }
+      215  
+      216 +// ValidateOnly checks the plan without applying it. Returns w
+          +arnings and validation errors.                                
+      217 +func (a *Applier) ValidateOnly(plan *Plan) ([]string, error) {
+      218 +  return a.validate(plan)                                     
+      219 +}                                                             
+      220 +                                                              
+      221  // validate checks for duplicate names, valid references, and 
+           tool/permission consistency.
+      222  // Returns warnings (non-fatal issues) and an error (fatal iss
+           ues that block apply).
+      223  func (a *Applier) validate(plan *Plan) ([]string, error) {
+  ⎿  Found 6 new diagnostic issues in 1 file (ctrl+o to expand)
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Шаг 3: API handlers + router. Мне нужно посмотреть как server устроен для test
+   run.
+  Searched for 3 patterns (ctrl+o to expand)
+
+● Теперь посмотрю как запускаются таски через API — нужен паттерн для
+  ResolveRunOptions:
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● Хорошо, теперь посмотрю как находят task по имени:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Теперь реализую API handlers:
+
+  Read 1 file (ctrl+o to expand)
+
+● Write(internal/api/wizard.go)
+  ⎿  Added 132 lines, removed 3 lines
+       1  package api
+       2  
+       3  import (
+       4 +  "context"                                                    
+       5 +  "errors"                                                     
+       6 +  "fmt"                                                        
+       7    "net/http"
+       8 +  "time"                                                       
+       9  
+      10 +  "github.com/asdmin/claude-ecosystem/internal/outputcheck"    
+      11 +  "github.com/asdmin/claude-ecosystem/internal/task"           
+      12    "github.com/asdmin/claude-ecosystem/internal/wizard"
+      13  )
+      14  
+      15  // handleWizardGenerate accepts a description and runs Claude t
+          o generate a plan.
+      16  // POST /api/v1/wizard/generate
+      17 +// Returns 200 with Plan on success, 422 with WizardDiagnosis o
+         +n diagnosable errors.                                          
+      18  func (s *Server) handleWizardGenerate(w http.ResponseWriter, r 
+          *http.Request) {
+      19    var req wizard.GenerateRequest
+      20    if err := readJSON(r, &req); err != nil {
+     ...
+      28  
+      29    plan, err := s.wizardGen.Generate(r.Context(), req, s.cfg)
+      30    if err != nil {
+      31 +    var genErr *wizard.GenerateError                           
+      32 +    if errors.As(err, &genErr) {                               
+      33 +      diagnosis := wizard.DiagnoseError("generate", genErr, gen
+         +Err.RawOutput, nil, s.cfg)                                     
+      34 +      writeJSON(w, http.StatusUnprocessableEntity, diagnosis)  
+      35 +      return                                                   
+      36 +    }                                                          
+      37      writeError(w, http.StatusInternalServerError, err.Error())
+      38      return
+      39    }
+     ...
+      83  
+      84  // handleWizardApply creates all entities from the plan.
+      85  // POST /api/v1/wizard/plans/{id}/apply
+      86 +// Returns 200 with ApplyResult on success, 422 with WizardDiag
+         +nosis on diagnosable errors.                                   
+      87  func (s *Server) handleWizardApply(w http.ResponseWriter, r *ht
+          tp.Request) {
+      88    id := r.PathValue("id")
+      89    plan, ok := s.wizardStore.Get(id)
+     ...
+       99    applier := wizard.NewApplier(s.cfg, s.subagentMgr, s.domainM
+           gr)
+      100    result, err := applier.Apply(plan)
+      101    if err != nil {
+       88 -    writeError(w, http.StatusInternalServerError, err.Error())
+      102 +    errMsg := err.Error()                                     
+      103 +    phase := "apply"                                          
+      104 +    if len(errMsg) > 11 && errMsg[:11] == "validation " {     
+      105 +      phase = "validate"                                      
+      106 +    }                                                         
+      107 +    diagnosis := wizard.DiagnoseError(phase, err, "", plan, s.
+          +cfg)                                                          
+      108 +    writeJSON(w, http.StatusUnprocessableEntity, diagnosis)   
+      109      return
+      110    }
+      111  
+     ...
+      118  // DELETE /api/v1/wizard/plans/{id}
+      119  func (s *Server) handleWizardDiscard(w http.ResponseWriter, r 
+           *http.Request) {
+      120    id := r.PathValue("id")
+      101 -  plan, ok := s.wizardStore.Get(id)                           
+      121 +  _, ok := s.wizardStore.Get(id)                              
+      122    if !ok {
+      123      writeError(w, http.StatusNotFound, "plan not found or expi
+           red")
+      124      return
+      125    }
+      126  
+      107 -  plan.Status = "discarded"                                   
+      127    s.wizardStore.Delete(id)
+      128    writeJSON(w, http.StatusOK, map[string]string{"status": "dis
+           carded"})
+      129  }
+      130 +                                                              
+      131 +// handleWizardValidate validates a plan without applying it. 
+      132 +// POST /api/v1/wizard/plans/{id}/validate                    
+      133 +func (s *Server) handleWizardValidate(w http.ResponseWriter, r
+          + *http.Request) {                                             
+      134 +  id := r.PathValue("id")                                     
+      135 +  plan, ok := s.wizardStore.Get(id)                           
+      136 +  if !ok {                                                    
+      137 +    writeError(w, http.StatusNotFound, "plan not found or expi
+          +red")                                                         
+      138 +    return                                                    
+      139 +  }                                                           
+      140 +                                                              
+      141 +  applier := wizard.NewApplier(s.cfg, s.subagentMgr, s.domainM
+          +gr)                                                           
+      142 +  warnings, err := applier.ValidateOnly(plan)                 
+      143 +  if err != nil {                                             
+      144 +    diagnosis := wizard.DiagnoseError("validate", err, "", pla
+          +n, s.cfg)                                                     
+      145 +    writeJSON(w, http.StatusUnprocessableEntity, diagnosis)   
+      146 +    return                                                    
+      147 +  }                                                           
+      148 +                                                              
+      149 +  writeJSON(w, http.StatusOK, map[string]interface{}{         
+      150 +    "valid":    true,                                         
+      151 +    "warnings": warnings,                                     
+      152 +  })                                                          
+      153 +}                                                             
+      154 +                                                              
+      155 +// handleWizardTestRun runs a single task from an applied plan
+          + to verify it works.                                          
+      156 +// POST /api/v1/wizard/plans/{id}/test                        
+      157 +func (s *Server) handleWizardTestRun(w http.ResponseWriter, r 
+          +*http.Request) {                                              
+      158 +  id := r.PathValue("id")                                     
+      159 +  plan, ok := s.wizardStore.Get(id)                           
+      160 +  if !ok {                                                    
+      161 +    writeError(w, http.StatusNotFound, "plan not found or expi
+          +red")                                                         
+      162 +    return                                                    
+      163 +  }                                                           
+      164 +  if plan.Status != "applied" {                               
+      165 +    writeError(w, http.StatusConflict, "plan must be applied b
+          +efore testing")                                               
+      166 +    return                                                    
+      167 +  }                                                           
+      168 +                                                              
+      169 +  var req wizard.TestRunRequest                               
+      170 +  if err := readJSON(r, &req); err != nil {                   
+      171 +    writeError(w, http.StatusBadRequest, err.Error())         
+      172 +    return                                                    
+      173 +  }                                                           
+      174 +  if req.TaskName == "" {                                     
+      175 +    writeError(w, http.StatusBadRequest, "task_name is require
+          +d")                                                           
+      176 +    return                                                    
+      177 +  }                                                           
+      178 +                                                              
+      179 +  // Find the task in config                                  
+      180 +  t := s.findTask(req.TaskName)                               
+      181 +  if t == nil {                                               
+      182 +    writeError(w, http.StatusNotFound, fmt.Sprintf("task %q no
+          +t found", req.TaskName))                                      
+      183 +    return                                                    
+      184 +  }                                                           
+      185 +                                                              
+      186 +  // Resolve run options                                      
+      187 +  opts, cleanup, resolveErr := task.ResolveRunOptions(*t, s.su
+          +bagentMgr, s.mcpMgr, s.domainMgr)                             
+      188 +  if cleanup != nil {                                         
+      189 +    defer cleanup()                                           
+      190 +  }                                                           
+      191 +  if resolveErr != nil {                                      
+      192 +    writeError(w, http.StatusInternalServerError, "failed to r
+          +esolve run options: "+resolveErr.Error())                     
+      193 +    return                                                    
+      194 +  }                                                           
+      195 +                                                              
+      196 +  // Cap test run timeout at 2 minutes                        
+      197 +  timeout := t.ParsedTimeout()                                
+      198 +  const maxTestTimeout = 2 * time.Minute                      
+      199 +  if timeout == 0 || timeout > maxTestTimeout {               
+      200 +    timeout = maxTestTimeout                                  
+      201 +  }                                                           
+      202 +  ctx, cancel := context.WithTimeout(r.Context(), timeout)    
+      203 +  defer cancel()                                              
+      204 +                                                              
+      205 +  result := s.taskRunner.Run(ctx, *t, opts, nil)              
+      206 +                                                              
+      207 +  testResult := wizard.TestRunResult{                         
+      208 +    TaskName:   req.TaskName,                                 
+      209 +    Output:     result.Output,                                
+      210 +    Error:      result.Error,                                 
+      211 +    DurationMS: result.Duration.Milliseconds(),               
+      212 +    CostUSD:    result.CostUSD,                               
+      213 +  }                                                           
+      214 +                                                              
+      215 +  // Check for soft failures                                  
+      216 +  if softFail := outputcheck.CheckStepOutput(result.Output); s
+          +oftFail != "" {                                               
+      217 +    testResult.SoftFailure = softFail                         
+      218 +    testResult.Diagnosis = wizard.DiagnoseError("test", fmt.Er
+          +rorf("%s", softFail), result.Output, plan, s.cfg)             
+      219 +  } else if result.Error != "" {                              
+      220 +    testResult.Diagnosis = &wizard.WizardDiagnosis{           
+      221 +      Category: wizard.ErrCatTestHardFailure,                 
+      222 +      Message:  result.Error,                                 
+      223 +      Details:  truncateString(result.Output, 2000),          
+      224 +      Suggestions: []wizard.RecoveryAction{                   
+      225 +        {ID: "edit_task", Label: "Edit Task", Description: "Mo
+          +dify the task prompt or configuration"},                      
+      226 +        {ID: "retry_test", Label: "Run Again", Description: "R
+          +un the test again"},                                          
+      227 +      },                                                      
+      228 +    }                                                         
+      229 +  }                                                           
+      230 +                                                              
+      231 +  writeJSON(w, http.StatusOK, testResult)                     
+      232 +}                                                             
+      233 +                                                              
+      234 +func truncateString(s string, n int) string {                 
+      235 +  if len(s) <= n {                                            
+      236 +    return s                                                  
+      237 +  }                                                           
+      238 +  return s[:n] + "..."                                        
+      239 +}                                                             
+
+● Теперь проверю есть ли метод ParsedTimeout на config.Task:
+
+  Searched for 1 pattern (ctrl+o to expand)
+  ⎿  Found 4 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Теперь добавлю маршруты:
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(internal/api/router.go)
+  ⎿  Added 2 lines
+      163    mux.HandleFunc("GET /api/v1/wizard/plans/{id}", s.withAuth(s
+           .handleWizardGetPlan))
+      164    mux.HandleFunc("PUT /api/v1/wizard/plans/{id}", s.withAuth(s
+           .handleWizardUpdatePlan))
+      165    mux.HandleFunc("POST /api/v1/wizard/plans/{id}/apply", s.wit
+           hAuth(s.handleWizardApply))
+      166 +  mux.HandleFunc("POST /api/v1/wizard/plans/{id}/validate", s.
+          +withAuth(s.handleWizardValidate))                             
+      167 +  mux.HandleFunc("POST /api/v1/wizard/plans/{id}/test", s.with
+          +Auth(s.handleWizardTestRun))                                  
+      168    mux.HandleFunc("DELETE /api/v1/wizard/plans/{id}", s.withAut
+           h(s.handleWizardDiscard))
+      169  
+      170    // Delete-info (pre-delete analysis)
+
+● Проверю что фаза validate правильно определяется — Apply оборачивает ошибки с
+  "validation failed:":
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Нужно исправить определение фазы — ошибка начинается с "validation failed":
+
+● Update(internal/api/wizard.go)
+  ⎿  Added 1 line, removed 2 lines
+       99    applier := wizard.NewApplier(s.cfg, s.subagentMgr, s.domainM
+           gr)
+      100    result, err := applier.Apply(plan)
+      101    if err != nil {
+      102 -    errMsg := err.Error()                                     
+      102      phase := "apply"
+      104 -    if len(errMsg) > 11 && errMsg[:11] == "validation " {     
+      103 +    if strings.HasPrefix(err.Error(), "validation failed:") { 
+      104        phase = "validate"
+      105      }
+      106      diagnosis := wizard.DiagnoseError(phase, err, "", plan, s.
+           cfg)
+
+● Добавлю "strings" в import:
+
+● Update(internal/api/wizard.go)
+  ⎿  Added 1 line
+       5    "errors"
+       6    "fmt"
+       7    "net/http"
+       8 +  "strings"                                                    
+       9    "time"
+      10  
+      11    "github.com/asdmin/claude-ecosystem/internal/outputcheck"
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Hmm, let me check — the diagnostics say strings is undefined, but I just added
+   it. Probably stale. Let me verify the file:
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Хорошо, strings теперь на месте. Попробую скомпилировать backend:
+
+● Bash(go build ./internal/... 2>&1 | head -30)
+  ⎿  (No output)
+
+● Bash(go build ./cmd/... 2>&1 | head -30)
+  ⎿  (No output)
+
+● Backend компилируется без ошибок.
+
+● Шаг 4: Frontend types + API client.
+
+  Read 1 file (ctrl+o to expand)
+● Update(web/src/types/index.ts)
+  ⎿  Added 31 lines
+      170    errors?: string[]
+      171  }
+      172  
+      173 +// Wizard troubleshooter types                                
+      174 +export interface WizardDiagnosis {                            
+      175 +  category: string                                            
+      176 +  message: string                                             
+      177 +  details?: string                                            
+      178 +  suggestions: RecoveryAction[]                               
+      179 +}                                                             
+      180 +                                                              
+      181 +export interface RecoveryAction {                             
+      182 +  id: string                                                  
+      183 +  label: string                                               
+      184 +  description: string                                         
+      185 +  patched_plan?: WizardPlan                                   
+      186 +}                                                             
+      187 +                                                              
+      188 +export interface RetryContext {                               
+      189 +  previous_error: string                                      
+      190 +  previous_raw_output?: string                                
+      191 +  user_hint?: string                                          
+      192 +}                                                             
+      193 +                                                              
+      194 +export interface TestRunResult {                              
+      195 +  task_name: string                                           
+      196 +  output: string                                              
+      197 +  error?: string                                              
+      198 +  soft_failure?: string                                       
+      199 +  duration_ms: number                                         
+      200 +  cost_usd?: number                                           
+      201 +  diagnosis?: WizardDiagnosis                                 
+      202 +}                                                             
+      203 +                                                              
+      204  // Delete / Backup types
+      205  export interface Dependency {
+      206    type: 'task' | 'pipeline' | 'subagent' | 'domain'
+
+● Теперь обновляю API client:
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(web/src/api/client.ts)
+  ⎿  Added 1 line, removed 1 line
+      1 -import type { DashboardData, Task, SubAgent, Pipeline, Execution
+        -, ExecutionResult, MCPServer, WizardPlan, ApplyResult, DeleteAna
+        -lysis, DeleteResponse, BackupEntry } from '../types'            
+      1 +import type { DashboardData, Task, SubAgent, Pipeline, Execution
+        +, ExecutionResult, MCPServer, WizardPlan, ApplyResult, DeleteAna
+        +lysis, DeleteResponse, BackupEntry, WizardDiagnosis, RetryContex
+        +t, TestRunResult } from '../types'                              
+      2  
+      3  const BASE = '/api/v1'
+      4  
+
+● Теперь добавляю DiagnosisError и обработку 422:
+
+● Update(web/src/api/client.ts)
+  ⎿  Added 18 lines
+       2  
+       3  const BASE = '/api/v1'
+       4  
+       5 +// DiagnosisError is thrown when the server returns a 422 with 
+         +a WizardDiagnosis.                                             
+       6 +export class DiagnosisError extends Error {                    
+       7 +  diagnosis: WizardDiagnosis                                   
+       8 +  constructor(diagnosis: WizardDiagnosis) {                    
+       9 +    super(diagnosis.message)                                   
+      10 +    this.name = 'DiagnosisError'                               
+      11 +    this.diagnosis = diagnosis                                 
+      12 +  }                                                            
+      13 +}                                                              
+      14 +                                                               
+      15  async function request<T>(path: string, options?: RequestInit):
+           Promise<T> {
+      16    const token = localStorage.getItem('token')
+      17    const headers: Record<string, string> = {
+     ...
+      28      throw new Error('Unauthorized')
+      29    }
+      30  
+      31 +  // Structured diagnosis from wizard endpoints                
+      32 +  if (res.status === 422) {                                    
+      33 +    const body = await res.json().catch(() => null)            
+      34 +    if (body && body.category) {                               
+      35 +      throw new DiagnosisError(body as WizardDiagnosis)        
+      36 +    }                                                          
+      37 +  }                                                            
+      38 +                                                               
+      39    if (!res.ok) {
+      40      const body = await res.json().catch(() => ({ error: res.sta
+          tusText }))
+      41      // Avoid exposing internal server details to the UI.
+
+● Теперь обновляю wizard методы в API client:
+
+● Update(web/src/api/client.ts)
+  ⎿  Added 11 lines, removed 2 lines
+      134      request<{ status: string }>(`/backups/${id}/restore`, { me
+           thod: 'POST' }),
+      135  
+      136    // Wizard
+      137 -  wizardGenerate: (description: string, workDir?: string) =>  
+      137 +  wizardGenerate: (description: string, workDir?: string, retr
+          +yContext?: RetryContext) =>                                   
+      138      request<WizardPlan>('/wizard/generate', {
+      139        method: 'POST',
+      140 -      body: JSON.stringify({ description, work_dir: workDir })
+          -,                                                             
+      140 +      body: JSON.stringify({ description, work_dir: workDir, r
+          +etry_context: retryContext }),                                
+      141      }),
+      142    wizardGetPlan: (id: string) => request<WizardPlan>(`/wizard/
+           plans/${id}`),
+      143    wizardUpdatePlan: (id: string, plan: WizardPlan) =>
+     ...
+      147      }),
+      148    wizardApply: (id: string) =>
+      149      request<ApplyResult>(`/wizard/plans/${id}/apply`, { method
+           : 'POST' }),
+      150 +  wizardValidate: (id: string) =>                             
+      151 +    request<{ valid: boolean; warnings?: string[] }>(`/wizard/
+          +plans/${id}/validate`, {                                      
+      152 +      method: 'POST',                                         
+      153 +    }),                                                       
+      154 +  wizardTestRun: (id: string, taskName: string) =>            
+      155 +    request<TestRunResult>(`/wizard/plans/${id}/test`, {      
+      156 +      method: 'POST',                                         
+      157 +      body: JSON.stringify({ task_name: taskName }),          
+      158 +    }),                                                       
+      159    wizardDiscard: (id: string) =>
+      160      request<void>(`/wizard/plans/${id}`, { method: 'DELETE' })
+           ,
+      161  }
+
+● Шаг 5: Wizard.tsx — самая объёмная часть. Перечитаю текущий файл полностью и
+  перепишу.
+
+  Read 1 file (ctrl+o to expand)
+
+● Write(web/src/components/Wizard.tsx)
+  ⎿  Added 445 lines, removed 9 lines
+      1  import { useState } from 'react'
+      2 -import { api } from '../api/client'                             
+      3 -import type { WizardPlan, ApplyResult } from '../types'         
+      2 +import { api, DiagnosisError } from '../api/client'             
+      3 +import type { WizardPlan, ApplyResult, WizardDiagnosis, Recovery
+        +Action, RetryContext, TestRunResult } from '../types'           
+      4  
+      5 -type WizardState = 'input' | 'preview' | 'result'               
+      5 +type WizardState = 'input' | 'preview' | 'editing' | 'result' | 
+        +'testing'                                                       
+      6  
+      7  export default function Wizard() {
+      8    const [state, setState] = useState<WizardState>('input')
+     ...
+      12    const [error, setError] = useState('')
+      13    const [plan, setPlan] = useState<WizardPlan | null>(null)
+      14    const [result, setResult] = useState<ApplyResult | null>(null
+          )
+      15 +  const [diagnosis, setDiagnosis] = useState<WizardDiagnosis | 
+         +null>(null)                                                    
+      16 +  const [retryContext, setRetryContext] = useState<RetryContext
+         + | null>(null)                                                 
+      17 +  const [userHint, setUserHint] = useState('')                 
+      18 +  const [editingJSON, setEditingJSON] = useState('')           
+      19 +  const [editValidation, setEditValidation] = useState<{ valid?
+         +: boolean; warnings?: string[]; error?: string } | null>(null) 
+      20 +  const [testResult, setTestResult] = useState<TestRunResult | 
+         +null>(null)                                                    
+      21 +  const [selectedTestTask, setSelectedTestTask] = useState('') 
+      22    const [expandedSections, setExpandedSections] = useState<Reco
+          rd<string, boolean>>({
+      23      mcp_servers: true, domains: true, agents: true, tasks: true
+          , pipelines: true,
+      24    })
+     ...
+      30      if (!description.trim()) return
+      31      setLoading(true)
+      32      setError('')
+      33 +    setDiagnosis(null)                                         
+      34      try {
+      27 -      const p = await api.wizardGenerate(description, workDir |
+         -| undefined)                                                   
+      35 +      const ctx = retryContext                                 
+      36 +        ? { ...retryContext, user_hint: userHint || undefined }
+      37 +        : undefined                                            
+      38 +      const p = await api.wizardGenerate(description, workDir |
+         +| undefined, ctx)                                              
+      39        setPlan(p)
+      40 +      setDiagnosis(null)                                       
+      41 +      setRetryContext(null)                                    
+      42 +      setUserHint('')                                          
+      43        setState('preview')
+      44      } catch (e) {
+      31 -      setError(e instanceof Error ? e.message : 'Generation fai
+         -led')                                                          
+      45 +      if (e instanceof DiagnosisError) {                       
+      46 +        setDiagnosis(e.diagnosis)                              
+      47 +        setRetryContext({                                      
+      48 +          previous_error: e.diagnosis.message,                 
+      49 +          previous_raw_output: e.diagnosis.details,            
+      50 +        })                                                     
+      51 +      } else {                                                 
+      52 +        setError(e instanceof Error ? e.message : 'Generation f
+         +ailed')                                                        
+      53 +      }                                                        
+      54      } finally {
+      55        setLoading(false)
+      56      }
+     ...
+      60      if (!plan) return
+      61      setLoading(true)
+      62      setError('')
+      63 +    setDiagnosis(null)                                         
+      64      try {
+      65        const r = await api.wizardApply(plan.id)
+      66        setResult(r)
+      67        setState('result')
+      68      } catch (e) {
+      46 -      setError(e instanceof Error ? e.message : 'Apply failed')
+      69 +      if (e instanceof DiagnosisError) {                       
+      70 +        setDiagnosis(e.diagnosis)                              
+      71 +      } else {                                                 
+      72 +        setError(e instanceof Error ? e.message : 'Apply failed
+         +')                                                             
+      73 +      }                                                        
+      74      } finally {
+      75        setLoading(false)
+      76      }
+     ...
+       86      reset()
+       87    }
+       88  
+       89 +  const handleDiagnosisAction = async (action: RecoveryAction)
+          + => {                                                         
+       90 +    switch (action.id) {                                      
+       91 +      case 'retry':                                           
+       92 +        handleGenerate()                                      
+       93 +        break                                                 
+       94 +      case 'retry_simplified':                                
+       95 +        setDescription(description.split('.')[0])             
+       96 +        setRetryContext(null)                                 
+       97 +        break                                                 
+       98 +      case 'retry_with_hint':                                 
+       99 +        // Just show the hint input — user will fill it and cl
+          +ick Generate                                                  
+      100 +        break                                                 
+      101 +      case 'auto_fix':                                        
+      102 +        if (action.patched_plan && plan) {                    
+      103 +          try {                                               
+      104 +            const updated = await api.wizardUpdatePlan(plan.id
+          +, action.patched_plan)                                        
+      105 +            setPlan(updated)                                  
+      106 +            setDiagnosis(null)                                
+      107 +          } catch (e) {                                       
+      108 +            setError(e instanceof Error ? e.message : 'Failed 
+          +to apply auto-fix')                                           
+      109 +          }                                                   
+      110 +        }                                                     
+      111 +        break                                                 
+      112 +      case 'edit_plan':                                       
+      113 +        if (plan) {                                           
+      114 +          const { id: _, status: __, raw_output: ___, ...edita
+          +ble } = plan as WizardPlan & { raw_output?: string }          
+      115 +          setEditingJSON(JSON.stringify(editable, null, 2))   
+      116 +          setEditValidation(null)                             
+      117 +          setState('editing')                                 
+      118 +        }                                                     
+      119 +        break                                                 
+      120 +      case 'edit_task':                                       
+      121 +        // Navigate to tasks page — for now just go back to re
+          +sult                                                          
+      122 +        setState('result')                                    
+      123 +        break                                                 
+      124 +      case 'retry_test':                                      
+      125 +        if (selectedTestTask) handleTestRun(selectedTestTask) 
+      126 +        break                                                 
+      127 +    }                                                         
+      128 +  }                                                           
+      129 +                                                              
+      130 +  const handleValidate = async () => {                        
+      131 +    if (!plan) return                                         
+      132 +    setLoading(true)                                          
+      133 +    setEditValidation(null)                                   
+      134 +    try {                                                     
+      135 +      const res = await api.wizardValidate(plan.id)           
+      136 +      setEditValidation({ valid: res.valid, warnings: res.warn
+          +ings })                                                       
+      137 +    } catch (e) {                                             
+      138 +      if (e instanceof DiagnosisError) {                      
+      139 +        setEditValidation({ error: e.diagnosis.message })     
+      140 +      } else {                                                
+      141 +        setEditValidation({ error: e instanceof Error ? e.mess
+          +age : 'Validation failed' })                                  
+      142 +      }                                                       
+      143 +    } finally {                                               
+      144 +      setLoading(false)                                       
+      145 +    }                                                         
+      146 +  }                                                           
+      147 +                                                              
+      148 +  const handleSaveEdit = async () => {                        
+      149 +    if (!plan) return                                         
+      150 +    try {                                                     
+      151 +      const parsed = JSON.parse(editingJSON)                  
+      152 +      parsed.id = plan.id                                     
+      153 +      parsed.status = 'draft'                                 
+      154 +      const updated = await api.wizardUpdatePlan(plan.id, pars
+          +ed)                                                           
+      155 +      setPlan(updated)                                        
+      156 +      setDiagnosis(null)                                      
+      157 +      setEditValidation(null)                                 
+      158 +      setState('preview')                                     
+      159 +    } catch (e) {                                             
+      160 +      setEditValidation({ error: e instanceof Error ? e.messag
+          +e : 'Invalid JSON' })                                         
+      161 +    }                                                         
+      162 +  }                                                           
+      163 +                                                              
+      164 +  const handleTestRun = async (taskName: string) => {         
+      165 +    if (!plan) return                                         
+      166 +    setSelectedTestTask(taskName)                             
+      167 +    setTestResult(null)                                       
+      168 +    setLoading(true)                                          
+      169 +    setState('testing')                                       
+      170 +    try {                                                     
+      171 +      const tr = await api.wizardTestRun(plan.id, taskName)   
+      172 +      setTestResult(tr)                                       
+      173 +    } catch (e) {                                             
+      174 +      setTestResult({                                         
+      175 +        task_name: taskName,                                  
+      176 +        output: '',                                           
+      177 +        error: e instanceof Error ? e.message : 'Test run fail
+          +ed',                                                          
+      178 +        duration_ms: 0,                                       
+      179 +      })                                                      
+      180 +    } finally {                                               
+      181 +      setLoading(false)                                       
+      182 +    }                                                         
+      183 +  }                                                           
+      184 +                                                              
+      185    const reset = () => {
+      186      setState('input')
+      187      setDescription('')
+     ...
+      189      setPlan(null)
+      190      setResult(null)
+      191      setError('')
+      192 +    setDiagnosis(null)                                        
+      193 +    setRetryContext(null)                                     
+      194 +    setUserHint('')                                           
+      195 +    setTestResult(null)                                       
+      196 +    setEditingJSON('')                                        
+      197 +    setEditValidation(null)                                   
+      198    }
+      199  
+      200    // Input state
+     ...
+      233            </div>
+      234          )}
+      235  
+      236 +        {diagnosis && (                                       
+      237 +          <div className="mt-3">                              
+      238 +            <DiagnosisPanel diagnosis={diagnosis} onAction={ha
+          +ndleDiagnosisAction} />                                       
+      239 +            {/* User hint input for retry with context */}    
+      240 +            <div className="mt-3">                            
+      241 +              <label className="block text-sm text-gray-600 da
+          +rk:text-gray-400 mb-1">                                       
+      242 +                Additional context (optional)                 
+      243 +              </label>                                        
+      244 +              <textarea                                       
+      245 +                value={userHint}                              
+      246 +                onChange={(e) => setUserHint(e.target.value)} 
+      247 +                placeholder="Provide more detail about what we
+          +nt wrong or what you need..."                                 
+      248 +                rows={3}                                      
+      249 +                className="w-full p-2 border rounded-lg bg-whi
+          +te dark:bg-gray-800 dark:border-gray-700 text-sm focus:ring-2 
+          +focus:ring-blue-500 focus:border-blue-500 outline-none"       
+      250 +              />                                              
+      251 +            </div>                                            
+      252 +          </div>                                              
+      253 +        )}                                                    
+      254 +                                                              
+      255          <button
+      256            onClick={handleGenerate}
+      257            disabled={loading || !description.trim()}
+      258            className="mt-4 px-6 py-2 bg-blue-600 text-white rou
+           nded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-
+           not-allowed flex items-center gap-2"
+      259          >
+      260            {loading && <Spinner />}
+      113 -          {loading ? 'Generating...' : 'Generate Plan'}       
+      261 +          {loading ? 'Generating...' : retryContext ? 'Retry G
+          +eneration' : 'Generate Plan'}                                 
+      262          </button>
+      263        </div>
+      264      )
+     ...
+      286            </div>
+      287          )}
+      288  
+      289 +        {diagnosis && (                                       
+      290 +          <div className="mb-4">                              
+      291 +            <DiagnosisPanel diagnosis={diagnosis} onAction={ha
+          +ndleDiagnosisAction} />                                       
+      292 +          </div>                                              
+      293 +        )}                                                    
+      294 +                                                              
+      295          {/* MCP Servers */}
+      296          {plan.mcp_servers && plan.mcp_servers.length > 0 && (
+      297            <CollapsibleSection title={`MCP Servers (${plan.mcp_
+           servers.length})`} expanded={expandedSections.mcp_servers} onT
+           oggle={() => toggleSection('mcp_servers')}>
+     ...
+      388                  <div className="mt-2 flex items-center gap-1 t
+           ext-xs text-gray-500">
+      389                    {p.steps.map((s, i) => (
+      390                      <span key={s}>
+      237 -                      {i > 0 && <span className="mx-1">→</span
+          ->}                                                            
+      391 +                      {i > 0 && <span className="mx-1">&rarr;<
+          +/span>}                                                       
+      392                        <span className="bg-gray-100 dark:bg-gra
+           y-800 px-2 py-0.5 rounded">{s}</span>
+      393                      </span>
+      394                    ))}
+     ...
+      409              {loading ? 'Applying...' : 'Apply'}
+      410            </button>
+      411            <button
+      412 +            onClick={() => {                                  
+      413 +              if (plan) {                                     
+      414 +                const { id: _, status: __, raw_output: ___, ..
+          +.editable } = plan as WizardPlan & { raw_output?: string }    
+      415 +                setEditingJSON(JSON.stringify(editable, null, 
+          +2))                                                           
+      416 +                setEditValidation(null)                       
+      417 +                setState('editing')                           
+      418 +              }                                               
+      419 +            }}                                                
+      420 +            disabled={loading}                                
+      421 +            className="px-6 py-2 bg-yellow-500 text-white roun
+          +ded-lg hover:bg-yellow-600 disabled:opacity-50"               
+      422 +          >                                                   
+      423 +            Edit Plan                                         
+      424 +          </button>                                           
+      425 +          <button                                             
+      426              onClick={handleDiscard}
+      427              disabled={loading}
+      428              className="px-6 py-2 bg-gray-200 dark:bg-gray-700 
+           text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 
+           dark:hover:bg-gray-600 disabled:opacity-50"
+     ...
+      434      )
+      435    }
+      436  
+      437 +  // Editing state                                            
+      438 +  if (state === 'editing' && plan) {                          
+      439 +    return (                                                  
+      440 +      <div className="max-w-4xl mx-auto">                     
+      441 +        <div className="flex items-center justify-between mb-4
+          +">                                                            
+      442 +          <h2 className="text-xl font-bold">Edit Plan</h2>    
+      443 +          <span className="px-2 py-1 text-xs bg-blue-100 dark:
+          +bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded">     
+      444 +            Editing                                           
+      445 +          </span>                                             
+      446 +        </div>                                                
+      447 +                                                              
+      448 +        <p className="text-sm text-gray-500 dark:text-gray-400
+          + mb-3">                                                       
+      449 +          Edit the plan JSON directly. Use Validate to check b
+          +efore saving.                                                 
+      450 +        </p>                                                  
+      451 +                                                              
+      452 +        <textarea                                             
+      453 +          value={editingJSON}                                 
+      454 +          onChange={(e) => {                                  
+      455 +            setEditingJSON(e.target.value)                    
+      456 +            setEditValidation(null)                           
+      457 +          }}                                                  
+      458 +          rows={24}                                           
+      459 +          className="w-full p-3 border rounded-lg bg-white dar
+          +k:bg-gray-800 dark:border-gray-700 text-xs font-mono focus:rin
+          +g-2 focus:ring-blue-500 focus:border-blue-500 outline-none"   
+      460 +          spellCheck={false}                                  
+      461 +        />                                                    
+      462 +                                                              
+      463 +        {editValidation && (                                  
+      464 +          <div className="mt-3">                              
+      465 +            {editValidation.valid && (                        
+      466 +              <div className="p-3 bg-green-50 dark:bg-green-90
+          +0/20 text-green-600 dark:text-green-400 rounded-lg text-sm fle
+          +x items-center gap-2">                                        
+      467 +                <span>&#10003;</span> Plan is valid           
+      468 +                {editValidation.warnings && editValidation.war
+          +nings.length > 0 && (                                         
+      469 +                  <span className="text-yellow-600 dark:text-y
+          +ellow-400 ml-2">                                              
+      470 +                    ({editValidation.warnings.length} warning{
+          +editValidation.warnings.length > 1 ? 's' : ''})               
+      471 +                  </span>                                     
+      472 +                )}                                            
+      473 +              </div>                                          
+      474 +            )}                                                
+      475 +            {editValidation.warnings && editValidation.warning
+          +s.length > 0 && (                                             
+      476 +              <div className="mt-2 space-y-1">                
+      477 +                {editValidation.warnings.map((w, i) => (      
+      478 +                  <div key={i} className="p-2 bg-yellow-50 dar
+          +k:bg-yellow-900/20 text-yellow-600 dark:text-yellow-400 rounde
+          +d text-xs">                                                   
+      479 +                    {w}                                       
+      480 +                  </div>                                      
+      481 +                ))}                                           
+      482 +              </div>                                          
+      483 +            )}                                                
+      484 +            {editValidation.error && (                        
+      485 +              <div className="p-3 bg-red-50 dark:bg-red-900/20
+          + text-red-600 dark:text-red-400 rounded-lg text-sm">          
+      486 +                {editValidation.error}                        
+      487 +              </div>                                          
+      488 +            )}                                                
+      489 +          </div>                                              
+      490 +        )}                                                    
+      491 +                                                              
+      492 +        <div className="flex gap-3 mt-4">                     
+      493 +          <button                                             
+      494 +            onClick={handleValidate}                          
+      495 +            disabled={loading}                                
+      496 +            className="px-6 py-2 bg-blue-600 text-white rounde
+          +d-lg hover:bg-blue-700 disabled:opacity-50 flex items-center g
+          +ap-2"                                                         
+      497 +          >                                                   
+      498 +            {loading && <Spinner />}                          
+      499 +            Validate                                          
+      500 +          </button>                                           
+      501 +          <button                                             
+      502 +            onClick={handleSaveEdit}                          
+      503 +            disabled={loading}                                
+      504 +            className="px-6 py-2 bg-green-600 text-white round
+          +ed-lg hover:bg-green-700 disabled:opacity-50"                 
+      505 +          >                                                   
+      506 +            Save & Preview                                    
+      507 +          </button>                                           
+      508 +          <button                                             
+      509 +            onClick={() => {                                  
+      510 +              setEditValidation(null)                         
+      511 +              setState('preview')                             
+      512 +            }}                                                
+      513 +            disabled={loading}                                
+      514 +            className="px-6 py-2 bg-gray-200 dark:bg-gray-700 
+          +text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 
+          +dark:hover:bg-gray-600 disabled:opacity-50"                   
+      515 +          >                                                   
+      516 +            Cancel                                            
+      517 +          </button>                                           
+      518 +        </div>                                                
+      519 +      </div>                                                  
+      520 +    )                                                         
+      521 +  }                                                           
+      522 +                                                              
+      523    // Result state
+      524    if (state === 'result' && result) {
+      525      const all = [
+     ...
+      529        ...(result.tasks_created || []).map((n) => ({ type: 'Tas
+           k', name: n })),
+      530        ...(result.pipelines_created || []).map((n) => ({ type: 
+           'Pipeline', name: n })),
+      531      ]
+      532 +    const createdTasks = result.tasks_created || []           
+      533  
+      534      return (
+      535        <div className="max-w-3xl mx-auto">
+     ...
+      557            </div>
+      558          </div>
+      559  
+      560 +        {/* Test Run */}                                      
+      561 +        {createdTasks.length > 0 && (                         
+      562 +          <div className="mb-6 p-4 border dark:border-gray-700
+          + rounded-lg">                                                 
+      563 +            <p className="text-sm font-medium text-gray-700 da
+          +rk:text-gray-300 mb-3">                                       
+      564 +              Test Run — verify a task works correctly        
+      565 +            </p>                                              
+      566 +            <div className="flex gap-2 items-center">         
+      567 +              <select                                         
+      568 +                value={selectedTestTask}                      
+      569 +                onChange={(e) => setSelectedTestTask(e.target.
+          +value)}                                                       
+      570 +                className="flex-1 p-2 border rounded-lg bg-whi
+          +te dark:bg-gray-800 dark:border-gray-700 text-sm"             
+      571 +              >                                               
+      572 +                <option value="">Select a task...</option>    
+      573 +                {createdTasks.map((t) => (                    
+      574 +                  <option key={t} value={t}>{t}</option>      
+      575 +                ))}                                           
+      576 +              </select>                                       
+      577 +              <button                                         
+      578 +                onClick={() => selectedTestTask && handleTestR
+          +un(selectedTestTask)}                                         
+      579 +                disabled={!selectedTestTask || loading}       
+      580 +                className="px-4 py-2 bg-purple-600 text-white 
+          +rounded-lg hover:bg-purple-700 disabled:opacity-50 text-sm fle
+          +x items-center gap-2"                                         
+      581 +              >                                               
+      582 +                {loading && <Spinner />}                      
+      583 +                Test Run                                      
+      584 +              </button>                                       
+      585 +            </div>                                            
+      586 +          </div>                                              
+      587 +        )}                                                    
+      588 +                                                              
+      589          <button
+      590            onClick={reset}
+      591            className="px-6 py-2 bg-blue-600 text-white rounded-
+           lg hover:bg-blue-700"
+     ...
+      596      )
+      597    }
+      598  
+      599 +  // Testing state                                            
+      600 +  if (state === 'testing') {                                  
+      601 +    return (                                                  
+      602 +      <div className="max-w-3xl mx-auto">                     
+      603 +        <h2 className="text-xl font-bold mb-4">Test Run: {sele
+          +ctedTestTask}</h2>                                            
+      604 +                                                              
+      605 +        {loading && (                                         
+      606 +          <div className="flex items-center gap-3 p-4 bg-blue-
+          +50 dark:bg-blue-900/20 rounded-lg text-sm text-blue-700 dark:t
+          +ext-blue-400">                                                
+      607 +            <Spinner />                                       
+      608 +            Running task... (max 2 min)                       
+      609 +          </div>                                              
+      610 +        )}                                                    
+      611 +                                                              
+      612 +        {testResult && !loading && (                          
+      613 +          <>                                                  
+      614 +            {/* Success */}                                   
+      615 +            {!testResult.error && !testResult.soft_failure && 
+          +(                                                             
+      616 +              <div className="p-4 bg-green-50 dark:bg-green-90
+          +0/20 rounded-lg mb-4">                                        
+      617 +                <p className="text-sm font-medium text-green-7
+          +00 dark:text-green-400 mb-2">                                 
+      618 +                  Task completed successfully ({(testResult.du
+          +ration_ms / 1000).toFixed(1)}s                                
+      619 +                  {testResult.cost_usd ? `, $${testResult.cost
+          +_usd.toFixed(4)}` : ''})                                      
+      620 +                </p>                                          
+      621 +                <pre className="mt-2 p-2 bg-green-100/50 dark:
+          +bg-green-900/30 rounded text-xs overflow-x-auto whitespace-pre
+          +-wrap max-h-64 overflow-y-auto">                              
+      622 +                  {testResult.output || '(no output)'}        
+      623 +                </pre>                                        
+      624 +              </div>                                          
+      625 +            )}                                                
+      626 +                                                              
+      627 +            {/* Soft failure */}                              
+      628 +            {testResult.soft_failure && testResult.diagnosis &
+          +& (                                                           
+      629 +              <div className="mb-4">                          
+      630 +                <div className="p-4 bg-yellow-50 dark:bg-yello
+          +w-900/20 rounded-lg mb-3">                                    
+      631 +                  <p className="text-sm font-medium text-yello
+          +w-700 dark:text-yellow-400 mb-2">                             
+      632 +                    Task finished but detected a problem ({(te
+          +stResult.duration_ms / 1000).toFixed(1)}s)                    
+      633 +                  </p>                                        
+      634 +                  <pre className="mt-2 p-2 bg-yellow-100/50 da
+          +rk:bg-yellow-900/30 rounded text-xs overflow-x-auto whitespace
+          +-pre-wrap max-h-48 overflow-y-auto">                          
+      635 +                    {testResult.output || '(no output)'}      
+      636 +                  </pre>                                      
+      637 +                </div>                                        
+      638 +                <DiagnosisPanel diagnosis={testResult.diagnosi
+          +s} onAction={handleDiagnosisAction} />                        
+      639 +              </div>                                          
+      640 +            )}                                                
+      641 +                                                              
+      642 +            {/* Hard error */}                                
+      643 +            {testResult.error && !testResult.soft_failure && (
+      644 +              <div className="mb-4">                          
+      645 +                <div className="p-4 bg-red-50 dark:bg-red-900/
+          +20 rounded-lg mb-3">                                          
+      646 +                  <p className="text-sm font-medium text-red-7
+          +00 dark:text-red-400 mb-2">                                   
+      647 +                    Task failed ({(testResult.duration_ms / 10
+          +00).toFixed(1)}s)                                             
+      648 +                  </p>                                        
+      649 +                  <p className="text-xs text-red-600 dark:text
+          +-red-400">{testResult.error}</p>                              
+      650 +                  {testResult.output && (                     
+      651 +                    <pre className="mt-2 p-2 bg-red-100/50 dar
+          +k:bg-red-900/30 rounded text-xs overflow-x-auto whitespace-pre
+          +-wrap max-h-48 overflow-y-auto">                              
+      652 +                      {testResult.output}                     
+      653 +                    </pre>                                    
+      654 +                  )}                                          
+      655 +                </div>                                        
+      656 +                {testResult.diagnosis && (                    
+      657 +                  <DiagnosisPanel diagnosis={testResult.diagno
+          +sis} onAction={handleDiagnosisAction} />                      
+      658 +                )}                                            
+      659 +              </div>                                          
+      660 +            )}                                                
+      661 +          </>                                                 
+      662 +        )}                                                    
+      663 +                                                              
+      664 +        <button                                               
+      665 +          onClick={() => setState('result')}                  
+      666 +          disabled={loading}                                  
+      667 +          className="mt-4 px-6 py-2 bg-gray-200 dark:bg-gray-7
+          +00 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-3
+          +00 dark:hover:bg-gray-600 disabled:opacity-50"                
+      668 +        >                                                     
+      669 +          Back to Results                                     
+      670 +        </button>                                             
+      671 +      </div>                                                  
+      672 +    )                                                         
+      673 +  }                                                           
+      674 +                                                              
+      675    return null
+      676  }
+      677  
+      678 +// --- Reusable components ---                                
+      679 +                                                              
+      680 +function DiagnosisPanel({ diagnosis, onAction }: {            
+      681 +  diagnosis: WizardDiagnosis                                  
+      682 +  onAction: (action: RecoveryAction) => void                  
+      683 +}) {                                                          
+      684 +  const [showDetails, setShowDetails] = useState(false)       
+      685 +                                                              
+      686 +  const categoryLabel: Record<string, string> = {             
+      687 +    empty_output: 'Empty Output',                             
+      688 +    json_parse: 'Parse Error',                                
+      689 +    timeout: 'Timeout',                                       
+      690 +    duplicate_name: 'Duplicate Name',                         
+      691 +    missing_reference: 'Missing Reference',                   
+      692 +    permission_mode: 'Permission Error',                      
+      693 +    apply_failed: 'Apply Failed',                             
+      694 +    test_soft_failure: 'Soft Failure',                        
+      695 +    test_hard_failure: 'Execution Error',                     
+      696 +    unknown: 'Error',                                         
+      697 +  }                                                           
+      698 +                                                              
+      699 +  const categoryColor: Record<string, string> = {             
+      700 +    empty_output: 'bg-orange-100 dark:bg-orange-900/30 text-or
+          +ange-700 dark:text-orange-400',                               
+      701 +    json_parse: 'bg-red-100 dark:bg-red-900/30 text-red-700 da
+          +rk:text-red-400',                                             
+      702 +    timeout: 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-
+          +700 dark:text-yellow-400',                                    
+      703 +    duplicate_name: 'bg-blue-100 dark:bg-blue-900/30 text-blue
+          +-700 dark:text-blue-400',                                     
+      704 +    missing_reference: 'bg-purple-100 dark:bg-purple-900/30 te
+          +xt-purple-700 dark:text-purple-400',                          
+      705 +    test_soft_failure: 'bg-yellow-100 dark:bg-yellow-900/30 te
+          +xt-yellow-700 dark:text-yellow-400',                          
+      706 +    test_hard_failure: 'bg-red-100 dark:bg-red-900/30 text-red
+          +-700 dark:text-red-400',                                      
+      707 +  }                                                           
+      708 +                                                              
+      709 +  const color = categoryColor[diagnosis.category] || 'bg-red-1
+          +00 dark:bg-red-900/30 text-red-700 dark:text-red-400'         
+      710 +                                                              
+      711 +  return (                                                    
+      712 +    <div className={`p-4 rounded-lg ${color}`}>               
+      713 +      <div className="flex items-start gap-2">                
+      714 +        <span className="px-2 py-0.5 bg-white/50 dark:bg-black
+          +/20 rounded text-xs font-medium">                             
+      715 +          {categoryLabel[diagnosis.category] || diagnosis.cate
+          +gory}                                                         
+      716 +        </span>                                               
+      717 +        <p className="text-sm flex-1">{diagnosis.message}</p> 
+      718 +      </div>                                                  
+      719 +                                                              
+      720 +      {diagnosis.details && (                                 
+      721 +        <div className="mt-2">                                
+      722 +          <button                                             
+      723 +            onClick={() => setShowDetails(!showDetails)}      
+      724 +            className="text-xs underline opacity-70 hover:opac
+          +ity-100"                                                      
+      725 +          >                                                   
+      726 +            {showDetails ? 'Hide details' : 'Show details'}   
+      727 +          </button>                                           
+      728 +          {showDetails && (                                   
+      729 +            <pre className="mt-2 p-2 bg-black/10 dark:bg-black
+          +/20 rounded text-xs overflow-x-auto whitespace-pre-wrap max-h-
+          +48 overflow-y-auto">                                          
+      730 +              {diagnosis.details}                             
+      731 +            </pre>                                            
+      732 +          )}                                                  
+      733 +        </div>                                                
+      734 +      )}                                                      
+      735 +                                                              
+      736 +      {diagnosis.suggestions.length > 0 && (                  
+      737 +        <div className="flex flex-wrap gap-2 mt-3">           
+      738 +          {diagnosis.suggestions.map((s) => (                 
+      739 +            <button                                           
+      740 +              key={s.id}                                      
+      741 +              onClick={() => onAction(s)}                     
+      742 +              className="px-3 py-1.5 bg-white/70 dark:bg-black
+          +/20 rounded text-xs font-medium hover:bg-white dark:hover:bg-b
+          +lack/30 transition-colors"                                    
+      743 +              title={s.description}                           
+      744 +            >                                                 
+      745 +              {s.label}                                       
+      746 +            </button>                                         
+      747 +          ))}                                                 
+      748 +        </div>                                                
+      749 +      )}                                                      
+      750 +    </div>                                                    
+      751 +  )                                                           
+      752 +}                                                             
+      753 +                                                              
+      754  function CollapsibleSection({ title, expanded, onToggle, child
+           ren }: {
+      755    title: string
+      756    expanded: boolean
+     ...
+      763          onClick={onToggle}
+      764          className="flex items-center gap-2 text-sm font-medium
+            text-gray-700 dark:text-gray-300 mb-2 hover:text-gray-900 dar
+           k:hover:text-white"
+      765        >
+      330 -        <span className="text-xs">{expanded ? '▼' : '▶'}</span
+          ->                                                             
+      766 +        <span className="text-xs">{expanded ? '\u25BC' : '\u25
+          +B6'}</span>                                                   
+      767          {title}
+      768        </button>
+      769        {expanded && <div>{children}</div>}
+
+● Шаг 6: Тесты и верификация. Сначала проверю компиляцию, потом напишу тесты.
+
+● Bash(go build ./... 2>&1 | head -20)
+  ⎿  (No output)
+
+● Bash(cd /home/asdmin/development/AI/Claude/claude-ecosystem/web && npx tsc
+      --noEmit 2>&1 | head -30)
+  ⎿  (No output)
+
+● Всё компилируется. Теперь пишу unit-тесты для troubleshoot.go:
+
+● Write(internal/wizard/troubleshoot_test.go)
+  ⎿  Wrote 218 lines to internal/wizard/troubleshoot_test.go
+      1 package wizard
+      2 
+      3 import (
+      4         "context"
+      5         "fmt"
+      6         "testing"
+      7 
+      8         "github.com/asdmin/claude-ecosystem/internal/config"
+      9 )
+     … +208 lines (ctrl+o to expand)
+
+● Bash(cd /home/asdmin/development/AI/Claude/claude-ecosystem && go test
+      ./internal/wizard/ -v -run TestDiagnose -count=1 2>&1)
+  ⎿  === RUN   TestDiagnoseError_GenerateEmpty
+     --- PASS: TestDiagnoseError_GenerateEmpty (0.00s)
+     === RUN   TestDiagnoseError_GenerateJSONParse
+     … +15 lines (ctrl+o to expand)
+
+● Bash(go test ./internal/wizard/ -v -run TestAutoFix -count=1 2>&1)
+  ⎿  === RUN   TestAutoFixDuplicateNames
+     --- PASS: TestAutoFixDuplicateNames (0.00s)
+     === RUN   TestAutoFixDuplicateNames_NoConflicts
+     … +7 lines (ctrl+o to expand)
+
+● Bash(go test ./internal/wizard/ -v -run TestDeepCopy -count=1 2>&1)
+  ⎿  === RUN   TestDeepCopyPlan
+     --- PASS: TestDeepCopyPlan (0.00s)
+     PASS
+     ok         github.com/asdmin/claude-ecosystem/internal/wizard      0.008s
+
+● Все тесты проходят. Теперь полный make test:
+
+● Bash(make test 2>&1)  ⎿  go test ./internal/... ./cmd/...
+     ok         github.com/asdmin/claude-ecosystem/internal/api 0.071s
+     ok         github.com/asdmin/claude-ecosystem/internal/auth        (cached)
+     … +31 lines (ctrl+o to expand)
+
+
+● Все тесты проходят. Проверю build:
+
+● Bash(make build 2>&1)
+  ⎿  go build -o bin/server ./cmd/server
+     go build -o bin/hook ./cmd/hook
+
+● Bash(make build-ui 2>&1 | tail -10)
+  ⎿  dist/assets/index-COWwXAjk.css   53.12 kB │ gzip:   8.51 kB
+     dist/assets/index-BYm0P4gR.js   506.65 kB │ gzip: 150.77 kB
+     … +9 lines (ctrl+o to expand)
+  ⎿  (timeout 2m)
+
+● Всё собирается успешно.
+
+● Готово. Вот что реализовано:
+
+  Wizard Troubleshooter
+
+  Backend (Go)
+
+  - internal/wizard/types.go — новые типы: RetryContext, WizardDiagnosis,
+  RecoveryAction, GenerateError, TestRunRequest, TestRunResult
+  - internal/wizard/troubleshoot.go (новый) — DiagnoseError() категоризирует
+  ошибки по фазам (generate/validate/apply/test), AutoFixDuplicateNames()
+  автоматически переименовывает конфликтующие сущности с суффиксом -v2
+  - internal/wizard/generator.go — ошибки обёрнуты в GenerateError с raw output
+  для диагностики
+  - internal/wizard/prompt.go — секция "Previous Attempt Failed" при retry с
+  контекстом
+  - internal/wizard/applier.go — экспортирован ValidateOnly() для валидации без
+  apply
+  - internal/api/wizard.go — ошибки generate/apply возвращают 422 с
+  WizardDiagnosis вместо generic 500; новые endpoints: POST .../validate, POST 
+  .../test
+  - internal/api/router.go — 2 новых маршрута
+
+  Frontend (React/TypeScript)
+
+  - web/src/types/index.ts — WizardDiagnosis, RecoveryAction, RetryContext,
+  TestRunResult
+  - web/src/api/client.ts — DiagnosisError class, обработка 422, методы
+  wizardValidate, wizardTestRun, retryContext в wizardGenerate
+  - web/src/components/Wizard.tsx — 5 состояний вместо 3:
+    - input — DiagnosisPanel с retry + user hint при ошибках генерации
+    - preview — DiagnosisPanel при ошибках apply + кнопка "Edit Plan"
+    - editing (новый) — JSON-редактор с валидацией
+    - result — Test Run с выбором задачи
+    - testing (новый) — результаты тестового запуска с soft/hard failure
+  detection
+
+  Тесты
+
+  - internal/wizard/troubleshoot_test.go — 11 тестов: все категории
+  DiagnoseError, AutoFixDuplicateNames (конфликты, MCP серверы, пустые входы),
+  deepCopyPlan
+
+✻ Crunched for 8m 58s

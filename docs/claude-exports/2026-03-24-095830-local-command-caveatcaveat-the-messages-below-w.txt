@@ -1,0 +1,336 @@
+ ▐▛███▜▌   Claude Code v2.1.81
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ /clear                                                                        
+  ⎿  (no content)
+
+❯ /review                                                                       
+
+● Bash(gh pr list)
+  ⎿  (No output)
+
+● Открытых PR в репозитории нет.
+
+  Если хотите, я могу:
+  - Проверить diff незакоммиченных изменений в текущей ветке
+  - Посмотреть недавно закрытые/смёрженные PR (gh pr list --state merged --limit
+   5)
+
+  Что предпочитаете?
+
+❯ gh pr list --state merged --limit 5                                           
+
+● Bash(gh pr list --state merged --limit 5)
+  ⎿  (No output)
+
+● Bash(gh pr list --state all --limit 10)
+  ⎿  (No output)
+
+● В репозитории нет ни одного PR (ни открытых, ни смёрженных, ни закрытых).
+  Похоже, работа ведётся напрямую в main без PR.
+
+  Могу вместо этого сделать ревью незакоммиченных изменений в рабочей
+  директории. Сейчас есть:
+  - Изменённый docs/prompts.md
+  - Новый файл docs/claude-exports/conversation-2026-03-23-211808.txt
+
+  Хотите, чтобы я проревьюил эти изменения?
+
+❯ А как сделать просто review кода? может посоветуешь какой-то skill, sub-agent 
+ для этих целей?                                                                
+
+● Есть несколько подходов:
+
+  1. Ревью незакоммиченных изменений (прямо сейчас)
+
+  Просто попросите меня:
+  проверь мои изменения перед коммитом
+  Я посмотрю git diff, проанализирую и дам обратную связь.
+
+  2. Ревью конкретного коммита или диапазона
+
+  сделай ревью последних 3 коммитов
+
+  3. Ревью конкретного файла/модуля
+
+  проверь качество кода в internal/pipeline/
+
+  4. Автоматизация через ваш claude-ecosystem
+
+  Поскольку у вас уже есть оркестратор — можно добавить task в tasks.yaml для
+  автоматического code review:
+
+  - name: code-review
+    prompt: |
+      Review the following git diff for code quality, bugs, security issues:
+      {{.PrevOutput}}
+    schedule: ""  # запуск вручную или по watch
+    watch:
+      paths: ["internal/", "cmd/"]
+      extensions: [".go"]
+
+  5. Hook для pre-commit ревью
+
+  Ваш cmd/hook уже блокирует опасные команды. Можно расширить его или добавить
+  Claude Code hook, который делает ревью перед каждым коммитом.
+
+  ---
+  Самый простой вариант — просто скажите мне что проверить. Например, хотите
+  ревью текущих изменений в docs/prompts.md?
+
+❯ Я хочу проверить весь проект на наличие существующих либо потенциальных       
+проблем. Возможно это называется не review.                                     
+
+● Это скорее code audit / health check проекта. Давайте сделаю комплексный
+  анализ. Запущу несколько агентов параллельно для проверки разных аспектов.
+
+● 3 Explore agents finished (ctrl+o to expand)
+   ├─ Audit Go backend code · 48 tool uses · 93.4k tokens
+   │  ⎿  Done
+   ├─ Audit architecture and config · 56 tool uses · 87.6k tokens
+   │  ⎿  Done
+   └─ Audit frontend and API surface · 49 tool uses · 78.5k tokens
+      ⎿  Done
+
+● Отличный аудит завершён. У меня есть полная картина — сейчас сформирую план
+  исправлений, приоритизированный по критичности.
+
+● User answered Claude's questions:
+  ⎿  · Аудит выявил ~40 проблем разной критичности. Какой объём исправлений вы 
+     хотите сделать? → Полный фикс
+     · Хотите ли вы добавить тесты для исправленных участков кода? → Да, с 
+     тестами
+
+● Полный фикс с тестами — понял. Сейчас сформирую детальный план.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/curious-meandering-popcorn.md · /plan to 
+     edit
+     Полный аудит и исправление проекта Claude Ecosystem
+
+     Context
+
+     Комплексный аудит проекта выявил ~40 проблем: race conditions, утечки
+     памяти, уязвимости безопасности, отсутствие валидации, пробелы в
+     тестировании. Цель — исправить все найденные проблемы и покрыть исправления
+      тестами.
+
+     ---
+     Фаза 1: CRITICAL — Race Conditions & Resource Leaks
+
+     1.1 Race condition в hot-reload конфига
+
+     - Файл: cmd/server/main.go (строки 340-389)
+     - Проблема: cfg.Tasks и cfg.Pipelines мутируются без синхронизации;
+     scheduler/watcher/API читают их конкурентно
+     - Фикс: Добавить sync.RWMutex в config.Config, обернуть все чтения/записи
+     - Файлы для изменения: internal/config/config.go, cmd/server/main.go,
+     internal/api/router.go, internal/scheduler/scheduler.go,
+     internal/watcher/watcher.go
+     - Тест: internal/config/config_test.go — concurrent read/write test с -race
+
+     1.2 Утечка event handlers в SSE
+
+     - Файл: internal/events/bus.go, internal/api/sse.go
+     - Проблема: Subscribe() без Unsubscribe() — handlers накапливаются при
+     каждом подключении клиента
+     - Фикс: Добавить Unsubscribe() в Bus, вернуть cleanup-функцию из Subscribe,
+      вызывать при disconnect
+     - Тест: internal/events/bus_test.go — subscribe/unsubscribe/leak test
+
+     1.3 Transaction rollback в mcp-database
+
+     - Файл: cmd/mcp/mcp-database/main.go (строки 291-338)
+     - Проблема: tx.Rollback() не вызывается при ошибках
+     - Фикс: defer tx.Rollback() сразу после db.Begin()
+     - Тест: cmd/mcp/mcp-database/main_test.go — test batch insert с ошибками
+
+     1.4 Утечка подписок в pipeline
+
+     - Файл: internal/pipeline/parallel.go (строка 93)
+     - Проблема: Subscribe без Unsubscribe при каждом запуске pipeline
+     - Фикс: Использовать новый Unsubscribe из 1.2
+     - Тест: вместе с тестами pipeline (Фаза 4)
+
+     ---
+     Фаза 2: HIGH — Security
+
+     2.1 Path traversal в filesystem MCP
+
+     - Файл: cmd/mcp/mcp-filesystem/main.go (строки 53-187)
+     - Проблема: Абсолютные пути без валидации — можно читать /etc/passwd
+     - Фикс: Добавить allowed_dirs конфигурацию, валидировать filepath.Abs() +
+     strings.HasPrefix()
+     - Тест: cmd/mcp/mcp-filesystem/main_test.go — path traversal attempts
+
+     2.2 Security headers в API
+
+     - Файл: internal/api/helpers.go, internal/api/router.go
+     - Проблема: Нет X-Frame-Options, X-Content-Type-Options, CSP, HSTS
+     - Фикс: Middleware securityHeaders() в router
+     - Тест: internal/api/middleware_test.go
+
+     2.3 Rate limiting на login
+
+     - Файл: internal/api/auth.go
+     - Проблема: Brute-force атаки на login не ограничены
+     - Фикс: Простой rate limiter (token bucket per IP) для /api/v1/auth/login
+     - Тест: internal/api/auth_test.go
+
+     2.4 Request size limits
+
+     - Файл: internal/api/helpers.go (строки 24-35)
+     - Проблема: readJSON() без лимита тела запроса
+     - Фикс: http.MaxBytesReader(w, r.Body, 1<<20) (1MB default)
+     - Тест: internal/api/helpers_test.go
+
+     2.5 User enumeration в auth
+
+     - Файл: internal/api/auth.go (строки 41, 47)
+     - Проблема: Разные сообщения при неверном username vs password
+     - Фикс: Одинаковое сообщение "invalid credentials"
+
+     2.6 Temp файлы MCP с правильными permissions
+
+     - Файл: internal/mcpmanager/manager.go
+     - Проблема: Config файлы с секретами могут быть 0644
+     - Фикс: Создавать с os.OpenFile(..., 0600)
+
+     ---
+     Фаза 3: MEDIUM — Reliability & Validation
+
+     3.1 Config validation improvements
+
+     - Файл: internal/config/validate.go
+     - Фиксы:
+       - Логировать warning при fallback timeout (строки 30-34)
+       - Валидация watch paths на существование
+       - Валидация что task не имеет одновременно schedule и watch
+       - Валидация MaxTurns > 0, MaxBudgetUSD > 0
+       - Валидация cron expression syntax
+     - Тест: internal/config/validate_test.go
+
+     3.2 Unsafe LIMIT injection в database MCP
+
+     - Файл: cmd/mcp/mcp-database/main.go (строки 103-105)
+     - Проблема: + " LIMIT 1000" ломает SQL с ORDER BY/GROUP BY
+     - Фикс: Парсить SQL или оборачивать в subquery
+     - Тест: тест с различными SQL запросами
+
+     3.3 UTF-8 safe truncation в openapi MCP
+
+     - Файл: cmd/mcp/mcp-openapi/main.go (строка 759)
+     - Фикс: Использовать []rune для безопасного обрезания
+
+     3.4 HTTP timeout + context в openapi MCP
+
+     - Файл: cmd/mcp/mcp-openapi/main.go (строки 286-291, 823-827)
+     - Фикс: Пробрасывать context в HTTP requests
+
+     3.5 Dashboard COUNT query
+
+     - Файл: internal/api/dashboard.go (строка 29)
+     - Проблема: Загружает 100000 записей для подсчёта
+     - Фикс: Добавить Count() метод в store, использовать SELECT COUNT(*)
+     - Файлы: internal/store/store.go, internal/store/sqlite/store.go,
+     internal/api/dashboard.go
+
+     3.6 Scheduler pause state leak
+
+     - Файл: internal/scheduler/scheduler.go (строки 195-201)
+     - Проблема: Reset() не чистит s.paused — удалённые задачи остаются
+     - Фикс: Очищать paused map в Reset(), оставляя только существующие задачи
+
+     3.7 Nil handler protection в event bus
+
+     - Файл: internal/events/bus.go
+     - Фикс: Проверка h != nil в Subscribe, panic recovery в Publish
+
+     3.8 Watcher error handling при Remove
+
+     - Файл: internal/watcher/watcher.go (строка 217)
+     - Фикс: Логировать ошибки вместо _ =
+
+     3.9 Custom itoa → strconv.Itoa
+
+     - Файл: internal/depcheck/checker.go (строки 205-210)
+     - Фикс: Заменить рекурсивный itoa() на strconv.Itoa()
+
+     ---
+     Фаза 4: LOW — Frontend & API Quality
+
+     4.1 Frontend: Error boundaries
+
+     - Файл: web/src/components/ErrorBoundary.tsx (новый)
+     - Обернуть App в ErrorBoundary
+
+     4.2 Frontend: Loading states на кнопках
+
+     - Файлы: TaskList.tsx, PipelineList.tsx, SubAgentList.tsx
+     - Disabled кнопки во время мутаций
+
+     4.3 Frontend: Sanitize error messages
+
+     - Файл: web/src/api/client.ts
+     - Не показывать server-side детали пользователю
+
+     4.4 API: Consistent response format
+
+     - Async операции → 202 Accepted
+     - Единообразная структура ошибок
+
+     4.5 SSE: Reconnection limit
+
+     - Файл: web/src/hooks/useSSE.ts
+     - Добавить maxRetries (например 50), показывать пользователю ошибку
+
+     4.6 Frontend: Catch error в delete-info
+
+     - Файл: web/src/components/TaskList.tsx (строка 77)
+     - Показывать ошибку вместо silent swallow
+
+     ---
+     Фаза 5: Тесты для непокрытых критических путей
+
+     5.1 Pipeline tests
+
+     - Файл: internal/pipeline/pipeline_test.go (новый)
+     - Sequential execution, PrevOutput template, stop_signal, max_iterations
+
+     5.2 Scheduler tests
+
+     - Файл: internal/scheduler/scheduler_test.go (новый)
+     - Cron registration, pause/resume, Reset(), concurrent guard
+
+     5.3 Watcher tests
+
+     - Файл: internal/watcher/watcher_test.go (новый)
+     - File change detection, debounce, concurrent task limit
+
+     5.4 API handler tests
+
+     - Файл: internal/api/api_test.go (расширить)
+     - Task CRUD, pipeline run, auth, SSE connection
+
+     ---
+     Порядок выполнения
+
+     1. Фаза 1 (Critical) → коммит
+     2. Фаза 2 (Security) → коммит
+     3. Фаза 3 (Reliability) → коммит
+     4. Фаза 4 (Frontend) → коммит
+     5. Фаза 5 (Tests) → коммит
+     6. make test + go test -race ./... → финальная проверка
+
+     Verification
+
+     make build                    # проект собирается
+     make test                     # все тесты проходят
+     go test -race ./internal/...  # нет race conditions
+     make build-ui                 # фронтенд собирается
+     make run                      # сервер стартует без ошибок
+  ⎿  Interrupted · What should Claude do instead?

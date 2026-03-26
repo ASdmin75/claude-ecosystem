@@ -719,6 +719,9 @@ tasks:
         - mcp__4log-api__post_api_order_list
         - mcp__4log-api__post_api_client_list
         - mcp__4log-api__post_api_invoices_list
+        - mcp__4log-api__post_api_order_statuses_list
+        - mcp__4log-api__get_api_users_info
+        - mcp__4log-api__post_api_user_current
         - mcp__database__query
         - mcp__database__execute
         - mcp__database__insert
@@ -929,6 +932,9 @@ tasks:
         - mcp__4log-api__post_api_order_list
         - mcp__4log-api__post_api_client_list
         - mcp__4log-api__post_api_invoices_list
+        - mcp__4log-api__post_api_order_statuses_list
+        - mcp__4log-api__get_api_users_info
+        - mcp__4log-api__post_api_user_current
         - mcp__database__query
         - mcp__database__execute
         - mcp__database__insert

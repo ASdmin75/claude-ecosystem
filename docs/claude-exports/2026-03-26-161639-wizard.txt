@@ -1,0 +1,505 @@
+ ▐▛███▜▌   Claude Code v2.1.84
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ Использование Wizard очень часто приводит к ошибкам, пустым результатам и     
+другим проблемам. Такие проблемы решаются ручным вызовом Claude Code и ручного  
+допиливания пайплайна. Нужно добавить механизм решения проблем прямо в Wizard.  
+Т.е. Wizard должен понимать, что его работа завершилась некорректно и давать    
+возможность решения проблемы.                                                   
+
+● 2 Explore agents finished (ctrl+o to expand)
+   ├─ Explore Wizard implementation · 21 tool uses · 72.6k tokens
+   │  ⎿  Done
+   └─ Explore outputcheck and error handling · 37 tool uses · 66.8k tokens
+      ⎿  Done
+
+● Теперь мне нужно прочитать ключевые файлы Wizard для точного понимания кода.
+
+  Read 5 files (ctrl+o to expand)
+
+● Теперь у меня есть полная картина. Запускаю агента для проектирования решения.
+
+● Plan(Design wizard troubleshooting)
+  ⎿  Done (29 tool uses · 62.2k tokens · 2m 44s)
+  (ctrl+o to expand)
+
+● Отлично, у меня есть полная картина. Пишу финальный план.
+
+  Read 2 files (ctrl+o to expand)
+
+● Теперь посмотрю API client и типы на фронтенде.
+
+  Read 3 files (ctrl+o to expand)
+
+● Теперь также проверю как request обрабатывает ошибки на фронтенде.
+
+  Read 1 file (ctrl+o to expand)
+
+● Теперь у меня есть вся необходимая информация. Пишу план.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/snuggly-jingling-turing.md · /plan to edit
+     Wizard Troubleshooter — план реализации
+
+     Context
+
+     Wizard часто генерирует ошибки, пустые результаты и невалидные
+     конфигурации. Сейчас при ошибке пользователь видит только generic сообщение
+      и должен вручную дебажить через CLI. Нужен механизм диагностики, retry с
+     контекстом, редактирование плана и тестовый запуск — всё из UI.
+
+     Архитектура решения
+
+     Три новых возможности:
+     1. Structured diagnosis — категоризация ошибок + предложения по исправлению
+     2. Retry с контекстом — повторная генерация с информацией о предыдущей
+     ошибке
+     3. Test run — запуск первой задачи после apply для проверки через
+     outputcheck
+
+     UI расширяется с 3 до 5 состояний: input → preview → editing → result → 
+     testing
+
+     ---
+     Шаг 1: Новые типы — internal/wizard/types.go
+
+     Добавить структуры:
+
+     // RetryContext передаёт контекст предыдущей ошибки при повторной 
+     генерации.
+     type RetryContext struct {
+         PreviousError     string `json:"previous_error"`
+         PreviousRawOutput string `json:"previous_raw_output,omitempty"`
+         UserHint          string `json:"user_hint,omitempty"`
+     }
+
+     // ErrorCategory классифицирует ошибку wizard.
+     type ErrorCategory string
+
+     const (
+         ErrCatEmptyOutput      ErrorCategory = "empty_output"
+         ErrCatJSONParse        ErrorCategory = "json_parse"
+         ErrCatTimeout          ErrorCategory = "timeout"
+         ErrCatDuplicateName    ErrorCategory = "duplicate_name"
+         ErrCatMissingReference ErrorCategory = "missing_reference"
+         ErrCatPermissionMode   ErrorCategory = "permission_mode"
+         ErrCatApplyFailed      ErrorCategory = "apply_failed"
+         ErrCatTestSoftFailure  ErrorCategory = "test_soft_failure"
+         ErrCatTestHardFailure  ErrorCategory = "test_hard_failure"
+         ErrCatUnknown          ErrorCategory = "unknown"
+     )
+
+     // WizardDiagnosis — структурированная ошибка для UI.
+     type WizardDiagnosis struct {
+         Category    ErrorCategory   `json:"category"`
+         Message     string          `json:"message"`
+         Details     string          `json:"details,omitempty"`
+         Suggestions []RecoveryAction `json:"suggestions"`
+     }
+
+     // RecoveryAction — один вариант исправления.
+     type RecoveryAction struct {
+         ID          string `json:"id"`
+         Label       string `json:"label"`
+         Description string `json:"description"`
+         PatchedPlan *Plan  `json:"patched_plan,omitempty"`
+     }
+
+     // TestRunRequest указывает задачу для тестового запуска.
+     type TestRunRequest struct {
+         TaskName string `json:"task_name"`
+     }
+
+     // TestRunResult — результат тестового запуска.
+     type TestRunResult struct {
+         TaskName    string           `json:"task_name"`
+         Output      string           `json:"output"`
+         Error       string           `json:"error,omitempty"`
+         SoftFailure string           `json:"soft_failure,omitempty"`
+         DurationMS  int64            `json:"duration_ms"`
+         CostUSD     float64          `json:"cost_usd,omitempty"`
+         Diagnosis   *WizardDiagnosis `json:"diagnosis,omitempty"`
+     }
+
+     Расширить GenerateRequest:
+     type GenerateRequest struct {
+         Description  string        `json:"description"`
+         WorkDir      string        `json:"work_dir,omitempty"`
+         RetryContext *RetryContext  `json:"retry_context,omitempty"`
+     }
+
+     Добавить RawOutput в Plan:
+     type Plan struct {
+         // ... существующие поля ...
+         RawOutput string `json:"raw_output,omitempty"` // для диагностики при 
+     ошибках парсинга
+     }
+
+     ---
+     Шаг 2: Диагностика ошибок — internal/wizard/troubleshoot.go (новый файл)
+
+     Функция DiagnoseError(phase string, err error, rawOutput string, plan 
+     *Plan) *WizardDiagnosis:
+
+     Фаза generate:
+     - "empty output" → ErrCatEmptyOutput, suggestions: retry, retry_simplified
+     - "parsing plan JSON" → ErrCatJSONParse, details = rawOutput, suggestions:
+     retry, edit_raw
+     - context.DeadlineExceeded → ErrCatTimeout, suggestions: retry, simplify
+
+     Фаза validate:
+     - "already exists" → ErrCatDuplicateName, вычислить PatchedPlan с суффиксом
+      -v2
+     - "references unknown" → ErrCatMissingReference, suggestions: edit_plan,
+     retry
+     - "permission_mode" → ErrCatPermissionMode, suggestions: auto_fix (уже есть
+      в validate)
+
+     Фаза apply:
+     - Любая ошибка → ErrCatApplyFailed, suggestions: edit_plan, retry
+
+     Фаза test:
+     - soft failure → ErrCatTestSoftFailure, suggestions: edit_task, add_tools,
+     regenerate
+
+     Вспомогательная функция AutoFixDuplicateNames(plan *Plan, cfg 
+     *config.Config) *Plan:
+     - Находит конфликтующие имена
+     - Добавляет суффикс -v2 (или -v3 и т.д.)
+     - Обновляет ВСЕ ссылки: pipeline steps, domain lists, task agents
+
+     ---
+     Шаг 3: Retry context в промпте — internal/wizard/prompt.go
+
+     В buildWizardPrompt добавить обработку req.RetryContext:
+
+     // После "## User Request" секции, перед "## Output Format":
+     if req.RetryContext != nil {
+         sb.WriteString("\n## Previous Attempt Failed\n\n")
+         sb.WriteString(fmt.Sprintf("Error: %s\n",
+     req.RetryContext.PreviousError))
+         if req.RetryContext.PreviousRawOutput != "" {
+             sb.WriteString(fmt.Sprintf("Raw output (first 1000 chars): %s\n",
+                 truncateField(req.RetryContext.PreviousRawOutput, 1000)))
+         }
+         if req.RetryContext.UserHint != "" {
+             sb.WriteString(fmt.Sprintf("User's additional context: %s\n",
+     req.RetryContext.UserHint))
+         }
+         sb.WriteString("\nFix the issues and generate a correct plan.\n")
+     }
+
+     Также изменить GenerateRequest — уже содержит RetryContext.
+
+     ---
+     Шаг 4: Экспорт валидации — internal/wizard/applier.go
+
+     Добавить публичный метод:
+
+     // ValidateOnly проверяет план без применения.
+     func (a *Applier) ValidateOnly(plan *Plan) ([]string, error) {
+         return a.validate(plan)
+     }
+
+     ---
+     Шаг 5: API handlers — internal/api/wizard.go
+
+     Изменить handleWizardGenerate:
+
+     - При ошибке вызывать wizard.DiagnoseError("generate", err, rawOutput, nil)
+     - Возвращать 422 Unprocessable Entity с WizardDiagnosis вместо 500
+     - Для этого Generate() должен возвращать rawOutput при ошибке — изменить
+     сигнатуру или обернуть ошибку
+
+     Изменить handleWizardApply:
+
+     - При ошибке вызывать wizard.DiagnoseError("apply", err, "", plan)
+     - Возвращать 422 с WizardDiagnosis
+
+     Новый handleWizardValidate:
+
+     POST /api/v1/wizard/plans/{id}/validate
+     - Получает план из store
+     - Создаёт Applier, вызывает ValidateOnly(plan)
+     - Успех → 200 {"valid": true, "warnings": [...]}
+     - Ошибка → 422 с WizardDiagnosis
+
+     Новый handleWizardTestRun:
+
+     POST /api/v1/wizard/plans/{id}/test
+     - Получает план из store (status must be "applied")
+     - Читает task_name из body
+     - Находит задачу в cfg
+     - Вызывает task.ResolveRunOptions + runner.Run с timeout (max 2 min для
+     test)
+     - Проверяет output через outputcheck.CheckStepOutput
+     - Возвращает TestRunResult с опциональной WizardDiagnosis
+
+     ---
+     Шаг 6: Маршруты — internal/api/router.go
+
+     Добавить после строки 166:
+     mux.HandleFunc("POST /api/v1/wizard/plans/{id}/validate",
+     s.withAuth(s.handleWizardValidate))
+     mux.HandleFunc("POST /api/v1/wizard/plans/{id}/test",
+     s.withAuth(s.handleWizardTestRun))
+
+     ---
+     Шаг 7: Изменить генератор — internal/wizard/generator.go
+
+     Обернуть ошибки в специальный тип для передачи rawOutput:
+
+     // GenerateError хранит ошибку генерации вместе с raw output для 
+     диагностики.
+     type GenerateError struct {
+         Err       error
+         RawOutput string
+     }
+
+     func (e *GenerateError) Error() string { return e.Err.Error() }
+     func (e *GenerateError) Unwrap() error { return e.Err }
+
+     В Generate():
+     - При пустом output: return nil, &GenerateError{Err: ..., RawOutput: ""}
+     - При ошибке парсинга JSON: return nil, &GenerateError{Err: ..., RawOutput:
+      result.Output}
+     - При ошибке Claude: return nil, &GenerateError{Err: ..., RawOutput: 
+     result.Output}
+
+     ---
+     Шаг 8: Frontend типы — web/src/types/index.ts
+
+     export interface WizardDiagnosis {
+       category: string
+       message: string
+       details?: string
+       suggestions: RecoveryAction[]
+     }
+
+     export interface RecoveryAction {
+       id: string
+       label: string
+       description: string
+       patched_plan?: WizardPlan
+     }
+
+     export interface TestRunResult {
+       task_name: string
+       output: string
+       error?: string
+       soft_failure?: string
+       duration_ms: number
+       cost_usd?: number
+       diagnosis?: WizardDiagnosis
+     }
+
+     ---
+     Шаг 9: Frontend API client — web/src/api/client.ts
+
+     Изменить request helper:
+
+     - Ошибки 422 парсить как WizardDiagnosis и бросать специальный
+     DiagnosisError:
+
+     class DiagnosisError extends Error {
+       diagnosis: WizardDiagnosis
+       constructor(diagnosis: WizardDiagnosis) {
+         super(diagnosis.message)
+         this.diagnosis = diagnosis
+       }
+     }
+
+     В request(), перед generic обработкой !res.ok:
+     if (res.status === 422) {
+       const body = await res.json()
+       if (body.category) {
+         throw new DiagnosisError(body as WizardDiagnosis)
+       }
+     }
+
+     Новые методы:
+
+     wizardGenerate: (description: string, workDir?: string, retryContext?: 
+     RetryContext) =>
+       request<WizardPlan>('/wizard/generate', {
+         method: 'POST',
+         body: JSON.stringify({ description, work_dir: workDir, retry_context:
+     retryContext }),
+       }),
+
+     wizardValidate: (id: string) =>
+       request<{ valid: boolean; warnings?: string[]
+     }>(`/wizard/plans/${id}/validate`, {
+         method: 'POST',
+       }),
+
+     wizardTestRun: (id: string, taskName: string) =>
+       request<TestRunResult>(`/wizard/plans/${id}/test`, {
+         method: 'POST',
+         body: JSON.stringify({ task_name: taskName }),
+       }),
+
+     ---
+     Шаг 10: Frontend компонент — web/src/components/Wizard.tsx
+
+     Новые состояния:
+
+     type WizardState = 'input' | 'preview' | 'editing' | 'result' | 'testing'
+
+     // Новые state vars:
+     const [diagnosis, setDiagnosis] = useState<WizardDiagnosis | null>(null)
+     const [retryContext, setRetryContext] = useState<RetryContext | null>(null)
+     const [editingJSON, setEditingJSON] = useState('')
+     const [testResult, setTestResult] = useState<TestRunResult | null>(null)
+     const [userHint, setUserHint] = useState('')
+
+     Обработка ошибок генерации:
+
+     const handleGenerate = async () => {
+       try {
+         const p = await api.wizardGenerate(description, workDir, retryContext
+     || undefined)
+         setPlan(p)
+         setDiagnosis(null)
+         setState('preview')
+       } catch (e) {
+         if (e instanceof DiagnosisError) {
+           setDiagnosis(e.diagnosis)
+           // Сохранить контекст для retry
+           setRetryContext({ previous_error: e.diagnosis.message, ... })
+         } else {
+           setError(e instanceof Error ? e.message : 'Generation failed')
+         }
+       }
+     }
+
+     Input state — DiagnosisPanel:
+
+     Если diagnosis !== null, показать панель с:
+     - Иконка категории + сообщение
+     - Collapsible "Details" (raw output)
+     - Кнопки recovery actions
+     - Текстовое поле "Add more context" для user hint при retry
+
+     Preview state — ошибки apply:
+
+     При 422 от apply показать DiagnosisPanel с actions:
+     - "Auto-fix names" → применить patched_plan через wizardUpdatePlan
+     - "Edit plan" → перейти в editing state
+     - "Retry" → вернуться в input с retry_context
+
+     Editing state (новый):
+
+     - <textarea> с JSON плана (без id/status)
+     - Кнопка "Validate" → POST /wizard/plans/{id}/validate
+     - Зелёная галка если valid, DiagnosisPanel если ошибка
+     - "Save & Preview" → PUT plan, вернуться в preview
+     - "Cancel" → вернуться в preview без изменений
+
+     Result state — Test Run:
+
+     - Кнопка "Test Run" рядом с "Create Another"
+     - Dropdown выбора задачи из result.tasks_created
+     - Переход в testing state
+
+     Testing state (новый):
+
+     - Spinner во время выполнения
+     - Успех: зелёная панель с truncated output
+     - Soft failure: жёлтая панель с DiagnosisPanel
+     - Hard error: красная панель с DiagnosisPanel
+     - Кнопка "Back to results" для возврата
+
+     DiagnosisPanel (переиспользуемый компонент):
+
+     function DiagnosisPanel({ diagnosis, onAction }: {
+       diagnosis: WizardDiagnosis
+       onAction: (action: RecoveryAction) => void
+     }) { /* ... */ }
+
+     ---
+     Файлы для изменения
+
+     ┌─────────────────────────────────┬────────────────────────────────────────
+     ┐
+     │              Файл               │                Действие
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │                                 │ Добавить RetryContext,
+     │
+     │ internal/wizard/types.go        │ WizardDiagnosis, RecoveryAction,
+     │
+     │                                 │ TestRunResult, GenerateError,
+     │
+     │                                 │ RawOutput в Plan
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ internal/wizard/troubleshoot.go │ Новый — DiagnoseError,
+     │
+     │                                 │ AutoFixDuplicateNames
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ internal/wizard/generator.go    │ RetryContext в промпт, GenerateError
+     │
+     │                                 │ обёртка
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ internal/wizard/prompt.go       │ Секция "Previous Attempt Failed"
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ internal/wizard/applier.go      │ Экспортировать ValidateOnly
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │                                 │ Изменить error handling, добавить
+     │
+     │ internal/api/wizard.go          │ handleWizardValidate +
+     │
+     │                                 │ handleWizardTestRun
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ internal/api/router.go          │ 2 новых маршрута
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ web/src/types/index.ts          │ WizardDiagnosis, RecoveryAction,
+     │
+     │                                 │ TestRunResult
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ web/src/api/client.ts           │ DiagnosisError class, 422 handling,
+     │
+     │                                 │ новые методы
+     │
+     ├─────────────────────────────────┼────────────────────────────────────────
+     ┤
+     │ web/src/components/Wizard.tsx   │ 5-state machine, DiagnosisPanel,
+     │
+     │                                 │ editing/testing states
+     │
+     └─────────────────────────────────┴────────────────────────────────────────
+     ┘
+
+     Верификация
+
+     1. make test — все существующие тесты проходят
+     2. make build && make build-ui — компиляция без ошибок
+     3. Ручное тестирование через UI:
+       - Генерация с невалидным описанием → diagnosis panel с retry
+       - Генерация с дублирующими именами → auto-fix suggestion
+       - Edit plan → validate → apply
+       - Apply → test run → проверить soft failure detection
+     4. Написать unit-тесты для troubleshoot.go: DiagnoseError по каждой
+     категории, AutoFixDuplicateNames
+  ⎿  Interrupted · What should Claude do instead?
