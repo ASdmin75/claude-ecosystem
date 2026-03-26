@@ -1298,6 +1298,64 @@ data/backup/
 - `web/src/api/client.ts` — error sanitization
 - `web/src/hooks/useSSE.ts` — reconnection limit
 
+### 2026-03-26 — Wizard Troubleshooter: диагностика ошибок, retry, редактирование, test run
+
+**Проблема:** Wizard часто генерирует ошибки (пустой output, невалидный JSON, дубликаты имён, битые ссылки). Пользователь видел только generic сообщение и был вынужден дебажить вручную через CLI.
+
+**Решение: 5-state machine + structured diagnosis**
+
+**Фаза 1: Structured Error Diagnosis (`internal/wizard/troubleshoot.go`)**
+- Новый пакет диагностики: `DiagnoseError(phase, err, rawOutput, plan, cfg)` → `WizardDiagnosis`
+- 10 категорий ошибок: `empty_output`, `json_parse`, `timeout`, `duplicate_name`, `missing_reference`, `permission_mode`, `apply_failed`, `test_soft_failure`, `test_hard_failure`, `unknown`
+- Каждая категория с набором `RecoveryAction` (retry, auto_fix, edit_plan, edit_task и т.д.)
+- `AutoFixDuplicateNames()` — автоматическое переименование конфликтующих сущностей с суффиксом `-v2`, обновление ВСЕХ ссылок (pipeline steps, domain lists, task agents/mcp_servers)
+- Deep copy плана перед auto-fix для безопасности
+
+**Фаза 2: Retry с контекстом**
+- `RetryContext` в `GenerateRequest` — передаёт предыдущую ошибку + raw output + user hint
+- В `prompt.go`: секция "Previous Attempt Failed" инжектируется в промпт для Claude
+- UI показывает текстовое поле для дополнительного контекста при retry
+
+**Фаза 3: Редактирование плана**
+- Новый API endpoint: `POST /api/v1/wizard/plans/{id}/validate` — валидация без apply
+- `ValidateOnly()` экспортирован из `applier.go`
+- UI: JSON-редактор в textarea с кнопками Validate / Save & Preview / Cancel
+
+**Фаза 4: Test Run**
+- Новый API endpoint: `POST /api/v1/wizard/plans/{id}/test` — запуск задачи из applied плана
+- Timeout ограничен 2 минутами для test runs
+- Output проверяется через `outputcheck.CheckStepOutput()` — детектирует soft failures
+- Результат с `WizardDiagnosis` при обнаружении проблем
+
+**Фаза 5: Frontend — 5-state UI**
+- Расширение с 3 (`input → preview → result`) до 5 состояний: `input → preview → editing → result → testing`
+- `DiagnosisPanel` — переиспользуемый компонент с цветовой категоризацией, collapsible details, action buttons
+- `DiagnosisError` class в API client — обработка HTTP 422 от wizard endpoints
+- Editing state: полный JSON-редактор с валидацией перед сохранением
+- Testing state: spinner, success/soft failure/hard error отображение
+- Result state: dropdown выбора задачи для test run
+
+**Типы и структуры:**
+- `GenerateError` — обёртка ошибки генерации с raw output для диагностики
+- `WizardDiagnosis`, `RecoveryAction`, `RetryContext`, `TestRunResult`
+- HTTP 422 (Unprocessable Entity) для диагностируемых ошибок вместо generic 500
+
+**Тесты (+11 новых тестов):**
+- `internal/wizard/troubleshoot_test.go`: DiagnoseError по каждой категории (8), AutoFixDuplicateNames (3 варианта), deepCopyPlan
+
+**Изменённые файлы:**
+- `internal/wizard/types.go` — новые типы + RawOutput в Plan + RetryContext в GenerateRequest
+- `internal/wizard/troubleshoot.go` — **новый**: DiagnoseError, AutoFixDuplicateNames, deepCopyPlan
+- `internal/wizard/troubleshoot_test.go` — **новый**: 11 unit-тестов
+- `internal/wizard/generator.go` — GenerateError обёртка для всех ошибок
+- `internal/wizard/prompt.go` — секция "Previous Attempt Failed"
+- `internal/wizard/applier.go` — экспорт ValidateOnly()
+- `internal/api/wizard.go` — 422 diagnosis + handleWizardValidate + handleWizardTestRun
+- `internal/api/router.go` — 2 новых маршрута
+- `web/src/types/index.ts` — WizardDiagnosis, RecoveryAction, RetryContext, TestRunResult
+- `web/src/api/client.ts` — DiagnosisError class, 422 handling, wizardValidate, wizardTestRun
+- `web/src/components/Wizard.tsx` — 5-state machine, DiagnosisPanel, editing/testing states
+
 ---
 
 ## Бэклог

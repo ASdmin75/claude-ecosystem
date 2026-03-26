@@ -46,6 +46,7 @@ Requires Go 1.26+. The `claude` CLI must be on PATH (or set `claude_bin` in task
 - **`events/`** — Pub/sub event bus for decoupling task completion from logging/SSE.
 - **`auth/`** — PASETO v4.local tokens + bearer token fallback + HTTP middleware.
 - **`store/sqlite/`** — SQLite storage for execution history and users (pure Go, no CGo).
+- **`wizard/`** — Natural language configuration generator. `Generator` invokes Claude (Sonnet) to produce a JSON `Plan` with tasks/pipelines/agents/domains/MCP servers from a description. `Applier` creates entities in dependency order with transaction-like rollback. `PlanStore` holds plans in memory with 30-min TTL. Troubleshooter (`DiagnoseError`) categorizes failures into 10 error categories with `RecoveryAction` suggestions (retry, auto-fix duplicate names, edit plan). Supports retry with context (`RetryContext`), plan validation without apply (`ValidateOnly`), and test runs via `outputcheck`.
 - **`api/`** — REST API handlers using Go 1.22+ ServeMux method routing. SSE streaming.
 - **`ui/`** — `go:embed` for the React build (internal/ui/dist/).
 
@@ -64,6 +65,14 @@ Optional `domains` section defines business data domains linked to tasks. Each d
 All under `/api/v1/`. Auth required (PASETO or bearer token) except `/auth/login`.
 
 Key endpoints: task CRUD + delete + run, sub-agent CRUD + delete, pipeline CRUD + delete + run, execution history, MCP server management, SSE streaming (`/events` for global event stream, `/executions/{id}/stream` for per-execution), dashboard stats, backup/restore. Delete endpoints perform dependency checking (blocks if entity is referenced), create backups before deletion (each cascade entity gets its own config snapshot), and support cascade delete for pipelines (exclusive tasks/agents). Domain references (tasks, pipelines, agents, mcp_servers) are cleaned on delete; orphaned domains (no remaining refs across all four lists) are removed automatically. Restore recreates cascade entities and their domains. Pre-delete analysis available via `GET /{entity}/{name}/delete-info`. Backup management: `GET /backups`, `POST /backups/{id}/restore`. Auth supports query param `?token=` for SSE (EventSource limitation).
+
+### Wizard
+
+`POST /wizard/generate` accepts a natural language description and returns a `Plan` (JSON) with tasks, pipelines, agents, domains, MCP servers. The plan goes through a 5-state flow: `input → preview → editing → result → testing`.
+
+Wizard endpoints: `POST /wizard/generate` (plan generation with optional `retry_context`), `GET /wizard/plans/{id}`, `PUT /wizard/plans/{id}` (edit before apply), `POST /wizard/plans/{id}/apply`, `POST /wizard/plans/{id}/validate` (dry validation), `POST /wizard/plans/{id}/test` (test run a task from applied plan, 2-min timeout, soft failure detection via `outputcheck`), `DELETE /wizard/plans/{id}`.
+
+Error handling: generation/validation/apply errors return HTTP 422 with `WizardDiagnosis` (category, message, details, recovery suggestions). Categories: `empty_output`, `json_parse`, `timeout`, `duplicate_name`, `missing_reference`, `permission_mode`, `apply_failed`, `test_soft_failure`, `test_hard_failure`. Auto-fix for duplicate names renames conflicting entities with `-v2` suffix and updates all references. Retry context injects previous error + user hint into Claude's prompt.
 
 ## Web UI
 

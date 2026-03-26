@@ -64,11 +64,17 @@ func (g *Generator) Generate(ctx context.Context, req GenerateRequest, cfg *conf
 	)
 
 	if result.Error != "" {
-		return nil, fmt.Errorf("claude generation failed: %s", result.Error)
+		return nil, &GenerateError{
+			Err:       fmt.Errorf("claude generation failed: %s", result.Error),
+			RawOutput: result.Output,
+		}
 	}
 
 	if result.Output == "" {
-		return nil, fmt.Errorf("claude returned empty output")
+		return nil, &GenerateError{
+			Err:       fmt.Errorf("claude returned empty output"),
+			RawOutput: "",
+		}
 	}
 
 	// Claude may return JSON wrapped in markdown code fences or inside a CLI envelope.
@@ -85,7 +91,10 @@ func (g *Generator) Generate(ctx context.Context, req GenerateRequest, cfg *conf
 			"extracted_preview", truncate(extracted, 500),
 		)
 		if err2 := json.Unmarshal([]byte(extracted), &plan); err2 != nil {
-			return nil, fmt.Errorf("parsing plan JSON: %w\nraw output: %s", err2, result.Output)
+			return nil, &GenerateError{
+				Err:       fmt.Errorf("parsing plan JSON: %w", err2),
+				RawOutput: result.Output,
+			}
 		}
 	}
 

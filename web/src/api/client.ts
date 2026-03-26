@@ -1,6 +1,16 @@
-import type { DashboardData, Task, SubAgent, Pipeline, Execution, ExecutionResult, MCPServer, WizardPlan, ApplyResult, DeleteAnalysis, DeleteResponse, BackupEntry } from '../types'
+import type { DashboardData, Task, SubAgent, Pipeline, Execution, ExecutionResult, MCPServer, WizardPlan, ApplyResult, DeleteAnalysis, DeleteResponse, BackupEntry, WizardDiagnosis, RetryContext, TestRunResult } from '../types'
 
 const BASE = '/api/v1'
+
+// DiagnosisError is thrown when the server returns a 422 with a WizardDiagnosis.
+export class DiagnosisError extends Error {
+  diagnosis: WizardDiagnosis
+  constructor(diagnosis: WizardDiagnosis) {
+    super(diagnosis.message)
+    this.name = 'DiagnosisError'
+    this.diagnosis = diagnosis
+  }
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const token = localStorage.getItem('token')
@@ -16,6 +26,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     localStorage.removeItem('token')
     window.location.href = '/login'
     throw new Error('Unauthorized')
+  }
+
+  // Structured diagnosis from wizard endpoints
+  if (res.status === 422) {
+    const body = await res.json().catch(() => null)
+    if (body && body.category) {
+      throw new DiagnosisError(body as WizardDiagnosis)
+    }
   }
 
   if (!res.ok) {
@@ -116,10 +134,10 @@ export const api = {
     request<{ status: string }>(`/backups/${id}/restore`, { method: 'POST' }),
 
   // Wizard
-  wizardGenerate: (description: string, workDir?: string) =>
+  wizardGenerate: (description: string, workDir?: string, retryContext?: RetryContext) =>
     request<WizardPlan>('/wizard/generate', {
       method: 'POST',
-      body: JSON.stringify({ description, work_dir: workDir }),
+      body: JSON.stringify({ description, work_dir: workDir, retry_context: retryContext }),
     }),
   wizardGetPlan: (id: string) => request<WizardPlan>(`/wizard/plans/${id}`),
   wizardUpdatePlan: (id: string, plan: WizardPlan) =>
@@ -129,6 +147,15 @@ export const api = {
     }),
   wizardApply: (id: string) =>
     request<ApplyResult>(`/wizard/plans/${id}/apply`, { method: 'POST' }),
+  wizardValidate: (id: string) =>
+    request<{ valid: boolean; warnings?: string[] }>(`/wizard/plans/${id}/validate`, {
+      method: 'POST',
+    }),
+  wizardTestRun: (id: string, taskName: string) =>
+    request<TestRunResult>(`/wizard/plans/${id}/test`, {
+      method: 'POST',
+      body: JSON.stringify({ task_name: taskName }),
+    }),
   wizardDiscard: (id: string) =>
     request<void>(`/wizard/plans/${id}`, { method: 'DELETE' }),
 }

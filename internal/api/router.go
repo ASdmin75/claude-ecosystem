@@ -163,6 +163,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/wizard/plans/{id}", s.withAuth(s.handleWizardGetPlan))
 	mux.HandleFunc("PUT /api/v1/wizard/plans/{id}", s.withAuth(s.handleWizardUpdatePlan))
 	mux.HandleFunc("POST /api/v1/wizard/plans/{id}/apply", s.withAuth(s.handleWizardApply))
+	mux.HandleFunc("POST /api/v1/wizard/plans/{id}/validate", s.withAuth(s.handleWizardValidate))
+	mux.HandleFunc("POST /api/v1/wizard/plans/{id}/test", s.withAuth(s.handleWizardTestRun))
 	mux.HandleFunc("DELETE /api/v1/wizard/plans/{id}", s.withAuth(s.handleWizardDiscard))
 
 	// Delete-info (pre-delete analysis)

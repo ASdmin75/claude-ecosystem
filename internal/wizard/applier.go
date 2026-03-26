@@ -213,6 +213,11 @@ func (a *Applier) Apply(plan *Plan) (*ApplyResult, error) {
 	return result, nil
 }
 
+// ValidateOnly checks the plan without applying it. Returns warnings and validation errors.
+func (a *Applier) ValidateOnly(plan *Plan) ([]string, error) {
+	return a.validate(plan)
+}
+
 // validate checks for duplicate names, valid references, and tool/permission consistency.
 // Returns warnings (non-fatal issues) and an error (fatal issues that block apply).
 func (a *Applier) validate(plan *Plan) ([]string, error) {

@@ -2,8 +2,16 @@ package wizard
 
 // GenerateRequest is the input for wizard plan generation.
 type GenerateRequest struct {
-	Description string `json:"description"`
-	WorkDir     string `json:"work_dir,omitempty"`
+	Description  string        `json:"description"`
+	WorkDir      string        `json:"work_dir,omitempty"`
+	RetryContext *RetryContext  `json:"retry_context,omitempty"`
+}
+
+// RetryContext carries context from a previous failed generation attempt.
+type RetryContext struct {
+	PreviousError     string `json:"previous_error"`
+	PreviousRawOutput string `json:"previous_raw_output,omitempty"`
+	UserHint          string `json:"user_hint,omitempty"`
 }
 
 // Plan holds the full wizard-generated configuration plan.
@@ -17,7 +25,8 @@ type Plan struct {
 	Tasks       []TaskPlan      `json:"tasks,omitempty"`
 	Pipelines   []PipelinePlan  `json:"pipelines,omitempty"`
 	SetupNotes  string         `json:"setup_notes,omitempty"`
-	Status      string         `json:"status"` // "draft", "applied", "discarded"
+	Status      string         `json:"status"`              // "draft", "applied", "discarded"
+	RawOutput   string         `json:"raw_output,omitempty"` // stored for troubleshooting on parse errors
 }
 
 // DomainPlan describes a domain to be created.
@@ -79,6 +88,63 @@ type PipelinePlan struct {
 	MaxIterations int      `json:"max_iterations,omitempty"`
 	StopSignal    string   `json:"stop_signal,omitempty"`
 	SessionChain  bool     `json:"session_chain,omitempty"`
+}
+
+// ErrorCategory classifies a wizard failure for the troubleshooter UI.
+type ErrorCategory string
+
+const (
+	ErrCatEmptyOutput      ErrorCategory = "empty_output"
+	ErrCatJSONParse        ErrorCategory = "json_parse"
+	ErrCatTimeout          ErrorCategory = "timeout"
+	ErrCatDuplicateName    ErrorCategory = "duplicate_name"
+	ErrCatMissingReference ErrorCategory = "missing_reference"
+	ErrCatPermissionMode   ErrorCategory = "permission_mode"
+	ErrCatApplyFailed      ErrorCategory = "apply_failed"
+	ErrCatTestSoftFailure  ErrorCategory = "test_soft_failure"
+	ErrCatTestHardFailure  ErrorCategory = "test_hard_failure"
+	ErrCatUnknown          ErrorCategory = "unknown"
+)
+
+// WizardDiagnosis is a structured error returned to the frontend.
+type WizardDiagnosis struct {
+	Category    ErrorCategory    `json:"category"`
+	Message     string           `json:"message"`
+	Details     string           `json:"details,omitempty"`
+	Suggestions []RecoveryAction `json:"suggestions"`
+}
+
+// RecoveryAction describes one way the user can fix the problem.
+type RecoveryAction struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	PatchedPlan *Plan  `json:"patched_plan,omitempty"`
+}
+
+// GenerateError wraps a generation error with the raw Claude output for diagnosis.
+type GenerateError struct {
+	Err       error
+	RawOutput string
+}
+
+func (e *GenerateError) Error() string { return e.Err.Error() }
+func (e *GenerateError) Unwrap() error { return e.Err }
+
+// TestRunRequest specifies which task to test after plan apply.
+type TestRunRequest struct {
+	TaskName string `json:"task_name"`
+}
+
+// TestRunResult holds the outcome of a wizard test run.
+type TestRunResult struct {
+	TaskName    string           `json:"task_name"`
+	Output      string           `json:"output"`
+	Error       string           `json:"error,omitempty"`
+	SoftFailure string           `json:"soft_failure,omitempty"`
+	DurationMS  int64            `json:"duration_ms"`
+	CostUSD     float64          `json:"cost_usd,omitempty"`
+	Diagnosis   *WizardDiagnosis `json:"diagnosis,omitempty"`
 }
 
 // ApplyResult holds the outcome of applying a plan.

@@ -170,6 +170,37 @@ export interface ApplyResult {
   errors?: string[]
 }
 
+// Wizard troubleshooter types
+export interface WizardDiagnosis {
+  category: string
+  message: string
+  details?: string
+  suggestions: RecoveryAction[]
+}
+
+export interface RecoveryAction {
+  id: string
+  label: string
+  description: string
+  patched_plan?: WizardPlan
+}
+
+export interface RetryContext {
+  previous_error: string
+  previous_raw_output?: string
+  user_hint?: string
+}
+
+export interface TestRunResult {
+  task_name: string
+  output: string
+  error?: string
+  soft_failure?: string
+  duration_ms: number
+  cost_usd?: number
+  diagnosis?: WizardDiagnosis
+}
+
 // Delete / Backup types
 export interface Dependency {
   type: 'task' | 'pipeline' | 'subagent' | 'domain'

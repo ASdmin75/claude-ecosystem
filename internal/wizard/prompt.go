@@ -298,6 +298,20 @@ Safety model: permission_mode controls WHETHER tools can be called. allowed_tool
 		sb.WriteString(fmt.Sprintf("\nWorking directory: %s\n", req.WorkDir))
 	}
 
+	// Retry context from a previous failed attempt
+	if req.RetryContext != nil {
+		sb.WriteString("\n## Previous Attempt Failed\n\n")
+		sb.WriteString(fmt.Sprintf("Error: %s\n", req.RetryContext.PreviousError))
+		if req.RetryContext.PreviousRawOutput != "" {
+			sb.WriteString(fmt.Sprintf("\nRaw output (first 1000 chars):\n%s\n",
+				truncateField(req.RetryContext.PreviousRawOutput, 1000)))
+		}
+		if req.RetryContext.UserHint != "" {
+			sb.WriteString(fmt.Sprintf("\nUser's additional context: %s\n", req.RetryContext.UserHint))
+		}
+		sb.WriteString("\nFix the issues from the previous attempt and generate a correct plan.\n")
+	}
+
 	sb.WriteString("\n## Output Format\n\n")
 	sb.WriteString("Respond with ONLY a raw JSON object (no markdown fences, no explanation, no extra text).\n")
 	sb.WriteString("The JSON must match this schema:\n\n")
