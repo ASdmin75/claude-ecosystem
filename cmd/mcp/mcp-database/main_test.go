@@ -288,6 +288,26 @@ func TestHandleInsertInvalidColumnName(t *testing.T) {
 	}
 }
 
+func TestErrorSanitization(t *testing.T) {
+	setupTestDB(t)
+
+	// Query a nonexistent table — error should NOT leak SQLite internals
+	result, err := handleQuery(context.Background(), makeReq(map[string]any{
+		"sql": "SELECT * FROM nonexistent_table_xyz",
+	}))
+	if err != nil {
+		t.Fatalf("handleQuery returned Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for nonexistent table")
+	}
+
+	text := resultText(result)
+	if text != "query failed" {
+		t.Errorf("expected sanitized 'query failed', got: %s", text)
+	}
+}
+
 func TestMainRequiresDBPath(t *testing.T) {
 	// Verify that DOMAIN_DB_PATH is checked
 	old := os.Getenv("DOMAIN_DB_PATH")

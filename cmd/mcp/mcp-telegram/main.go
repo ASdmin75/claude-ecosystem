@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/asdmin/claude-ecosystem/internal/safepath"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	tele "gopkg.in/telebot.v4"
@@ -87,6 +88,14 @@ func handleSendDocument(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		return mcp.NewToolResultError("file_path is required"), nil
 	}
 
+	// Validate path to prevent directory traversal
+	if pathValidator != nil {
+		filePath, err = pathValidator.Validate(filePath)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("path rejected: %v", err)), nil
+		}
+	}
+
 	if _, err := os.Stat(filePath); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("file not found: %s", filePath)), nil
 	}
@@ -108,7 +117,16 @@ func handleSendDocument(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	return mcp.NewToolResultText(fmt.Sprintf("Document sent successfully. Message ID: %d", msg.ID)), nil
 }
 
+var pathValidator *safepath.Validator
+
 func main() {
+	var err error
+	pathValidator, err = safepath.NewFromEnv("TELEGRAM_ALLOWED_DIRS")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mcp-telegram: invalid TELEGRAM_ALLOWED_DIRS: %v\n", err)
+		os.Exit(1)
+	}
+
 	s := server.NewMCPServer("mcp-telegram", "0.1.0")
 
 	s.AddTool(mcp.NewTool("send_message",

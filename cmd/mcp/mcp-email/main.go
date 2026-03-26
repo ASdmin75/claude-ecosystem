@@ -6,12 +6,22 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/asdmin/claude-ecosystem/internal/safepath"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"gopkg.in/gomail.v2"
 )
 
+var pathValidator *safepath.Validator
+
 func main() {
+	var err error
+	pathValidator, err = safepath.NewFromEnv("EMAIL_ALLOWED_DIRS")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mcp-email: invalid EMAIL_ALLOWED_DIRS: %v\n", err)
+		os.Exit(1)
+	}
+
 	s := server.NewMCPServer("mcp-email", "1.1.0")
 
 	s.AddTool(mcp.NewTool("send_email",
@@ -93,10 +103,14 @@ func parseStringList(raw any) []string {
 func attachFiles(m *gomail.Message, args map[string]any, key string) error {
 	paths := parseStringList(args[key])
 	for _, path := range paths {
-		if _, err := os.Stat(path); err != nil {
-			return fmt.Errorf("attachment not found: %s", path)
+		cleanPath, err := pathValidator.Validate(path)
+		if err != nil {
+			return fmt.Errorf("attachment path rejected: %w", err)
 		}
-		m.Attach(path)
+		if _, err := os.Stat(cleanPath); err != nil {
+			return fmt.Errorf("attachment not found: %s", cleanPath)
+		}
+		m.Attach(cleanPath)
 	}
 	return nil
 }

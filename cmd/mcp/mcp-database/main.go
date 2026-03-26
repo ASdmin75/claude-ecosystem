@@ -107,13 +107,13 @@ func handleQuery(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 
 	rows, err := db.Query(sqlStr)
 	if err != nil {
-		return mcp.NewToolResultError("query error: " + err.Error()), nil
+		return safeError("query", err)
 	}
 	defer rows.Close()
 
 	result, err := rowsToJSON(rows)
 	if err != nil {
-		return mcp.NewToolResultError("reading results: " + err.Error()), nil
+		return safeError("reading results", err)
 	}
 
 	data, _ := json.Marshal(result)
@@ -137,7 +137,7 @@ func handleExecute(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 
 	res, err := db.Exec(sqlStr)
 	if err != nil {
-		return mcp.NewToolResultError("execute error: " + err.Error()), nil
+		return safeError("execute", err)
 	}
 
 	affected, _ := res.RowsAffected()
@@ -147,7 +147,7 @@ func handleExecute(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 func handleListTables(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
 	if err != nil {
-		return mcp.NewToolResultError("error listing tables: " + err.Error()), nil
+		return safeError("list tables", err)
 	}
 	defer rows.Close()
 
@@ -155,7 +155,7 @@ func handleListTables(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolRe
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return mcp.NewToolResultError("error scanning table name: " + err.Error()), nil
+			return safeError("list tables", err)
 		}
 		tables = append(tables, name)
 	}
@@ -176,13 +176,13 @@ func handleDescribeTable(_ context.Context, req mcp.CallToolRequest) (*mcp.CallT
 
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
-		return mcp.NewToolResultError("error describing table: " + err.Error()), nil
+		return safeError("describe table", err)
 	}
 	defer rows.Close()
 
 	result, err := rowsToJSON(rows)
 	if err != nil {
-		return mcp.NewToolResultError("reading results: " + err.Error()), nil
+		return safeError("reading results", err)
 	}
 
 	data, _ := json.Marshal(result)
@@ -217,7 +217,7 @@ func handleCheckExists(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		return mcp.NewToolResultText(`{"exists": false}`), nil
 	}
 	if err != nil {
-		return mcp.NewToolResultError("check_exists error: " + err.Error()), nil
+		return safeError("check_exists", err)
 	}
 	return mcp.NewToolResultText(`{"exists": true}`), nil
 }
@@ -267,7 +267,7 @@ func handleInsert(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 
 	res, err := db.Exec(query, values...)
 	if err != nil {
-		return mcp.NewToolResultError("insert error: " + err.Error()), nil
+		return safeError("insert", err)
 	}
 
 	id, _ := res.LastInsertId()
@@ -291,7 +291,7 @@ func handleBatchInsert(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 
 	tx, err := db.Begin()
 	if err != nil {
-		return mcp.NewToolResultError("begin transaction: " + err.Error()), nil
+		return safeError("begin transaction", err)
 	}
 	defer tx.Rollback() // no-op after successful Commit
 
@@ -331,14 +331,15 @@ func handleBatchInsert(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 
 		_, err := tx.Exec(query, values...)
 		if err != nil {
-			errors = append(errors, fmt.Sprintf("#%d: %s", i+1, err.Error()))
+			fmt.Fprintf(os.Stderr, "mcp-database: batch insert row #%d: %v\n", i+1, err)
+			errors = append(errors, fmt.Sprintf("#%d: insert failed", i+1))
 			continue
 		}
 		inserted++
 	}
 
 	if err := tx.Commit(); err != nil {
-		return mcp.NewToolResultError("commit: " + err.Error()), nil
+		return safeError("commit", err)
 	}
 
 	result := fmt.Sprintf(`{"inserted": %d, "errors": %d, "total": %d}`, inserted, len(errors), len(rowsRaw))
@@ -347,6 +348,13 @@ func handleBatchInsert(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 			inserted, len(errors), len(rowsRaw), strings.Join(errors, "; "))
 	}
 	return mcp.NewToolResultText(result), nil
+}
+
+// safeError logs the detailed error to stderr and returns a sanitized
+// error result that does not expose internal details to the client.
+func safeError(operation string, err error) (*mcp.CallToolResult, error) {
+	fmt.Fprintf(os.Stderr, "mcp-database: %s: %v\n", operation, err)
+	return mcp.NewToolResultError(operation + " failed"), nil
 }
 
 // rowsToJSON converts sql.Rows to a slice of maps.
