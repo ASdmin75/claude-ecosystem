@@ -84,6 +84,26 @@ func (m *Manager) initSingle(name string, d config.Domain) error {
 	return nil
 }
 
+// Reload updates the in-memory domain map from a new config.
+// New domains are initialized (mkdir, schema, doc); existing ones are kept.
+func (m *Manager) Reload(domains map[string]config.Domain) {
+	if domains == nil {
+		return
+	}
+	for name, d := range domains {
+		if _, ok := m.domains[name]; ok {
+			continue // already initialized
+		}
+		d.Name = name
+		if err := m.initSingle(name, d); err != nil {
+			m.logger.Error("domain reload: init failed", "domain", name, "error", err)
+			continue
+		}
+		m.domains[name] = d
+		m.logger.Info("domain registered on reload", "domain", name)
+	}
+}
+
 // RemoveDomain removes a domain from the in-memory map.
 // The domain's data directory is left on disk as a safety measure.
 func (m *Manager) RemoveDomain(name string) {

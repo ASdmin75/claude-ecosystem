@@ -145,6 +145,52 @@ func (m *Manager) Status() []ServerStatus {
 	return statuses
 }
 
+// AddServer registers a new MCP server configuration at runtime.
+// If a server with the same name already exists it is silently skipped.
+func (m *Manager) AddServer(cfg config.MCPServerConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.servers[cfg.Name]; ok {
+		return
+	}
+	m.servers[cfg.Name] = &managedServer{config: cfg}
+	m.logger.Info("registered MCP server", "name", cfg.Name)
+}
+
+// Reload replaces the full set of known servers from the new config.
+// Running servers whose config did not change keep running;
+// removed servers are stopped; new servers are registered.
+func (m *Manager) Reload(configs []config.MCPServerConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	newSet := make(map[string]bool, len(configs))
+	for _, c := range configs {
+		newSet[c.Name] = true
+	}
+
+	// Stop and remove servers no longer in config.
+	for name, srv := range m.servers {
+		if !newSet[name] {
+			if srv.running {
+				_ = m.stopLocked(name)
+			}
+			delete(m.servers, name)
+			m.logger.Info("removed MCP server on reload", "name", name)
+		}
+	}
+
+	// Add new servers and update config of existing ones.
+	for _, c := range configs {
+		if srv, ok := m.servers[c.Name]; ok {
+			srv.config = c // update config (env vars, command, args)
+		} else {
+			m.servers[c.Name] = &managedServer{config: c}
+			m.logger.Info("registered MCP server on reload", "name", c.Name)
+		}
+	}
+}
+
 // EnsureRunning starts all servers in the given list if not already running.
 func (m *Manager) EnsureRunning(names []string) error {
 	for _, name := range names {

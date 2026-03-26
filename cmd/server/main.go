@@ -260,7 +260,7 @@ func main() {
 	}()
 
 	// Watch config file for hot reload
-	go watchConfigFile(cfg, sched, w, apiServer, bus, logger)
+	go watchConfigFile(cfg, sched, w, apiServer, mcpMgr, domainMgr, bus, logger)
 
 	// Wait for shutdown signal
 	sig := make(chan os.Signal, 1)
@@ -281,7 +281,7 @@ func main() {
 
 // watchConfigFile monitors the config file for changes and triggers a hot reload.
 // It watches the parent directory to survive file renames (editor save strategies).
-func watchConfigFile(cfg *config.Config, sched *scheduler.Scheduler, w *watcher.Watcher, apiServer *api.Server, bus *events.Bus, logger *slog.Logger) {
+func watchConfigFile(cfg *config.Config, sched *scheduler.Scheduler, w *watcher.Watcher, apiServer *api.Server, mcpMgr *mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus, logger *slog.Logger) {
 	absPath, err := filepath.Abs(cfg.FilePath)
 	if err != nil {
 		logger.Error("failed to resolve config file path", "error", err)
@@ -323,7 +323,7 @@ func watchConfigFile(cfg *config.Config, sched *scheduler.Scheduler, w *watcher.
 				debounceTimer.Stop()
 			}
 			debounceTimer = time.AfterFunc(time.Second, func() {
-				reloadConfig(cfg, sched, w, apiServer, bus, logger)
+				reloadConfig(cfg, sched, w, apiServer, mcpMgr, domainMgr, bus, logger)
 			})
 
 		case err, ok := <-fsw.Errors:
@@ -336,19 +336,27 @@ func watchConfigFile(cfg *config.Config, sched *scheduler.Scheduler, w *watcher.
 }
 
 // reloadConfig re-reads the config file and re-registers tasks/pipelines
-// in the scheduler and watcher.
-func reloadConfig(cfg *config.Config, sched *scheduler.Scheduler, w *watcher.Watcher, apiServer *api.Server, bus *events.Bus, logger *slog.Logger) {
+// in the scheduler and watcher. Also reloads MCP servers and domains.
+func reloadConfig(cfg *config.Config, sched *scheduler.Scheduler, w *watcher.Watcher, apiServer *api.Server, mcpMgr *mcpmanager.Manager, domainMgr *domain.Manager, bus *events.Bus, logger *slog.Logger) {
 	newCfg, err := config.Load(cfg.FilePath)
 	if err != nil {
 		logger.Error("config reload failed", "error", err)
 		return
 	}
 
-	// Update shared config (tasks and pipelines only) under write lock.
+	// Update shared config under write lock.
 	cfg.Lock()
 	cfg.Tasks = newCfg.Tasks
 	cfg.Pipelines = newCfg.Pipelines
+	cfg.MCPServers = newCfg.MCPServers
+	cfg.Domains = newCfg.Domains
 	cfg.Unlock()
+
+	// Reload MCP servers so newly added servers are available at runtime.
+	mcpMgr.Reload(newCfg.MCPServers)
+
+	// Reload domains (initializes new domains, keeps existing ones).
+	domainMgr.Reload(newCfg.Domains)
 
 	// Reset and re-register scheduler.
 	sched.Reset()

@@ -53,3 +53,31 @@
 Производство и продажа электронных компонентов 
 Электронное управление для мобильного и индустриального применения 
 Электротехническое оборудование и изделия
+
+#############################################################################################################################################
+
+Мониторинг грузовых авиарейсов через AviationStack API.
+
+MCP-сервер "aviationstack" (mcp-openapi):
+- OPENAPI_SPEC_PATH: specs/aviationstack.yaml
+- OPENAPI_BASE_URL: http://api.aviationstack.com
+- OPENAPI_AUTH_TYPE: apikey
+- OPENAPI_API_KEY: ${AVIATIONSTACK_API_KEY}
+- OPENAPI_API_KEY_NAME: access_key
+- OPENAPI_API_KEY_IN: query
+
+API предоставляет инструменты: getflights (поиск рейсов), getairports (аэропорты), gettimetable (расписание на сегодня), getfutureflights (будущие рейсы).
+
+Домен "aviation-monitoring" с БД flights.db:
+- Таблица tracked_flights: flight_iata, airline_name, dep_iata, arr_iata, flight_date, status, dep_scheduled, dep_actual, arr_scheduled, arr_actual, delay_minutes, checked_at
+- Таблица hub_snapshots: hub_iata, snapshot_date, total_flights, cargo_flights, delayed_flights, cancelled_flights, report_text, created_at
+
+Задача 1: "aviation-flight-tracker" — найти текущие грузовые рейсы через getflights (фильтр по airline_iata для грузовых авиакомпаний: TK для Turkish Cargo, CV для Cargolux, EK для Emirates), сохранить в tracked_flights, вывести сводку. Использовать aviationstack + database. Timeout 5m. Limit запросов к API: не более 3. Модель: sonnet.
+
+Задача 2: "aviation-hub-monitor" — проверить расписание (вылеты и прилёты) аэропорта FRA (Frankfurt) через gettimetable, выделить грузовые рейсы, посчитать статистику, сохранить снимок в hub_snapshots, вывести детальный отчёт. Использовать aviationstack + database. Timeout 5m. Limit запросов к API: не более 2. Модель: sonnet.
+
+Задача 3: "aviation-compile-report" — на основе {{.PrevOutput}} прочитать данные из БД и создать Excel-отчёт в data/aviation-monitoring/reports/ с таблицей рейсов, задержек, статистикой. Использовать database + excel + filesystem. Timeout 5m. Модель: sonnet.
+
+Задача 4: "aviation-deliver-report" — отправить в Telegram краткую сводку из {{.PrevOutput}} текстом + приложить Excel-файл. Использовать telegram + filesystem. Timeout 3m. Модель: haiku.
+
+Пайплайн "aviation-cargo-monitor": sequential, шаги aviation-hub-monitor → aviation-compile-report → aviation-deliver-report, max_iterations 1, без stop_signal.

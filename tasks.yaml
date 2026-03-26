@@ -1018,6 +1018,212 @@ tasks:
         - mcp__filesystem__list_directory
       max_turns: 10
       permission_mode: dontAsk
+    - name: aviation-flight-tracker
+      domain: aviation-monitoring
+      prompt: |
+        Сегодня {{.Date}}. Найди текущие грузовые авиарейсы через AviationStack API и сохрани в БД.
+
+        ВАЖНО: Делай не более 3 вызовов API суммарно.
+
+        ШАГ 1 — Проверь структуру БД:
+        Вызови mcp__database__list_tables, затем mcp__database__describe_table для tracked_flights.
+
+        ШАГ 2 — Запроси рейсы (3 вызова getflights, по одному на авиакомпанию):
+        - Вызов 1: getflights с airline_iata=TK (Turkish Cargo)
+        - Вызов 2: getflights с airline_iata=CV (Cargolux)
+        - Вызов 3: getflights с airline_iata=EK (Emirates SkyCargo)
+
+        ШАГ 3 — Для каждого рейса из результатов:
+        1. Проверь существование: SELECT id FROM tracked_flights WHERE flight_iata=? AND flight_date=?
+        2. Если новый — INSERT: flight_iata, airline_name, dep_iata, arr_iata, flight_date, status, dep_scheduled, dep_actual, arr_scheduled, arr_actual, delay_minutes, checked_at=CURRENT_TIMESTAMP
+        3. Если существует — UPDATE статус, dep_actual, arr_actual, delay_minutes, checked_at
+
+        ШАГ 4 — Выведи сводку:
+        - Рейсов найдено по каждой авиакомпании (TK / CV / EK)
+        - Новых записей добавлено
+        - Обновлено существующих
+        - Рейсы с задержкой delay_minutes > 0 (flight_iata, маршрут, задержка)
+      work_dir: .
+      tags:
+        - aviation
+        - cargo
+        - tracker
+        - flights
+      model: sonnet
+      timeout: 5m
+      mcp_servers:
+        - aviationstack-api
+        - database
+      allowed_tools:
+        - mcp__aviationstack-api__getflights
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__insert
+        - mcp__database__check_exists
+      max_turns: 20
+      max_budget_usd: 0.5
+      permission_mode: dontAsk
+    - name: aviation-hub-monitor
+      domain: aviation-monitoring
+      prompt: |
+        Сегодня {{.Date}}. Мониторинг грузовых рейсов аэропорта FRA (Frankfurt).
+
+        ВАЖНО: Используй ТОЛЬКО эндпоинт getflights (НЕ gettimetable — он заблокирован по rate limit).
+        Делай не более 2 вызовов API суммарно.
+
+        ШАГ 1 — Проверь структуру БД:
+        Вызови mcp__database__list_tables и mcp__database__describe_table для hub_snapshots и tracked_flights.
+
+        ШАГ 2 — Получи рейсы FRA (не более 2 вызовов getflights):
+        - Вызов 1: getflights с dep_iata=FRA, limit=100 (вылеты из Франкфурта)
+        - Вызов 2: getflights с arr_iata=FRA, limit=100 (прилёты во Франкфурт)
+
+        ШАГ 3 — Обработай данные:
+        Из полученных рейсов подсчитай:
+        - total_flights: все рейсы (вылеты + прилёты)
+        - cargo_flights: рейсы грузовых авиакомпаний (airline.iata среди: TK, CV, EK, FX, 5X, PO, BO, QY, GEC, CLX)
+          Также считай грузовыми рейсы с числовыми номерами > 5000 (обычно cargo)
+        - delayed_flights: рейсы где departure.delay > 0 или flight_status = «active» с опозданием
+        - cancelled_flights: рейсы со статусом «cancelled»
+
+        Для каждого грузового рейса сохрани в tracked_flights:
+        INSERT OR IGNORE INTO tracked_flights (flight_iata, airline_name, dep_iata, arr_iata, flight_date, status, dep_scheduled, dep_actual, arr_scheduled, arr_actual, delay_minutes)
+        VALUES (...)
+
+        ШАГ 4 — Сохрани снимок хаба:
+        INSERT INTO hub_snapshots (hub_iata, snapshot_date, total_flights, cargo_flights, delayed_flights, cancelled_flights, report_text)
+        VALUES ('FRA', '{{.Date}}', <total>, <cargo>, <delayed>, <cancelled>, '<краткое резюме>')
+        Если запись за сегодня уже есть — обнови через UPDATE.
+
+        ШАГ 5 — Выведи детальный отчёт:
+        - Статистика FRA за {{.Date}}: всего / грузовых / задержанных / отменённых
+        - Таблица грузовых рейсов: flight_iata, авиакомпания, маршрут (dep→arr), статус, задержка
+        - Строка «Файл отчёта: data/aviation-monitoring/reports/aviation-report-{{.Date}}.xlsx»
+      work_dir: .
+      tags:
+        - aviation
+        - cargo
+        - hub
+        - fra
+        - monitor
+      model: sonnet
+      timeout: 5m
+      mcp_servers:
+        - aviationstack-api
+        - database
+      allowed_tools:
+        - mcp__aviationstack-api__getflights
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+        - mcp__database__query
+        - mcp__database__execute
+        - mcp__database__insert
+        - mcp__database__insert
+      max_turns: 15
+      max_budget_usd: 0.5
+      permission_mode: dontAsk
+    - name: aviation-compile-report
+      domain: aviation-monitoring
+      prompt: |
+        Создай Excel-отчёт по мониторингу грузовых авиарейсов.
+
+        Данные из предыдущего шага:
+        {{.PrevOutput}}
+
+        ШАГ 1 — Создай директорию:
+        mcp__filesystem__create_directory: data/aviation-monitoring/reports
+
+        ШАГ 2 — Получи данные из БД (выполни оба запроса):
+        - SELECT flight_iata, airline_name, dep_iata, arr_iata, flight_date, status, dep_scheduled, dep_actual, arr_scheduled, arr_actual, delay_minutes, checked_at FROM tracked_flights ORDER BY checked_at DESC LIMIT 200;
+        - SELECT hub_iata, snapshot_date, total_flights, cargo_flights, delayed_flights, cancelled_flights, report_text, created_at FROM hub_snapshots ORDER BY created_at DESC LIMIT 30;
+
+        ШАГ 3 — Создай Excel-файл: data/aviation-monitoring/reports/aviation-report-{{.Date}}.xlsx
+
+        Лист «Рейсы FRA» — таблица на основе данных из {{.PrevOutput}} (список грузовых рейсов из отчёта hub-monitor):
+        Колонки: Рейс, Авиакомпания, Откуда, Куда, Статус, Задержка (мин)
+
+        Лист «Отслеживаемые рейсы» — таблица из tracked_flights:
+        Колонки: Рейс, Авиакомпания, Откуда, Куда, Дата, Статус, Вылет план, Вылет факт, Прилёт план, Прилёт факт, Задержка (мин)
+
+        Лист «Снимки FRA» — таблица из hub_snapshots:
+        Колонки: Аэропорт, Дата, Всего рейсов, Грузовых, Задержанных, Отменённых
+
+        Лист «Статистика» — сводка:
+        - Дата отчёта: {{.Date}}
+        - Статистика FRA из {{.PrevOutput}}
+        - Итого отслеживаемых рейсов в БД
+        - Рейсов с задержкой
+
+        ШАГ 4 — Выведи:
+        - Строка «Файл отчёта: data/aviation-monitoring/reports/aviation-report-{{.Date}}.xlsx»
+        - Кол-во строк в каждом листе
+        - Краткая сводка для Telegram (3-5 строк с эмодзи): статистика FRA, грузовых, задержанных
+      work_dir: .
+      tags:
+        - aviation
+        - cargo
+        - excel
+        - report
+      model: sonnet
+      timeout: 5m
+      mcp_servers:
+        - database
+        - excel
+        - filesystem
+      allowed_tools:
+        - mcp__database__query
+        - mcp__database__list_tables
+        - mcp__database__describe_table
+        - mcp__excel__create_spreadsheet
+        - mcp__excel__write_spreadsheet
+        - mcp__excel__add_styled_table
+        - mcp__excel__read_spreadsheet
+        - mcp__filesystem__write_file
+        - mcp__filesystem__list_directory
+        - mcp__filesystem__create_directory
+      max_turns: 20
+      max_budget_usd: 0.5
+      permission_mode: dontAsk
+    - name: aviation-deliver-report
+      domain: aviation-monitoring
+      prompt: |
+        Отправь отчёт по мониторингу грузовых авиарейсов в Telegram.
+
+        Данные из предыдущего шага (НЕ читай xlsx файл — используй только текст ниже):
+        {{.PrevOutput}}
+
+        Извлеки из предыдущего вывода:
+        - Путь к файлу xlsx (строка «Файл отчёта: ...»)
+        - Краткую сводку для Telegram
+        - Статистику: всего рейсов, грузовых, задержанных, отменённых
+
+        ШАГ 1 — Отправь текстовое сообщение в Telegram:
+        ✈️ Мониторинг грузовых авиарейсов — {{.Date}}
+
+        [краткая сводка из {{.PrevOutput}}]
+
+        ШАГ 2 — Отправь xlsx-файл в Telegram как документ с подписью:
+        «Полный отчёт: грузовые рейсы FRA — {{.Date}}»
+      work_dir: .
+      tags:
+        - aviation
+        - cargo
+        - telegram
+        - delivery
+      model: haiku
+      timeout: 3m
+      mcp_servers:
+        - telegram
+        - filesystem
+      allowed_tools:
+        - mcp__telegram__send_message
+        - mcp__telegram__send_document
+        - mcp__filesystem__list_directory
+      max_turns: 10
+      max_budget_usd: 0.1
+      permission_mode: dontAsk
 pipelines:
     - name: review-fix
       mode: sequential
@@ -1094,6 +1300,13 @@ pipelines:
         - task: 4log-compile-weekly-excel
         - task: 4log-deliver-weekly-report
       max_iterations: 1
+    - name: aviation-cargo-monitor
+      mode: sequential
+      steps:
+        - task: aviation-hub-monitor
+        - task: aviation-compile-report
+        - task: aviation-deliver-report
+      max_iterations: 1
 mcp_servers:
     - name: database
       command: ./bin/mcp-database
@@ -1142,6 +1355,17 @@ mcp_servers:
         OPENAPI_OAUTH2_CLIENT_SECRET: ${4LOG_CLIENT_SECRET}
         OPENAPI_OAUTH2_TOKEN_URL: ${4LOG_API_URL}/oauth/v2/token
         OPENAPI_SPEC_PATH: specs/4log.json
+    - name: aviationstack-api
+      command: ./bin/mcp-openapi
+      env:
+        OPENAPI_API_KEY: ${AVIATIONSTACK_API_KEY}
+        OPENAPI_API_KEY_IN: query
+        OPENAPI_API_KEY_NAME: access_key
+        OPENAPI_AUTH_TYPE: apikey
+        OPENAPI_BASE_URL: http://api.aviationstack.com
+        OPENAPI_SPEC_PATH: specs/aviationstack.yaml
+        OPENAPI_EXTRA_HEADERS: "User-Agent:Mozilla/5.0 AviationMonitor/1.0"
+        OPENAPI_PROXY: ${HTTP_PROXY}
 domains:
     4logist:
         description: '4Logist CRM data: orders, clients, invoices, and order status change history for daily reporting and real-time monitoring'
@@ -1164,6 +1388,24 @@ domains:
             - excel
             - telegram
             - filesystem
+    aviation-monitoring:
+        description: 'AviationStack flight monitoring: tracked cargo flights (TK/CV/EK) and FRA hub daily snapshots'
+        data_dir: data/aviation-monitoring
+        db: flights.db
+        schema: CREATE TABLE IF NOT EXISTS tracked_flights (id INTEGER PRIMARY KEY AUTOINCREMENT, flight_iata TEXT, airline_name TEXT, dep_iata TEXT, arr_iata TEXT, flight_date TEXT, status TEXT, dep_scheduled TEXT, dep_actual TEXT, arr_scheduled TEXT, arr_actual TEXT, delay_minutes INTEGER, checked_at TEXT DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS hub_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, hub_iata TEXT, snapshot_date TEXT, total_flights INTEGER, cargo_flights INTEGER, delayed_flights INTEGER, cancelled_flights INTEGER, report_text TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        tasks:
+            - aviation-flight-tracker
+            - aviation-hub-monitor
+            - aviation-compile-report
+            - aviation-deliver-report
+        pipelines:
+            - aviation-cargo-monitor
+        mcp_servers:
+            - aviationstack-api
+            - database
+            - excel
+            - filesystem
+            - telegram
     export-by-aviation:
         description: Лиды с export.by — белорусские экспортёры, нуждающиеся в авиаперевозке грузов. MCP-сервер exportby выполняет скрейпинг сайта и хранит сырые данные в raw_companies. Задача analyze оценивает aviation_priority на основе данных в БД без обращения к сайту.
         data_dir: data/export-by-aviation

@@ -1,0 +1,710 @@
+ ▐▛███▜▌   Claude Code v2.1.81
+▝▜█████▛▘  Opus 4.6 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/development/AI/Claude/claude-ecosystem
+
+❯ Итак завтра у нас показ руководству компании, нужно показать что может        
+Anthropic и Claude Code в частнсоти. Как ты уже мог доагадаться мы занимаемся   
+логистическо-экспедиационными услугами, особый уклон на авиаперевозки, хотя вс  
+остальные виды траспорта и мультимодал тоже ок. Нужно продемострировать         
+потенциал Claude Ecosystem. Лидов мы уже научились искать. Теперь нужно         
+продемонстрировать всю мощь mcp-openapi. Что можно предложить для демонстрации  
+например используя API                                                          
+https://docs.apilayer.com/aviationstack/docs/api-documentation?utm_source=Aviat 
+ionstackHomePage&utm_medium=Referral#api-endpoints-summary ?? Уменя есть        
+бесплатный API лун на 100 запросов в месяц, так что нужно все                   
+продемонстрировать с первого дубля и не опозориться :) Что предложишь           
+
+● Отличная задача! Давайте разберёмся с возможностями mcp-openapi и
+  AviationStack API, чтобы спланировать убедительную демонстрацию.
+
+● 3 Explore agents finished (ctrl+o to expand)
+   ├─ Explore mcp-openapi server · 42 tool uses · 69.1k tokens
+   │  ⎿  Done
+   ├─ Explore AviationStack API docs · 16 tool uses · 38.1k tokens
+   │  ⎿  Done
+   └─ Explore existing tasks.yaml config · 14 tool uses · 45.1k tokens
+      ⎿  Done
+
+● Отличная ситуация для демо! Вот что я выяснил и что предлагаю. Сейчас оформлю
+  план.
+
+● Прежде чем оформить план, уточню несколько моментов.
+
+● User answered Claude's questions:
+  ⎿  · Какой формат демо вы планируете? Это повлияет на то, что мы подготовим. →
+      Оба вариант + демонстрация работы Wizard
+     · Telegram-бот для доставки отчётов уже настроен и работает? → Да, работает
+     · Есть ли конкретные рейсы или маршруты, которые актуальны для вашей 
+     компании? Это сделает демо убедительнее. → Любые грузовые
+
+● Отлично! Теперь у меня полная картина. Пишу план.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● Также сохраню информацию о вашей компании для будущих сессий.
+
+  Recalled 1 memory, wrote 2 memories (ctrl+o to expand)
+
+● План готов. Коротко о стратегии:
+
+  Главная идея демо: "Подключаем ЛЮБОЙ API без единой строчки кода — только
+  OpenAPI-спец + конфиг"
+
+  Что делаем:
+  1. Пишем OpenAPI-спецификацию для AviationStack (4 эндпоинта free-тарифа)
+  2. Конфигурируем mcp-openapi сервер (apikey в query param)
+  3. Создаём домен aviation-monitoring с SQLite для хранения данных о рейсах
+  4. 4 задачи: трекер рейсов → мониторинг хаба → Excel-отчёт → Telegram
+  5. Пайплайн aviation-cargo-monitor — полная цепочка автоматизации
+
+  3 акта демо: Wizard (создание) → CLI (единичный запрос) → Web UI (пайплайн +
+  Telegram)
+
+  Расход API: ~15-20 запросов из 100 (тесты + показ)
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/soft-squishing-origami.md · /plan to edit
+     Demo: AviationStack API через mcp-openapi
+
+     Context
+
+     Завтра (2026-03-24) показ руководству логистической компании (авиаперевозки
+      + мультимодал). Цель — продемонстрировать потенциал Claude Ecosystem для
+     автоматизации бизнес-процессов. Ключевой фокус: mcp-openapi — подключение к
+      ЛЮБОМУ API без написания кода, только через OpenAPI-спецификацию.
+
+     Ограничения AviationStack Free:
+     - 100 запросов/месяц, HTTP only (не HTTPS!)
+     - Доступные эндпоинты: /flights, /timetable, /flightsFuture, /airports
+     - Недоступно: airlines, aircraft, routes, cities, countries
+     - Rate limit на timetable/flightsFuture: 1 req/60s
+     - Auth: API key как query parameter access_key
+
+     Бюджет запросов на демо: ~15-20 из 100 (тестирование + показ)
+
+     ---
+     Шаг 1: Создать OpenAPI-спецификацию для AviationStack
+
+     Файл: specs/aviationstack.yaml
+
+     AviationStack не предоставляет готовую спецификацию — создаём вручную на
+     основе документации. Включаем только доступные на free-тарифе эндпоинты:
+
+     - GET /v1/flights — реальные рейсы (фильтры: airline_iata, flight_iata,
+     dep_iata, arr_iata, flight_status, flight_date, limit, offset)
+     - GET /v1/airports — справочник аэропортов (search по IATA-коду)
+     - GET /v1/timetable — расписание на сегодня (iata_code, type:
+     departure/arrival)
+     - GET /v1/flightsFuture — будущие рейсы (iata_code, type, date)
+
+     Base URL: http://api.aviationstack.com (HTTP, не HTTPS!)
+
+     Auth: apikey в query param access_key — настроим через OPENAPI_API_KEY_IN: 
+     query, OPENAPI_API_KEY_NAME: access_key.
+
+     ---
+     Шаг 2: Настроить MCP-сервер в tasks.yaml
+
+     Добавить в секцию mcp_servers:
+
+     - name: aviationstack
+       command: ./bin/mcp-openapi
+       env:
+         OPENAPI_SPEC_PATH: specs/aviationstack.yaml
+         OPENAPI_BASE_URL: http://api.aviationstack.com
+         OPENAPI_AUTH_TYPE: apikey
+         OPENAPI_API_KEY: ${AVIATIONSTACK_API_KEY}
+         OPENAPI_API_KEY_NAME: access_key
+         OPENAPI_API_KEY_IN: query
+
+     Добавить AVIATIONSTACK_API_KEY в .env.
+
+     ---
+     Шаг 3: Создать домен aviation-monitoring
+
+     Директория данных: data/aviation-monitoring/
+     БД: flights.db
+
+     Таблицы:
+     CREATE TABLE IF NOT EXISTS tracked_flights (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         flight_iata TEXT NOT NULL,
+         airline_name TEXT,
+         dep_iata TEXT,
+         arr_iata TEXT,
+         flight_date TEXT,
+         status TEXT,
+         dep_scheduled TEXT,
+         dep_actual TEXT,
+         arr_scheduled TEXT,
+         arr_actual TEXT,
+         delay_minutes INTEGER DEFAULT 0,
+         checked_at TEXT DEFAULT (datetime('now')),
+         raw_json TEXT
+     );
+
+     CREATE TABLE IF NOT EXISTS hub_snapshots (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         hub_iata TEXT NOT NULL,
+         snapshot_date TEXT NOT NULL,
+         total_flights INTEGER,
+         cargo_flights INTEGER,
+         delayed_flights INTEGER,
+         cancelled_flights INTEGER,
+         report_text TEXT,
+         created_at TEXT DEFAULT (datetime('now'))
+     );
+
+     DOMAIN.md — инструкции для агента: какие таблицы есть, как записывать
+     данные, примеры использования MCP-инструментов.
+
+     ---
+     Шаг 4: Создать задачи
+
+     4.1 aviation-flight-tracker
+
+     Назначение: Проверяет статус грузовых рейсов на заданном маршруте,
+     сохраняет в БД.
+
+     Промпт: Найди текущие грузовые рейсы из {{dep}} в {{arr}} используя
+     AviationStack API.
+     Для каждого найденного рейса сохрани данные в таблицу tracked_flights.
+     Выведи краткую сводку: количество рейсов, задержки, отмены.
+
+     MCP серверы: aviationstack, database
+     Allowed tools: mcp__aviationstack__*, mcp__database__*
+
+     4.2 aviation-hub-monitor
+
+     Назначение: Мониторинг грузового хаба — вылеты и прилёты за сегодня.
+
+     Промпт: Проверь расписание аэропорта {{hub_iata}} (вылеты и прилёты) на
+     сегодня.
+     Выдели грузовые рейсы (cargo). Посчитай статистику.
+     Сохрани снимок в hub_snapshots. Выведи отчёт.
+
+     MCP серверы: aviationstack, database
+
+     4.3 aviation-compile-report
+
+     Назначение: Собирает Excel-отчёт из данных БД.
+
+     Промпт: На основе данных из предыдущего шага ({{.PrevOutput}})
+     создай Excel-отчёт с рейсами, задержками и статистикой.
+
+     MCP серверы: database, excel, filesystem
+
+     4.4 aviation-deliver-report
+
+     Назначение: Отправляет отчёт в Telegram.
+
+     Промпт: Отправь отчёт из предыдущего шага в Telegram.
+     Приложи Excel-файл если он есть.
+
+     MCP серверы: telegram, filesystem
+
+     ---
+     Шаг 5: Создать пайплайн
+
+     aviation-cargo-monitor
+
+     mode: sequential
+     steps:
+       - task: aviation-hub-monitor
+       - task: aviation-compile-report
+       - task: aviation-deliver-report
+     max_iterations: 1
+
+     ---
+     Шаг 6: Сценарий демонстрации
+
+     Акт 1: Wizard (создание через UI)
+
+     Показать как через Wizard в Web UI можно создать новую задачу/пайплайн —
+     подключить API без единой строчки кода.
+
+     Акт 2: CLI — единичный запрос
+
+     make run-task TASK=aviation-flight-tracker
+     Claude сам находит нужный MCP-инструмент, вызывает API, парсит ответ,
+     сохраняет в БД, выдаёт сводку. ~2-3 API-запроса.
+
+     Акт 3: Web UI — полный пайплайн
+
+     Запустить aviation-cargo-monitor через Web UI. Руководство видит:
+     1. SSE-стриминг выполнения в реальном времени
+     2. Claude мониторит хаб → компилирует Excel → отправляет в Telegram
+     3. Сообщение приходит в Telegram-чат прямо на экране
+
+     ~3-5 API-запросов.
+
+     Ключевые тезисы для руководства:
+
+     - "Мы не написали ни строчки кода для интеграции с AviationStack"
+     - "Достаточно OpenAPI-спецификации — Claude сам понимает как использовать
+     API"
+     - "Любой API с документацией можно подключить за 10 минут"
+     - "Пайплайны автоматизируют цепочку: мониторинг → анализ → отчёт →
+     доставка"
+
+     ---
+     Файлы для создания/изменения
+
+     ┌────────────────────────────────────┬─────────────────────────────────────
+     ┐
+     │                Файл                │              Действие
+     │
+     ├────────────────────────────────────┼─────────────────────────────────────
+     ┤
+     │ specs/aviationstack.yaml           │ Создать — OpenAPI спецификация
+     │
+     ├────────────────────────────────────┼─────────────────────────────────────
+     ┤
+     │ tasks.yaml                         │ Изменить — добавить MCP сервер,
+     │
+     │                                    │ домен, задачи, пайплайн
+     │
+     ├────────────────────────────────────┼─────────────────────────────────────
+     ┤
+     │ .env                               │ Изменить — добавить
+     │
+     │                                    │ AVIATIONSTACK_API_KEY
+     │
+     ├────────────────────────────────────┼─────────────────────────────────────
+     ┤
+     │ data/aviation-monitoring/DOMAIN.md │ Создать — инструкции для агента
+     │
+     └────────────────────────────────────┴─────────────────────────────────────
+     ┘
+
+     ---
+     Верификация
+
+     1. make build — убедиться что всё собирается
+     2. Тест MCP-сервера (1 запрос): make run-task TASK=aviation-flight-tracker
+     с простым запросом (например рейсы из FRA)
+     3. Тест пайплайна (3-5 запросов): make run-pipeline 
+     PIPELINE=aviation-cargo-monitor
+     4. Проверить что Excel создан и Telegram-сообщение пришло
+     5. Итого на тесты: ~5-8 запросов из 100
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/asdmin/development/AI/Claude/claude-ecosyst
+     em/conversation-2026-03-23-205100.txt
+
+❯ План отличный, но... Это все сделать через Wizard                             
+
+● Понял — демо через Wizard! Давайте разберусь, что Wizard умеет создавать,
+  чтобы спланировать правильный сценарий.
+
+● Explore(Explore Wizard UI capabilities)
+  ⎿  Done (19 tool uses · 72.8k tokens · 1m 14s)
+  (ctrl+o to expand)
+
+● Понял — фокус на Wizard! Из исследования я знаю, что Wizard умеет создавать
+  всё (MCP серверы, домены, агенты, задачи, пайплайны), кроме одного — файл 
+  OpenAPI-спецификации нужно создать заранее.
+
+  Обновляю план.
+
+  Read 1 file (ctrl+o to expand)
+
+● Теперь мне нужно посмотреть как Wizard генерирует планы — какой системный
+  промпт он использует, чтобы написать идеальное описание для ввода.
+
+  Searched for 2 patterns, read 3 files (ctrl+o to expand)
+● Теперь у меня полная картина. Обновляю план под Wizard-первый подход.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● План переработан. Теперь всё, кроме OpenAPI-спеки и API-ключа, делает Wizard.
+
+  Ключевое изменение — в плане есть готовый текст для ввода в Wizard (Шаг 2),
+  который создаст за один запрос: MCP-сервер, домен с SQLite, 4 задачи и
+  пайплайн с доставкой в Telegram.
+
+  Сценарий демо: Wizard (30 сек создание) → CLI (flight tracker) → Web UI
+  (полный пайплайн до Telegram).
+  ⎿  Tool use rejected
+
+● Ха, конечно! Делаю только подготовительную часть:
+
+  1. specs/aviationstack.yaml — OpenAPI спека
+  2. API-ключ в .env
+  3. Документ-шпаргалку для демо
+
+  Остальное вы покажете через Wizard на демонстрации.
+
+  Read 1 file (ctrl+o to expand)
+
+● Write(specs/aviationstack.yaml)
+  ⎿  Wrote 297 lines to specs/aviationstack.yaml
+       1 openapi: "3.0.3"
+       2 info:
+       3   title: AviationStack API
+       4   description: Real-time flight tracking and aviation data API
+       5   version: "1.0"
+       6 servers:
+       7   - url: http://api.aviationstack.com
+       8 
+       9 paths:
+      10   /v1/flights:
+     … +287 lines (ctrl+o to expand)
+
+● Спека создана. Теперь нужен ваш API-ключ.
+
+● User answered Claude's questions:
+  ⎿  · Какой у вас AviationStack API ключ? Нужно добавить в .env. → Скажу сейчас
+
+● Отлично, введите ключ — я добавлю в .env и обновлю NO_PROXY чтобы запросы к
+  AviationStack не шли через прокси.
+
+✻ Crunched for 4m 2s
+
+❯ a775163d0a75e0f9672e7635ac0107a2                                              
+
+● Update(.env)
+  ⎿  Added 3 lines
+      27  4LOG_CLIENT_SECRET=1cltlb3wg50gc4oowcssw4oc4c8s8kwg88o0gog8o4co
+          g84804
+      28  4LOG_API_URL=https://partnerlogistics.4logist.com
+      29  
+      30 +# --- AviationStack (for aviation monitoring demo) ---         
+      31 +AVIATIONSTACK_API_KEY=a775163d0a75e0f9672e7635ac0107a2         
+      32 +                                                               
+      33  # --- Server (optional overrides) ---
+      34  # SERVER_ADDR=:8080
+      35  # DATA_DIR=data
+
+● Update(.env)
+  ⎿  Added 1 line, removed 1 line
+      44  https_proxy=http://127.0.0.1:8081/
+      45  ALL_PROXY=socks://127.0.0.1:1081/
+      46  all_proxy=socks://127.0.0.1:1081/
+      47 -NO_PROXY=localhost,127.0.0.1/8,::1,192.168.31.0/24,api.telegram
+         -.org,ooolkp.ddnsfree.com:8088,partnerlogistics.4logist.com     
+      47 +NO_PROXY=localhost,127.0.0.1/8,::1,192.168.31.0/24,api.telegram
+         +.org,ooolkp.ddnsfree.com:8088,partnerlogistics.4logist.com,api.
+         +aviationstack.com                                              
+      48  no_proxy=localhost,127.0.0.1/8,::1,192.168.31.0/24,api.telegram
+          .org,ooolkp.ddnsfree.com:8088,partnerlogistics.4logist.com
+
+● Update(.env)
+  ⎿  Added 1 line, removed 1 line
+      45  ALL_PROXY=socks://127.0.0.1:1081/
+      46  all_proxy=socks://127.0.0.1:1081/
+      47  NO_PROXY=localhost,127.0.0.1/8,::1,192.168.31.0/24,api.telegram
+          .org,ooolkp.ddnsfree.com:8088,partnerlogistics.4logist.com,api.
+          aviationstack.com
+      48 -no_proxy=localhost,127.0.0.1/8,::1,192.168.31.0/24,api.telegram
+         -.org,ooolkp.ddnsfree.com:8088,partnerlogistics.4logist.com     
+      48 +no_proxy=localhost,127.0.0.1/8,::1,192.168.31.0/24,api.telegram
+         +.org,ooolkp.ddnsfree.com:8088,partnerlogistics.4logist.com,api.
+         +aviationstack.com                                              
+
+● Готово. Теперь создаю шпаргалку для демо.
+
+● Write(docs/demo-aviation-2024-03-24.md)
+  ⎿  Wrote 124 lines to docs/demo-aviation-2024-03-24.md
+       1 # Demo: AviationStack + Claude Ecosystem
+       2 **Дата:** 24 марта 2026 | **Аудитория:** Руководство компании
+       3 
+       4 ---
+       5 
+       6 ## Подготовка (сделано)
+       7 
+       8 - [x] OpenAPI-спецификация: `specs/aviationstack.yaml`
+       9 - [x] API-ключ в `.env` (AVIATIONSTACK_API_KEY)
+      10 - [x] NO_PROXY обновлён
+     … +114 lines (ctrl+o to expand)
+
+● Всё готово. Вот что сделано:
+
+  1. specs/aviationstack.yaml — OpenAPI-спецификация с 4 эндпоинтами (flights,
+  airports, timetable, flightsFuture)
+  2. .env — добавлен AVIATIONSTACK_API_KEY + api.aviationstack.com в NO_PROXY
+  3. docs/demo-aviation-2024-03-24.md — шпаргалка для демо с полным текстом для
+  Wizard, сценарием по актам, тезисами и планом Б
+
+  Перед демо нужно только:
+  - make build
+  - Прогнать один тестовый запрос: curl "http://api.aviationstack.com/v1/flights
+  ?access_key=a775163d0a75e0f9672e7635ac0107a2&limit=1" — убедиться что ключ
+  работает
+
+✻ Worked for 1m 12s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/asdmin/development/AI/Claude/claude-ecosyst
+     em/conversation-2026-03-23-210912.txt
+
+❯ /doc-update                                                                   
+
+● Давайте сначала посмотрю текущие документы.
+
+  Searched for 3 patterns, read 3 files (ctrl+o to expand)
+
+● Теперь вижу полную картину. Наша сегодняшняя работа — подготовка
+  OpenAPI-спецификации для AviationStack и инфраструктура для демо. Добавлю
+  запись в workflow и проверю user-guide на предмет mcp-openapi документации.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● User-guide уже содержит подробную документацию по mcp-openapi. Обновляю
+  workflow.
+
+● Update(workflow.md)  ⎿  Added 30 lines
+      1154  - `web/src/components/PipelineList.tsx` — импорт `Link`, икон
+            ка `↗` с навигацией
+      1155  - `web/src/components/TaskList.tsx` — импорт `useSearchParams
+            `/`useEffect`, автоселект задачи по query param
+      1156  
+      1157 +### 2026-03-23 — Подготовка демо: AviationStack API через mcp
+           +-openapi                                                     
+      1158 +                                                             
+      1159 +**Контекст:** подготовка демонстрации для руководства компани
+           +и — интеграция с внешним API авиационных данных через Wizard 
+           ++ mcp-openapi.                                               
+      1160 +                                                             
+      1161 +**OpenAPI-спецификация AviationStack:**                      
+      1162 +- Создан `specs/aviationstack.yaml` — OpenAPI 3.0 спецификаци
+           +я для AviationStack API (free tier)                          
+      1163 +- 4 эндпоинта: `getFlights` (поиск рейсов), `getAirports` (аэ
+           +ропорты), `getTimetable` (расписание на сегодня), `getFutureF
+           +lights` (будущие рейсы)                                      
+      1164 +- Полные response-схемы: `Flight` (departure/arrival/airline/
+           +flight objects), `Airport`, `Pagination`                     
+      1165 +- Base URL: `http://api.aviationstack.com` (free tier — тольк
+           +о HTTP)                                                      
+      1166 +- Аутентификация: API key как query parameter `access_key` (ч
+           +ерез OPENAPI_API_KEY_IN=query)                               
+      1167 +                                                             
+      1168 +**Инфраструктура:**                                          
+      1169 +- Добавлен `AVIATIONSTACK_API_KEY` в `.env`                  
+      1170 +- Добавлен `api.aviationstack.com` в `NO_PROXY`/`no_proxy` (ч
+           +тобы запросы к API не шли через прокси)                      
+      1171 +                                                             
+      1172 +**Документация демо:**                                       
+      1173 +- Создан `docs/demo-aviation-2024-03-24.md` — полный сценарий
+           + демонстрации:                                               
+      1174 +  - Текст для Wizard (MCP-сервер + домен + 4 задачи + пайплай
+           +н)                                                           
+      1175 +  - 3 акта: Wizard (создание) → CLI (flight tracker) → Web UI
+           + (пайплайн до Telegram)                                      
+      1176 +  - Тезисы для руководства, бюджет API-запросов, план Б при с
+           +боях                                                         
+      1177 +                                                             
+      1178 +**Сценарий демо (Wizard-first):**                            
+      1179 +- Wizard создаёт всё из текстового описания: MCP-сервер `avia
+           +tionstack`, домен `aviation-monitoring` (SQLite: tracked_flig
+           +hts, hub_snapshots), 4 задачи (flight-tracker, hub-monitor, c
+           +ompile-report, deliver-report), пайплайн `aviation-cargo-moni
+           +tor`                                                         
+      1180 +- Единственный ручной шаг — OpenAPI-спека (`specs/aviationsta
+           +ck.yaml`) создана заранее                                    
+      1181 +                                                             
+      1182 +**Изменённые файлы:**                                        
+      1183 +- `specs/aviationstack.yaml` — новый: OpenAPI спецификация Av
+           +iationStack                                                  
+      1184 +- `.env` — добавлен AVIATIONSTACK_API_KEY + NO_PROXY обновлён
+      1185 +- `docs/demo-aviation-2024-03-24.md` — новый: шпаргалка демо 
+      1186 +                                                             
+      1187  ---
+      1188  
+      1189  ## Бэклог
+
+● Теперь проверю нужно ли обновить user-guide. Документация по mcp-openapi
+  (apikey auth, query params) уже есть. Проверю раздел Wizard.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Wizard-секция в user-guide не упоминает создание MCP-серверов (mcp-openapi).
+  Обновлю.
+
+● Update(docs/user-guide.md)
+  ⎿  Added 20 lines, removed 6 lines
+      1054  - **Sub-Agents** — CRUD суб-агентов
+      1055  - **Pipelines** — список пайплайнов с запуском. В редакторе п
+            айплайна рядом с каждым шагом есть ссылка `↗` для быстрого пе
+            рехода к соответствующей задаче на странице Tasks
+      1056  - **Executions** — история исполнений с авто-обновлением
+      1057 -- **Wizard** — генерация конфигураций из текстового описания 
+           -(задачи, пайплайны, домены, агенты)                          
+      1057 +- **Wizard** — генерация конфигураций из текстового описания 
+           +(MCP-серверы, задачи, пайплайны, домены, агенты)             
+      1058  
+      1059  ### Wizard
+      1060  
+      1061 -Wizard позволяет создавать полные конфигурации (задачи, пайпл
+           -айны, домены, суб-агенты) из текстового описания на естествен
+           -ном языке.                                                   
+      1061 +Wizard позволяет создавать полные конфигурации из текстового 
+           +описания на естественном языке. За один запрос можно создать:
+      1062  
+      1063 -При применении плана выполняются автоматические проверки:    
+      1063 +- **MCP-серверы** (mcp-openapi) — интеграция с внешними API ч
+           +ерез OpenAPI-спецификацию                                    
+      1064 +- **Домены** — SQLite-базы с автоматической инициализацией сх
+           +емы и DOMAIN.md                                              
+      1065 +- **Суб-агенты** — специализированные агенты (.md файлы с YAM
+           +L frontmatter)                                               
+      1066 +- **Задачи** — полные определения с промптами, MCP-серверами,
+           + allowed_tools, расписанием                                  
+      1067 +- **Пайплайны** — цепочки задач (sequential/parallel)        
+      1068 +                                                             
+      1069 +**Пример:** для подключения нового внешнего API достаточно:  
+      1070 +1. Подготовить OpenAPI-спецификацию (файл `specs/*.yaml`)    
+      1071 +2. Добавить API-ключ в `.env`                                
+      1072 +3. Описать в Wizard что нужно создать — он сгенерирует MCP-се
+           +рвер, домен, задачи и пайплайн                               
+      1073 +                                                             
+      1074 +**Ограничение:** Wizard не создаёт файл OpenAPI-спецификации 
+           +— он должен существовать на диске до генерации плана.        
+      1075 +                                                             
+      1076 +При применении плана выполняются автоматические проверки и ав
+           +то-коррекции:                                                
+      1077  - Все ссылки валидны (задачи → MCP серверы, агенты; пайплайны
+             → задачи)
+      1065 -- `permission_mode: dontAsk` обязателен для задач с MCP-инстр
+           -ументами или агентами                                        
+      1066 -- Если задача использует агентов, `"Agent"` должен быть в `al
+           -lowed_tools`                                                 
+      1067 -- `allowed_tools` должен содержать хотя бы один инструмент от
+           - каждого MCP-сервера задачи (предупреждение)                 
+      1078 +- `permission_mode: dontAsk` автоматически устанавливается дл
+           +я задач с MCP-инструментами или агентами                     
+      1079 +- Если задача использует агентов, `"Agent"` автоматически доб
+           +авляется в `allowed_tools`                                   
+      1080 +- Discovery-инструменты (list_tables, describe_table, list_di
+           +rectory и т.д.) автоматически добавляются в `allowed_tools` д
+           +ля каждого MCP-сервера                                       
+      1081  - `stop_signal` не должен появляться в промптах не-финальных 
+            шагов пайплайна
+      1082 +- После применения генерируется `SETUP.md` с документацией: с
+           +озданные сущности, статус env-переменных, команды для запуска
+      1083  
+      1084  ---
+      1085  
+
+● Готово. Обновлено:
+
+  1. workflow.md — добавлена запись 2026-03-23 — Подготовка демо: AviationStack 
+  API через mcp-openapi с описанием OpenAPI-спеки, инфраструктуры и сценария
+  демо
+  2. docs/user-guide.md — расширена секция Wizard:
+    - Добавлена возможность создания MCP-серверов (mcp-openapi)
+    - Описан полный список создаваемых сущностей
+    - Пример workflow подключения внешнего API
+    - Отмечено ограничение (OpenAPI-спека должна быть на диске)
+    - Добавлены авто-коррекции и генерация SETUP.md
+
+✻ Crunched for 1m 47s
+
+❯ /git-commit-push                                                              
+
+● Bash(git status)
+  ⎿  On branch main
+     Your branch is up to date with 'origin/main'.
+     … +14 lines (ctrl+o to expand)
+
+● Bash(git diff)
+  ⎿  diff --git a/docs/prompts.md b/docs/prompts.md
+     index ae37554..3cc35a6 100644
+     --- a/docs/prompts.md
+     … +92 lines (ctrl+o to expand)
+
+● Bash(git log --oneline -5)
+  ⎿  57de3e5 feat: pipeline-to-task navigation + wizard auto-fix + openapi
+     key sanitization
+     f80b3da docs: update workflow/user-guide + optimize rad-control pipeli
+     … +7 lines (ctrl+o to expand)
+
+● Изменения:
+  - specs/aviationstack.yaml — новая OpenAPI-спека для AviationStack (4
+  эндпоинта free tier)
+  - docs/demo-aviation-2024-03-24.md — шпаргалка демо для руководства
+  - docs/user-guide.md — расширена секция Wizard (MCP-серверы, авто-коррекции,
+  SETUP.md)
+  - workflow.md — запись о подготовке демо AviationStack
+  - docs/prompts.md — обновление промптов
+
+● Bash(git add specs/aviationstack.yaml docs/demo-aviation-2024-03-24.md
+      docs/user-guide.md workflow.md docs/prompts.md)
+  ⎿  (No output)
+
+● Bash(git commit -m "$(cat <<'EOF'
+      feat: AviationStack OpenAPI spec + demo prep for management presentation…)
+  ⎿  [main fb299ce] feat: AviationStack OpenAPI spec + demo prep for manage
+     ment presentation
+      5 files changed, 496 insertions(+), 7 deletions(-)
+     … +2 lines (ctrl+o to expand)
+
+● Bash(git push)
+  ⎿  To https://github.com/ASdmin75/claude-ecosystem.git
+        57de3e5..fb299ce  main -> main
+
+● Готово. Коммит fb299ce запушен в main:
+
+  - specs/aviationstack.yaml — OpenAPI спека (4 эндпоинта)
+  - docs/demo-aviation-2024-03-24.md — шпаргалка демо
+  - docs/user-guide.md — обновлена секция Wizard
+  - workflow.md — запись 2026-03-23
+  - docs/prompts.md — обновление промптов
+
+✻ Crunched for 32s
+
+❯ /git-commit-push                                                              
+
+● Bash(git status)
+  ⎿  On branch main
+     Your branch is up to date with 'origin/main'.
+
+     nothing to commit, working tree clean
+
+● Bash(git diff)
+  ⎿  (No output)
+
+● Нечего коммитить — рабочее дерево чистое. Все изменения уже в коммите fb299ce
+  и запушены в origin/main.
+
+❯ /git-commit-push                                                              
+
+● Bash(git status && git diff)
+  ⎿  On branch main
+     Your branch is up to date with 'origin/main'.
+     … +24 lines (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+● Bash(git log --oneline -3)
+  ⎿  fb299ce feat: AviationStack OpenAPI spec + demo prep for management pr
+     esentation
+     57de3e5 feat: pipeline-to-task navigation + wizard auto-fix + openapi
+     … +3 lines (ctrl+o to expand)
+
+● Изменения:
+  - .gitignore — убрано правило *.txt (разрешает коммитить текстовые файлы)
+  - docs/claude-exports/ — экспортированные диалоги Claude Code
+  - web/2026-03-17-210950-...txt — экспорт диалога из web/
+
+● Bash(git add .gitignore docs/claude-exports/
+      web/2026-03-17-210950-implement-the-following-plan.txt)
+  ⎿  (No output)
+● Bash(git commit -m "$(cat <<'EOF'
+      chore: add claude conversation exports + allow .txt files in git…)
+  ⎿  [main 2759440] chore: add claude conversation exports + allow .txt fil
+     es in git
+      141 files changed, 111179 insertions(+), 1 deletion(-)
+     … +196 lines (ctrl+o to expand)
+
+● Bash(git push)
+  ⎿  To https://github.com/ASdmin75/claude-ecosystem.git
+        fb299ce..2759440  main -> main
+
+● Готово. Коммит 2759440 запушен — 141 файл (экспорты диалогов + обновлённый
+  .gitignore).
+
+✻ Crunched for 38s

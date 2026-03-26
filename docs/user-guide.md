@@ -691,6 +691,7 @@ mcp_servers:
 | `OPENAPI_TLS_INSECURE` | Нет | `true` — отключить проверку TLS-сертификата (самоподписанные) |
 | `OPENAPI_EXTRA_HEADERS` | Нет | Доп. заголовки `Key:Value,Key2:Value2` |
 | `OPENAPI_TIMEOUT` | Нет | HTTP timeout (default: `30s`) |
+| `OPENAPI_PROXY` | Нет | Явный HTTP-прокси для API-запросов (e.g. `http://127.0.0.1:8081/`). Используйте когда Claude CLI не передаёт `HTTP_PROXY` в MCP-подпроцессы |
 | `OPENAPI_MAX_TOOLS` | Нет | Лимит инструментов (default: 50) |
 
 **Аутентификация — простые типы:**
@@ -778,6 +779,24 @@ mcp_servers:
 5. Token injection — `header` (Authorization: Bearer) или `query` (?param=token) в зависимости от `TOKEN_IN`
 
 **Важно:** при использовании OAuth2 аутентификация прозрачна для Claude — не нужно включать auth-эндпоинты в OpenAPI спеку и передавать токены в промпте.
+
+**API Key + прокси** (AviationStack: ключ в query param, запросы через прокси из-за блокировки Cloudflare):
+
+```yaml
+  - name: aviationstack-api
+    command: ./bin/mcp-openapi
+    env:
+      OPENAPI_SPEC_PATH: specs/aviationstack.yaml
+      OPENAPI_BASE_URL: http://api.aviationstack.com
+      OPENAPI_AUTH_TYPE: apikey
+      OPENAPI_API_KEY: ${AVIATIONSTACK_API_KEY}
+      OPENAPI_API_KEY_NAME: access_key
+      OPENAPI_API_KEY_IN: query
+      OPENAPI_PROXY: ${HTTP_PROXY}
+      OPENAPI_EXTRA_HEADERS: "User-Agent:Mozilla/5.0 AviationMonitor/1.0"
+```
+
+**Примечание:** `OPENAPI_PROXY` необходим когда Claude CLI не передаёт `HTTP_PROXY` из среды в MCP-подпроцессы. Явный прокси гарантирует маршрутизацию запросов.
 
 #### Встроенные инструменты download_file и batch_download
 

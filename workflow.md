@@ -1184,6 +1184,51 @@ data/backup/
 - `.env` — добавлен AVIATIONSTACK_API_KEY + NO_PROXY обновлён
 - `docs/demo-aviation-2024-03-24.md` — новый: шпаргалка демо
 
+### 2026-03-26 — Hot reload MCP-серверов и доменов + OPENAPI_PROXY + исправления Cloudflare
+
+**Контекст:** демо AviationStack выявило критические проблемы: Wizard создавал MCP-серверы, но они не были доступны задачам; Cloudflare блокировал прямые запросы к API с IP сервера.
+
+**Hot reload MCP-серверов и доменов:**
+- `mcpmanager.Manager` — добавлены методы `AddServer()` (регистрация нового сервера в рантайме) и `Reload()` (полная синхронизация с конфигом: добавление новых серверов, обновление env/command существующих, удаление убранных)
+- `domain.Manager` — добавлен метод `Reload()` (инициализация новых доменов: mkdir + schema + DOMAIN.md)
+- `reloadConfig()` в `cmd/server/main.go` теперь обновляет `cfg.MCPServers` + `mcpMgr.Reload()` и `cfg.Domains` + `domainMgr.Reload()` (ранее обновлялись только Tasks и Pipelines)
+- `watchConfigFile()` передаёт mcpMgr и domainMgr в reloadConfig
+- **Результат:** Wizard Apply → tasks.yaml сохраняется → hot reload → новые MCP-серверы сразу доступны задачам без перезапуска сервера
+
+**mcp-openapi: поддержка прокси (OPENAPI_PROXY):**
+- Добавлена env-переменная `OPENAPI_PROXY` — явный HTTP-прокси для API-запросов
+- Решает проблему: Claude CLI не передаёт `HTTP_PROXY` из mcp-config env в подпроцессы MCP-серверов
+- `http.Transport` теперь использует `Proxy: http.ProxyFromEnvironment` по умолчанию (ранее пустой Transport не поддерживал прокси), с override через `OPENAPI_PROXY` → `http.ProxyURL()`
+- Настройка: `OPENAPI_PROXY: ${HTTP_PROXY}` в env MCP-сервера в tasks.yaml
+
+**AviationStack: исправление Cloudflare 403:**
+- IP сервера (37.214.63.24) заблокирован Cloudflare WAF для aviationstack.com
+- Решение: запросы идут через прокси (`OPENAPI_PROXY`), прокси имеет другой IP
+- Добавлен `OPENAPI_EXTRA_HEADERS: User-Agent:Mozilla/5.0 AviationMonitor/1.0` — Cloudflare блокирует запросы без User-Agent
+- API-ключ в tasks.yaml заменён на `${AVIATIONSTACK_API_KEY}` (из .env, не хардкод)
+- `api.aviationstack.com` убран из NO_PROXY (нужен прокси, не прямой доступ)
+
+**AviationStack: исправление rate limit (timetable):**
+- Эндпоинт `gettimetable` на free tier имеет лимит 1 req/60 сек — при повторных запросах возвращал HTTP 429
+- Задача `aviation-hub-monitor` переключена с `gettimetable` на `getflights` (фильтр `dep_iata=FRA` / `arr_iata=FRA`) — работает стабильно без rate limit
+- Промпт обновлён: явное указание не использовать gettimetable
+- Добавлен `mcp__database__insert` в allowed_tools
+
+**Тесты:**
+- `TestAddServer` — регистрация нового MCP-сервера в рантайме, дупликаты игнорируются
+- `TestReload` — полная синхронизация: сохранение существующих, добавление новых, удаление убранных
+
+**Изменённые файлы:**
+- `internal/mcpmanager/manager.go` — AddServer(), Reload() с обновлением существующих
+- `internal/mcpmanager/config_test.go` — TestAddServer, TestReload
+- `internal/domain/manager.go` — Reload()
+- `cmd/server/main.go` — reloadConfig() + watchConfigFile() с mcpMgr/domainMgr
+- `cmd/mcp/mcp-openapi/main.go` — OPENAPI_PROXY, Proxy: http.ProxyFromEnvironment
+- `tasks.yaml` — aviationstack-api: OPENAPI_PROXY, OPENAPI_EXTRA_HEADERS, getflights вместо gettimetable
+- `.env` — api.aviationstack.com убран из NO_PROXY
+
+---
+
 ### 2026-03-24 — Полный аудит проекта: безопасность, надёжность, качество кода
 
 **Контекст:** комплексный аудит всего проекта выявил ~40 проблем разной критичности. Исправлены все найденные проблемы + добавлены тесты.

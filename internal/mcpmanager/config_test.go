@@ -97,6 +97,72 @@ func TestGenerateConfigFileWithNilEnv(t *testing.T) {
 	}
 }
 
+func TestAddServer(t *testing.T) {
+	mgr := New([]config.MCPServerConfig{
+		{Name: "existing", Command: "./bin/existing"},
+	}, slog.Default())
+
+	// Add new server
+	mgr.AddServer(config.MCPServerConfig{Name: "new-api", Command: "./bin/mcp-openapi", Env: map[string]string{"KEY": "val"}})
+
+	// Should be available for config generation
+	path, err := mgr.GenerateConfigFile([]string{"new-api"})
+	if err != nil {
+		t.Fatalf("GenerateConfigFile for new server: %v", err)
+	}
+	defer os.Remove(path)
+
+	data, _ := os.ReadFile(path)
+	var cfg mcpConfigFile
+	json.Unmarshal(data, &cfg)
+	if _, ok := cfg.MCPServers["new-api"]; !ok {
+		t.Fatal("new-api not found after AddServer")
+	}
+
+	// Adding duplicate is a no-op
+	mgr.AddServer(config.MCPServerConfig{Name: "new-api", Command: "./bin/other"})
+	statuses := mgr.Status()
+	count := 0
+	for _, s := range statuses {
+		if s.Name == "new-api" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected 1 new-api, got %d", count)
+	}
+}
+
+func TestReload(t *testing.T) {
+	mgr := New([]config.MCPServerConfig{
+		{Name: "keep", Command: "./bin/keep"},
+		{Name: "remove", Command: "./bin/remove"},
+	}, slog.Default())
+
+	// Reload with a different set
+	mgr.Reload([]config.MCPServerConfig{
+		{Name: "keep", Command: "./bin/keep"},
+		{Name: "added", Command: "./bin/added"},
+	})
+
+	// "keep" should still work
+	if _, err := mgr.GenerateConfigFile([]string{"keep"}); err != nil {
+		t.Fatalf("keep should exist: %v", err)
+	}
+
+	// "added" should be available
+	path, err := mgr.GenerateConfigFile([]string{"added"})
+	if err != nil {
+		t.Fatalf("added should exist after reload: %v", err)
+	}
+	os.Remove(path)
+
+	// "remove" should be gone
+	if _, err := mgr.GenerateConfigFile([]string{"remove"}); err == nil {
+		t.Fatal("remove should no longer exist after reload")
+	}
+}
+
 func TestGenerateConfigFileDelegatesToWithEnv(t *testing.T) {
 	cfgs := []config.MCPServerConfig{
 		{Name: "test", Command: "./bin/test"},

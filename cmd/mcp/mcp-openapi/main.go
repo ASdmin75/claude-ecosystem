@@ -283,7 +283,18 @@ func main() {
 			timeout = d
 		}
 	}
-	transport := &http.Transport{}
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+	}
+	// OPENAPI_PROXY overrides ProxyFromEnvironment for cases where env vars
+	// are not inherited by the subprocess (e.g. Claude CLI MCP launch).
+	if proxyURL := os.Getenv("OPENAPI_PROXY"); proxyURL != "" {
+		u, err := url.Parse(proxyURL)
+		if err == nil {
+			transport.Proxy = http.ProxyURL(u)
+			fmt.Fprintf(os.Stderr, "mcp-openapi: using explicit proxy %s\n", proxyURL)
+		}
+	}
 	if os.Getenv("OPENAPI_TLS_INSECURE") == "true" {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 		fmt.Fprintf(os.Stderr, "mcp-openapi: TLS certificate verification disabled\n")
