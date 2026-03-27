@@ -65,6 +65,7 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 
 	maxIter := p.MaxIter()
 	var lastOutput string
+	var fullLog strings.Builder
 	var iterations int
 
 	s.logger.Info("pipeline started", "pipeline", pipelineName, "execution_id", execID, "steps", len(p.Steps), "max_iterations", maxIter)
@@ -171,15 +172,22 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 			s.logger.Info("pipeline step completed", "pipeline", pipelineName, "step", stepIdx+1, "task", step.Task, "output_length", len(result.Output), "duration", stepDuration)
 
 			lastOutput = result.Output
+			if len(p.Steps) > 1 {
+				fmt.Fprintf(&fullLog, "### Step %d: %s\n\n%s\n\n", stepIdx+1, step.Task, result.Output)
+			}
 
 			// Check for stop signal.
 			if p.StopSignal != "" && strings.Contains(lastOutput, p.StopSignal) {
 				s.logger.Info("pipeline stop signal detected", "pipeline", pipelineName, "step", step.Task, "signal", p.StopSignal)
+				stopOutput := lastOutput
+				if fullLog.Len() > 0 {
+					stopOutput = fullLog.String()
+				}
 				return pipelineRunResponse{
 					ExecutionID: execID,
 					Pipeline:    pipelineName,
 					Status:      "completed",
-					Output:      lastOutput,
+					Output:      stopOutput,
 					Iterations:  iterations,
 					DurationMS:  time.Since(start).Milliseconds(),
 				}
@@ -187,11 +195,15 @@ func (s *Server) runPipeline(ctx context.Context, pipelineName string, execID st
 		}
 	}
 
+	output := lastOutput
+	if fullLog.Len() > 0 {
+		output = fullLog.String()
+	}
 	return pipelineRunResponse{
 		ExecutionID: execID,
 		Pipeline:    pipelineName,
 		Status:      "completed",
-		Output:      lastOutput,
+		Output:      output,
 		Iterations:  iterations,
 		DurationMS:  time.Since(start).Milliseconds(),
 	}

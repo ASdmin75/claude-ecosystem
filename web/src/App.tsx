@@ -1,13 +1,14 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, lazy, Suspense } from 'react'
 import Dashboard from './components/Dashboard'
 import TaskList from './components/TaskList'
 import SubAgentList from './components/SubAgentList'
 import PipelineList from './components/PipelineList'
-import ExecutionHistory from './components/ExecutionHistory'
 import MCPServerList from './components/MCPServerList'
-import Wizard from './components/Wizard'
 import Login from './components/Login'
+
+const Wizard = lazy(() => import('./components/Wizard'))
+const ExecutionHistory = lazy(() => import('./components/ExecutionHistory'))
 import { ToastContainer, useToast } from './components/Toast'
 import { useSSE, type SSEEvent } from './hooks/useSSE'
 
@@ -76,7 +77,12 @@ export default function App() {
   return (
     <div className="h-screen flex overflow-hidden bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100">
       <nav className="w-56 shrink-0 bg-gray-900 dark:bg-gray-950 dark:border-r dark:border-gray-800 text-white p-4 space-y-2 overflow-y-auto">
-        <h1 className="text-lg font-bold mb-6">Claude Ecosystem</h1>
+        <div className="mb-6">
+          <div className="flex items-center justify-center mb-2">
+            <img src="/logo-cropped.png" alt="Logo" className="h-12" />
+          </div>
+          <h1 className="text-lg font-bold text-center">Claude Ecosystem</h1>
+        </div>
         {navItems.map((item) => (
           <Link
             key={item.path}
@@ -106,16 +112,18 @@ export default function App() {
         </div>
       </nav>
       <main className="flex-1 overflow-y-auto p-6 bg-gray-50 dark:bg-gray-900">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/wizard" element={<Wizard />} />
-          <Route path="/tasks" element={<TaskList />} />
-          <Route path="/subagents" element={<SubAgentList />} />
-          <Route path="/pipelines" element={<PipelineList />} />
-          <Route path="/mcp-servers" element={<MCPServerList />} />
-          <Route path="/executions" element={<ExecutionHistory />} />
-          <Route path="/login" element={<Login />} />
-        </Routes>
+        <Suspense fallback={<div className="flex items-center justify-center h-64 text-gray-400">Loading...</div>}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/wizard" element={<Wizard />} />
+            <Route path="/tasks" element={<TaskList />} />
+            <Route path="/subagents" element={<SubAgentList />} />
+            <Route path="/pipelines" element={<PipelineList />} />
+            <Route path="/mcp-servers" element={<MCPServerList />} />
+            <Route path="/executions" element={<ExecutionHistory />} />
+            <Route path="/login" element={<Login />} />
+          </Routes>
+        </Suspense>
       </main>
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>

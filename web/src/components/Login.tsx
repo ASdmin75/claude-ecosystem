@@ -9,6 +9,9 @@ export default function Login() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
       <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-md w-96">
+        <div className="flex justify-center mb-4">
+          <img src="/logo-cropped.png" alt="Logo" className="h-14" />
+        </div>
         <h1 className="text-2xl font-bold mb-6 text-center text-gray-900 dark:text-gray-100">Claude Ecosystem</h1>
         {error && <p className="text-red-600 dark:text-red-400 text-sm mb-4">{error}</p>}
         <form onSubmit={(e) => { e.preventDefault(); login(username, password) }}>
